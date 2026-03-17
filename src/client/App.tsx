@@ -57,6 +57,7 @@ export default function App() {
   const [showKnowledgeBase, setShowKnowledgeBase] = useState(false);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [archivedJobs, setArchivedJobs] = useState<Job[]>([]);
+  const [archivedAgents, setArchivedAgents] = useState<AgentWithJob[]>([]);
   const [archivedTotal, setArchivedTotal] = useState(0);
   const [archivedLoading, setArchivedLoading] = useState(false);
   const [leftTab, setLeftTab] = useState<'feed' | 'lineage'>('feed');
@@ -202,11 +203,13 @@ export default function App() {
   useEffect(() => {
     if (activeProjectId !== '__archived__') return;
     setArchivedJobs([]);
+    setArchivedAgents([]);
     setArchivedTotal(0);
     fetch(`/api/jobs?archived=1&limit=${ARCHIVED_PAGE_SIZE}&offset=0`)
-      .then(r => r.ok ? r.json() : { jobs: [], total: 0 })
-      .then((data: { jobs: Job[]; total: number }) => {
+      .then(r => r.ok ? r.json() : { jobs: [], total: 0, agents: [] })
+      .then((data: { jobs: Job[]; total: number; agents?: AgentWithJob[] }) => {
         setArchivedJobs(data.jobs);
+        setArchivedAgents(data.agents ?? []);
         setArchivedTotal(data.total);
       })
       .catch(() => {});
@@ -217,8 +220,9 @@ export default function App() {
     try {
       const res = await fetch(`/api/jobs?archived=1&limit=${ARCHIVED_PAGE_SIZE}&offset=${archivedJobs.length}`);
       if (!res.ok) return;
-      const data: { jobs: Job[]; total: number } = await res.json();
+      const data: { jobs: Job[]; total: number; agents?: AgentWithJob[] } = await res.json();
       setArchivedJobs(prev => [...prev, ...data.jobs]);
+      setArchivedAgents(prev => [...prev, ...(data.agents ?? [])]);
       setArchivedTotal(data.total);
     } catch { /* ignore */ } finally {
       setArchivedLoading(false);
@@ -241,8 +245,8 @@ export default function App() {
   const filteredJobIds = useMemo(() => new Set(filteredJobs.map(j => j.id)), [filteredJobs]);
 
   const filteredAgents = useMemo(() => {
+    if (activeProjectId === '__archived__') return archivedAgents.filter(a => !isEyeJob(a.job as any));
     const matching = agents.filter(a => filteredJobIds.has(a.job_id));
-    if (activeProjectId === '__archived__') return matching;
     // In active view, only show the most recent agent per job (hides superseded/restarted agents)
     const latestByJob = new Map<string, AgentWithJob>();
     for (const a of matching) {
@@ -252,7 +256,7 @@ export default function App() {
       }
     }
     return [...latestByJob.values()];
-  }, [agents, filteredJobIds, activeProjectId]);
+  }, [agents, filteredJobIds, activeProjectId, archivedAgents, isEyeJob]);
 
   const activeProjectName = useMemo(() => {
     if (!activeProjectId) return null;

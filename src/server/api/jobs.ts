@@ -176,7 +176,8 @@ router.get('/', (req, res) => {
     const offset = req.query.offset ? parseInt(req.query.offset as string, 10) : undefined;
     const jobs = queries.listArchivedJobsSlim(limit, offset);
     const total = queries.countArchivedJobs();
-    data = { jobs, total };
+    const agents = queries.getAgentsForJobIds(jobs.map(j => j.id));
+    data = { jobs, total, agents };
   } else {
     const status = req.query.status as string | undefined;
     data = queries.listJobsSlim(status as any);

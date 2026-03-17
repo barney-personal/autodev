@@ -87,6 +87,7 @@ export function AgentCard({ agent, onClick, onSelectParent, onArchiveJob, onInte
 
   function handleRequeue(e: React.MouseEvent) {
     e.stopPropagation();
+    if (!confirm('Requeue this job? This will kill the running agent.')) return;
     fetch(`/api/agents/${agent.id}/requeue`, { method: 'POST' });
   }
 

@@ -391,6 +391,9 @@ export function AgentTerminal({ agent, onClose, onContinued, onRenameJob }: Agen
 
     termRef.current = term;
 
+    // Shared scroll constants used by both interactive and batch modes
+    const AT_BOTTOM_TOLERANCE = 5;
+
     if (isInteractive) {
       // Interactive mode: raw PTY data from tmux session
 
@@ -533,68 +536,60 @@ export function AgentTerminal({ agent, onClose, onContinued, onRenameJob }: Agen
       // term.onScroll only fires from write-induced auto-scroll, NOT mouse wheel.
       // Listen to the DOM scroll event on xterm's viewport element instead.
       const TERMINAL_STATUSES_SET = new Set(['done', 'failed', 'cancelled']);
-      const viewportEl = containerRef.current?.querySelector('.xterm-viewport');
       // Two-stage scroll-up handling:
-      // 1. Any user scroll above bottom → immediately pause PTY writes
+      // 1. Any wheel-up event → immediately pause PTY writes
       //    (prevents auto-scroll from fighting the user's scroll)
-      // 2. 10+ lines above bottom → enter full snapshot mode (fetch tmux
+      // 2. Sustained scroll above bottom → enter full snapshot mode (fetch tmux
       //    snapshot with complete history, show banner)
       //
-      // Key: only react to USER scrolls (wheel events), not xterm.js
-      // programmatic auto-scrolls. Without this distinction, queued
-      // term.write() calls auto-scroll to bottom, fire a DOM scroll event,
-      // and our handler would set ptyPaused=false — undoing the pause.
+      // We listen to wheel events directly instead of DOM scroll events.
+      // This avoids the problem of distinguishing user scrolls from
+      // programmatic auto-scrolls caused by term.write().
       let ptyPaused = false;
       let snapshotDebounceTimer: ReturnType<typeof setTimeout> | null = null;
-      const SCROLL_THRESHOLD = 3;
+      const SCROLL_THRESHOLD = 10;
 
-      // Track user-initiated scrolls via wheel event timestamps.
-      // Scroll events within 200ms of a wheel event are user-initiated;
-      // others are xterm.js programmatic auto-scrolls and should be ignored.
-      let lastWheelTime = 0;
-      const handleWheel = () => { lastWheelTime = Date.now(); };
-      // Listen on the container with capture — xterm.js internally handles
-      // wheel events on .xterm-screen, so a non-capture listener on
-      // .xterm-viewport never fires.
-      containerRef.current?.addEventListener('wheel', handleWheel, { passive: true, capture: true });
-
-      const handleViewportScroll = () => {
-        const isUserScroll = Date.now() - lastWheelTime < 200;
-        if (!isUserScroll || isRenderingSnapshot) return;
-        const buf = term.buffer.active;
-        const atBottom = buf.viewportY >= buf.length - term.rows - 1;
-        const wellAboveBottom = buf.viewportY < buf.length - term.rows - SCROLL_THRESHOLD;
-
-        if (isSnapshotMode) {
-          if (atBottom) exitSnapshotMode();
-          return;
-        }
+      // Simple approach: any wheel-up event pauses PTY writes immediately.
+      // We resume only when the user explicitly scrolls back to the bottom.
+      // This avoids the fragile timestamp-based "is this a user scroll?" heuristic.
+      const handleWheel = (e: WheelEvent) => {
+        if (isRenderingSnapshot) return;
         if (TERMINAL_STATUSES_SET.has(agent.status)) return;
 
-        // Stage 1: pause PTY writes on any scroll above bottom
-        if (!atBottom) {
+        // Scrolling up (deltaY < 0) → pause
+        if (e.deltaY < 0) {
           ptyPaused = true;
-        } else {
-          ptyPaused = false;
-          if (snapshotDebounceTimer) {
-            clearTimeout(snapshotDebounceTimer);
-            snapshotDebounceTimer = null;
-          }
-          return;
         }
 
-        // Stage 2: enter snapshot mode after scrolling well above bottom
-        if (wellAboveBottom && !snapshotDebounceTimer) {
+        // Scrolling down → check if we've reached the bottom
+        if (e.deltaY > 0 && ptyPaused) {
+          // Use a short delay to let xterm.js process the scroll first
+          setTimeout(() => {
+            const buf = term.buffer.active;
+            const atBottom = buf.viewportY >= buf.length - term.rows - AT_BOTTOM_TOLERANCE;
+            if (atBottom) {
+              ptyPaused = false;
+              if (snapshotDebounceTimer) {
+                clearTimeout(snapshotDebounceTimer);
+                snapshotDebounceTimer = null;
+              }
+              if (isSnapshotMode) exitSnapshotMode();
+            }
+          }, 50);
+        }
+
+        // Enter snapshot mode after sustained scroll-up
+        if (ptyPaused && !isSnapshotMode && !snapshotDebounceTimer) {
           snapshotDebounceTimer = setTimeout(() => {
             snapshotDebounceTimer = null;
             const b = term.buffer.active;
             if (b.viewportY < b.length - term.rows - SCROLL_THRESHOLD) {
               enterSnapshotMode();
             }
-          }, 150);
+          }, 300);
         }
       };
-      viewportEl?.addEventListener('scroll', handleViewportScroll);
+      containerRef.current?.addEventListener('wheel', handleWheel as EventListener, { passive: true, capture: true });
 
       const ptyDataHandler = ({ agent_id, data }: { agent_id: string; data: string }) => {
         if (agent_id !== agent.id) return;
@@ -639,8 +634,7 @@ export function AgentTerminal({ agent, onClose, onContinued, onRenameJob }: Agen
       return () => {
         socket.off('pty:data', ptyDataHandler);
         socket.off('pty:closed', ptyClosedHandler);
-        containerRef.current?.removeEventListener('wheel', handleWheel, { capture: true } as any);
-        viewportEl?.removeEventListener('scroll', handleViewportScroll);
+        containerRef.current?.removeEventListener('wheel', handleWheel as EventListener, { capture: true } as any);
         if (snapshotDebounceTimer) clearTimeout(snapshotDebounceTimer);
         inputDispose.dispose();
         if (resizeTimer) clearTimeout(resizeTimer);
@@ -696,26 +690,36 @@ export function AgentTerminal({ agent, onClose, onContinued, onRenameJob }: Agen
 
             // Stream live stream-json output (only for running agents)
             if (!isCompleted) {
-              // Write output preserving scroll position when user is scrolled up.
-              // scrollToLine restores viewport, then refresh() forces xterm.js to
-              // repaint visible rows (prevents stale/garbled cell rendering).
-              let writeQueue = Promise.resolve();
-              const writePreservingScroll = (text: string) => {
-                writeQueue = writeQueue.then(() => new Promise<void>(resolve => {
-                  const buf = term.buffer.active;
-                  const atBottom = buf.viewportY >= buf.length - term.rows - 1;
-                  if (atBottom) {
-                    term.write(text, resolve);
-                  } else {
-                    const savedY = buf.viewportY;
-                    term.write(text, () => {
-                      term.scrollToLine(savedY);
-                      term.refresh(0, term.rows - 1);
-                      resolve();
-                    });
+              // Buffer output while the user is scrolled up instead of writing
+              // and trying to restore scroll position (which races with xterm.js
+              // auto-scroll and causes the viewport to snap back to bottom).
+              let batchScrolledUp = false;
+              let bufferedOutput = '';
+
+              const batchViewportEl = containerRef.current?.querySelector('.xterm-viewport');
+              let batchLastWheelTime = 0;
+              const batchHandleWheel = () => { batchLastWheelTime = Date.now(); };
+              containerRef.current?.addEventListener('wheel', batchHandleWheel, { passive: true, capture: true });
+
+              const batchHandleScroll = () => {
+                const wheelTimeout = batchScrolledUp ? 1500 : 300;
+                const isUser = Date.now() - batchLastWheelTime < wheelTimeout;
+                if (!isUser) return;
+                const buf = term.buffer.active;
+                const atBottom = buf.viewportY >= buf.length - term.rows - AT_BOTTOM_TOLERANCE;
+                if (!atBottom) {
+                  batchScrolledUp = true;
+                } else if (batchScrolledUp) {
+                  // User scrolled back to bottom — flush buffered output
+                  batchScrolledUp = false;
+                  if (bufferedOutput) {
+                    const toWrite = bufferedOutput;
+                    bufferedOutput = '';
+                    term.write(toWrite);
                   }
-                }));
+                }
               };
+              batchViewportEl?.addEventListener('scroll', batchHandleScroll);
 
               let pendingOutput = '';
               let rafId: number | null = null;
@@ -724,7 +728,11 @@ export function AgentTerminal({ agent, onClose, onContinued, onRenameJob }: Agen
                 if (!pendingOutput) return;
                 const toWrite = pendingOutput;
                 pendingOutput = '';
-                writePreservingScroll(toWrite);
+                if (batchScrolledUp) {
+                  bufferedOutput += toWrite;
+                } else {
+                  term.write(toWrite);
+                }
               };
               const outputHandler = ({ agent_id, line }: { agent_id: string; line: AgentOutput }) => {
                 if (agent_id !== agent.id) return;
@@ -737,6 +745,8 @@ export function AgentTerminal({ agent, onClose, onContinued, onRenameJob }: Agen
               disposables.push(() => {
                 socket.off('agent:output', outputHandler);
                 if (rafId !== null) cancelAnimationFrame(rafId);
+                batchViewportEl?.removeEventListener('scroll', batchHandleScroll);
+                containerRef.current?.removeEventListener('wheel', batchHandleWheel, { capture: true } as EventListenerOptions);
               });
             }
           })

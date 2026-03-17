@@ -566,6 +566,58 @@ export function getAgentsWithJobForSnapshot(): AgentWithJob[] {
   });
 }
 
+/**
+ * Get the most recent agent per job for a list of job IDs.
+ * Used by the archived view to populate agent cards.
+ */
+export function getAgentsForJobIds(jobIds: string[]): AgentWithJob[] {
+  if (jobIds.length === 0) return [];
+  const db = getDb();
+  const ph = (n: number) => Array(n).fill('?').join(',');
+
+  // Get all agents for these jobs, then pick the most recent per job
+  const rows = db.prepare(`
+    SELECT a.* FROM agents a
+    WHERE a.job_id IN (${ph(jobIds.length)})
+    ORDER BY a.started_at DESC
+  `).all(...jobIds);
+
+  const latestByJob = new Map<string, any>();
+  for (const r of rows as any[]) {
+    if (!latestByJob.has(r.job_id)) latestByJob.set(r.job_id, r);
+  }
+
+  const agents = [...latestByJob.values()].map(r => cast<Agent>(r));
+  if (agents.length === 0) return [];
+
+  // Enrich with job data (same pattern as getAgentsWithJobForSnapshot)
+  const agentJobIds = [...new Set(agents.map(a => a.job_id))];
+  const jobRows = db.prepare(`SELECT * FROM jobs WHERE id IN (${ph(agentJobIds.length)})`).all(...agentJobIds);
+  const jobMap = new Map(jobRows.map(r => { const j = cast<Job>(r); return [j.id, j]; }));
+
+  const templateIds = [...new Set(jobRows.map((r: any) => r.template_id).filter(Boolean))];
+  const templateMap = new Map<string, string>();
+  if (templateIds.length > 0) {
+    const tRows = db.prepare(`SELECT id, name FROM templates WHERE id IN (${ph(templateIds.length)})`).all(...templateIds) as Array<{ id: string; name: string }>;
+    for (const t of tRows) templateMap.set(t.id, t.name);
+  }
+
+  return agents.map(agent => {
+    const job = jobMap.get(agent.job_id);
+    if (!job) return null;
+    return {
+      ...agent,
+      diff: null,
+      job,
+      template_name: job.template_id ? (templateMap.get(job.template_id) ?? null) : null,
+      pending_question: null,
+      active_locks: [],
+      child_agents: [],
+      warnings: [],
+    } as AgentWithJob;
+  }).filter(Boolean) as AgentWithJob[];
+}
+
 export function getAgentsWithJobByJobId(jobId: string): AgentWithJob[] {
   const db = getDb();
   const rows = db.prepare('SELECT * FROM agents WHERE job_id = ? ORDER BY started_at DESC').all(jobId);
@@ -1229,8 +1281,9 @@ export function updateProject(id: string, fields: Partial<Pick<Project, 'name' |
 export function deleteProject(id: string): void {
   const db = getDb();
   const now = Date.now();
-  // Archive all jobs in this project
-  db.prepare('UPDATE jobs SET archived_at = ?, updated_at = ? WHERE project_id = ? AND archived_at IS NULL').run(now, now, id);
+  // Archive all jobs in this project and unlink them from it
+  db.prepare('UPDATE jobs SET archived_at = ?, project_id = NULL, updated_at = ? WHERE project_id = ? AND archived_at IS NULL').run(now, now, id);
+  db.prepare('UPDATE jobs SET project_id = NULL, updated_at = ? WHERE project_id = ?').run(now, id);
   // Unlink debate jobs before deleting debates (debates.project_id is NOT NULL w/ FK constraint)
   db.prepare('UPDATE jobs SET debate_id = NULL WHERE debate_id IN (SELECT id FROM debates WHERE project_id = ?)').run(id);
   db.prepare('DELETE FROM debates WHERE project_id = ?').run(id);
