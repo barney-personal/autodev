@@ -9,7 +9,9 @@
     "server:dev": "NODE_OPTIONS='--experimental-sqlite' tsx watch --ignore './data/**' src/server/index.ts",
     "client:dev": "vite",
     "build": "tsc -p tsconfig.server.json && vite build",
-    "server:start": "node dist/server/index.js"
+    "server:start": "node dist/server/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
@@ -31,14 +33,17 @@
     "@types/node": "^20.19.35",
     "@types/react": "^18.3.28",
     "@types/react-dom": "^18.3.7",
+    "@types/supertest": "^7.2.0",
     "@types/uuid": "^9.0.8",
     "@vitejs/plugin-react": "^4.7.0",
     "concurrently": "^8.2.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "socket.io-client": "^4.8.3",
+    "supertest": "^7.2.2",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
-    "vite": "^5.4.21"
+    "vite": "^5.4.21",
+    "vitest": "^4.1.2"
   }
 }
