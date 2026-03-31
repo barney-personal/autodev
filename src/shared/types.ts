@@ -6,7 +6,8 @@ export type QuestionStatus = 'pending' | 'answered' | 'timeout';
 export type DebateStatus = 'running' | 'consensus' | 'disagreement' | 'failed' | 'cancelled';
 export type DebateRole = 'claude' | 'codex' | 'post_action' | 'verification_review' | 'verification_response';
 export type RetryPolicy = 'none' | 'same' | 'analyze';
-export type WarningType = 'stalled' | 'high_turns' | 'long_running';
+export type WarningType = 'stalled' | 'high_turns' | 'long_running' | 'budget_warning' | 'time_warning';
+export type StopMode = 'turns' | 'budget' | 'time' | 'completion';
 export type ReviewStatus = 'pending_review' | 'approved' | 'needs_revision';
 export type WorkflowStatus = 'running' | 'complete' | 'blocked' | 'failed' | 'cancelled';
 export type WorkflowPhase = 'idle' | 'assess' | 'review' | 'implement';
@@ -20,6 +21,8 @@ export interface Job {
   priority: number;
   work_dir: string | null;
   max_turns: number;
+  stop_mode: StopMode;
+  stop_value: number | null;  // meaning depends on stop_mode: turns count, dollars, minutes, or null for completion
   model: string | null;       // e.g. "claude-opus-4-6", null = auto-classify
   template_id: string | null; // FK → templates.id
   depends_on: string | null;  // JSON array of job IDs this job must wait for
@@ -96,6 +99,12 @@ export interface Workflow {
   max_turns_assess: number;
   max_turns_review: number;
   max_turns_implement: number;
+  stop_mode_assess: StopMode;
+  stop_value_assess: number | null;
+  stop_mode_review: StopMode;
+  stop_value_review: number | null;
+  stop_mode_implement: StopMode;
+  stop_value_implement: number | null;
   template_id: string | null;
   use_worktree: number;
   worktree_path: string | null;
@@ -121,6 +130,8 @@ export interface Agent {
   cost_usd: number | null;    // total_cost_usd from result event
   duration_ms: number | null; // duration_ms from result event
   num_turns: number | null;   // num_turns from result event
+  estimated_input_tokens: number | null;
+  estimated_output_tokens: number | null;
   pending_wait_ids: string | null; // JSON array of job IDs being waited on (cleared when done)
   started_at: number;
   updated_at: number;
@@ -290,6 +301,15 @@ export interface CodexStreamEvent {
   message?: string;
 }
 
+/** Safety cap for --max-turns when using budget/time/completion modes. */
+export const SAFETY_CAP_TURNS = 1000;
+
+/** Compute the effective --max-turns value for a given stop mode. */
+export function effectiveMaxTurns(mode: StopMode, value: number | null): number {
+  if (mode === 'turns' && value != null) return value;
+  return SAFETY_CAP_TURNS;
+}
+
 /** Returns true for jobs that run with --print and exit naturally (no finish_job needed). */
 export function isAutoExitJob(job: Pick<Job, 'debate_role' | 'workflow_phase'>): boolean {
   return !!(job.debate_role || job.workflow_phase);
@@ -314,6 +334,8 @@ export interface CreateJobRequest {
   priority?: number;
   workDir?: string;
   maxTurns?: number;
+  stopMode?: StopMode;
+  stopValue?: number;
   model?: string;
   templateId?: string;
   dependsOn?: string[]; // job IDs this job must wait for before running
@@ -474,6 +496,12 @@ export interface CreateWorkflowRequest {
   maxTurnsAssess?: number;
   maxTurnsReview?: number;
   maxTurnsImplement?: number;
+  stopModeAssess?: StopMode;
+  stopValueAssess?: number;
+  stopModeReview?: StopMode;
+  stopValueReview?: number;
+  stopModeImplement?: StopMode;
+  stopValueImplement?: number;
   templateId?: string;
   useWorktree?: boolean;
   projectId?: string;

@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { getDb } from './database.js';
-import type { Job, Agent, AgentWithJob, ChildAgentSummary, Question, FileLock, AgentOutput, AgentOutputSegment, Template, Note, Project, BatchTemplate, Debate, DebateStatus, DebateRole, RetryPolicy, JobStatus, AgentStatus, SearchResult, AgentWarning, Worktree, Nudge, KBEntry, Review, TemplateModelStat, ReviewStatus, Discussion, DiscussionMessage, DiscussionStatus, DiscussionCategory, DiscussionPriority, Proposal, ProposalMessage, ProposalStatus, ProposalCategory, ProposalComplexity, Workflow, WorkflowStatus, WorkflowPhase } from '../../shared/types.js';
+import type { Job, Agent, AgentWithJob, ChildAgentSummary, Question, FileLock, AgentOutput, AgentOutputSegment, Template, Note, Project, BatchTemplate, Debate, DebateStatus, DebateRole, RetryPolicy, JobStatus, AgentStatus, SearchResult, AgentWarning, Worktree, Nudge, KBEntry, Review, TemplateModelStat, ReviewStatus, Discussion, DiscussionMessage, DiscussionStatus, DiscussionCategory, DiscussionPriority, Proposal, ProposalMessage, ProposalStatus, ProposalCategory, ProposalComplexity, Workflow, WorkflowStatus, WorkflowPhase, StopMode } from '../../shared/types.js';
 
 // node:sqlite returns null-prototype objects; shallow-copy to a regular object.
 // SQLite rows are always flat scalars so a shallow copy is sufficient and far
@@ -20,6 +20,8 @@ export function insertJob(job: {
   status?: JobStatus;
   work_dir?: string | null;
   max_turns?: number;
+  stop_mode?: StopMode;
+  stop_value?: number | null;
   model?: string | null;
   template_id?: string | null;
   depends_on?: string | null;
@@ -50,12 +52,14 @@ export function insertJob(job: {
   const db = getDb();
   const now = Date.now();
   db.prepare(`
-    INSERT INTO jobs (id, title, description, context, status, priority, work_dir, max_turns, model, template_id, depends_on, is_interactive, use_worktree, project_id, debate_id, debate_loop, debate_round, debate_role, scheduled_at, repeat_interval_ms, retry_policy, max_retries, retry_count, original_job_id, completion_checks, review_config, review_status, review_parent_job_id, created_by_agent_id, pre_debate_id, pre_debate_summary, workflow_id, workflow_cycle, workflow_phase, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO jobs (id, title, description, context, status, priority, work_dir, max_turns, stop_mode, stop_value, model, template_id, depends_on, is_interactive, use_worktree, project_id, debate_id, debate_loop, debate_round, debate_role, scheduled_at, repeat_interval_ms, retry_policy, max_retries, retry_count, original_job_id, completion_checks, review_config, review_status, review_parent_job_id, created_by_agent_id, pre_debate_id, pre_debate_summary, workflow_id, workflow_cycle, workflow_phase, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     job.id, job.title, job.description, job.context,
     job.status ?? 'queued', job.priority,
     job.work_dir ?? null, job.max_turns ?? 50,
+    job.stop_mode ?? 'turns',
+    job.stop_value ?? null,
     job.model ?? null,
     job.template_id ?? null,
     job.depends_on ?? null,
@@ -405,7 +409,7 @@ export function listAgents(status?: AgentStatus): Agent[] {
   return rows.map((r: any) => cast<Agent>(r));
 }
 
-export function updateAgent(id: string, fields: Partial<Pick<Agent, 'status' | 'pid' | 'session_id' | 'exit_code' | 'error_message' | 'status_message' | 'output_read' | 'base_sha' | 'diff' | 'cost_usd' | 'duration_ms' | 'num_turns' | 'finished_at' | 'pending_wait_ids'>>): void {
+export function updateAgent(id: string, fields: Partial<Pick<Agent, 'status' | 'pid' | 'session_id' | 'exit_code' | 'error_message' | 'status_message' | 'output_read' | 'base_sha' | 'diff' | 'cost_usd' | 'duration_ms' | 'num_turns' | 'estimated_input_tokens' | 'estimated_output_tokens' | 'finished_at' | 'pending_wait_ids'>>): void {
   const db = getDb();
   const sets: string[] = ['updated_at = ?'];
   const values: unknown[] = [Date.now()];
@@ -415,6 +419,18 @@ export function updateAgent(id: string, fields: Partial<Pick<Agent, 'status' | '
   }
   values.push(id);
   db.prepare(`UPDATE agents SET ${sets.join(', ')} WHERE id = ?`).run(...values);
+}
+
+/** Atomically add token counts to an agent's running totals. */
+export function accumulateAgentTokens(agentId: string, inputTokens: number, outputTokens: number): void {
+  const db = getDb();
+  db.prepare(`
+    UPDATE agents SET
+      estimated_input_tokens = COALESCE(estimated_input_tokens, 0) + ?,
+      estimated_output_tokens = COALESCE(estimated_output_tokens, 0) + ?,
+      updated_at = ?
+    WHERE id = ?
+  `).run(inputTokens, outputTokens, Date.now(), agentId);
 }
 
 export function listBatchAgents(status?: AgentStatus): Agent[] {
@@ -556,7 +572,7 @@ export function getAgentsWithJobForSnapshot(): AgentWithJob[] {
   return agents.map(agent => {
     const job = jobMap.get(agent.job_id);
     if (!job) {
-      const stub: Job = { id: agent.job_id, title: '(deleted job)', description: '', context: null, status: 'failed', priority: 0, work_dir: null, max_turns: 0, model: null, template_id: null, depends_on: null, is_interactive: 0, use_worktree: 0, project_id: null, flagged: 0, debate_id: null, debate_loop: null, debate_round: null, debate_role: null, scheduled_at: null, repeat_interval_ms: null, retry_policy: 'none', max_retries: 0, retry_count: 0, original_job_id: null, completion_checks: null, review_config: null, review_status: null, review_parent_job_id: null, created_by_agent_id: null, pre_debate_id: null, pre_debate_summary: null, workflow_id: null, workflow_cycle: null, workflow_phase: null, archived_at: null, created_at: 0, updated_at: 0 };
+      const stub: Job = { id: agent.job_id, title: '(deleted job)', description: '', context: null, status: 'failed', priority: 0, work_dir: null, max_turns: 0, stop_mode: 'turns', stop_value: null, model: null, template_id: null, depends_on: null, is_interactive: 0, use_worktree: 0, project_id: null, flagged: 0, debate_id: null, debate_loop: null, debate_round: null, debate_role: null, scheduled_at: null, repeat_interval_ms: null, retry_policy: 'none', max_retries: 0, retry_count: 0, original_job_id: null, completion_checks: null, review_config: null, review_status: null, review_parent_job_id: null, created_by_agent_id: null, pre_debate_id: null, pre_debate_summary: null, workflow_id: null, workflow_cycle: null, workflow_phase: null, archived_at: null, created_at: 0, updated_at: 0 };
       return { ...agent, diff: null, job: stub, template_name: null, pending_question: null, active_locks: [], child_agents: [], warnings: [] } as AgentWithJob;
     }
     return {
@@ -653,7 +669,7 @@ function enrichAgent(agent: Agent): AgentWithJob {
   const jobRow = db.prepare('SELECT * FROM jobs WHERE id = ?').get(agent.job_id);
   if (!jobRow) {
     // Job was deleted while agent still references it — return a stub
-    const stub: Job = { id: agent.job_id, title: '(deleted job)', description: '', context: null, status: 'failed', priority: 0, work_dir: null, max_turns: 0, model: null, template_id: null, depends_on: null, is_interactive: 0, use_worktree: 0, project_id: null, flagged: 0, debate_id: null, debate_loop: null, debate_round: null, debate_role: null, scheduled_at: null, repeat_interval_ms: null, retry_policy: 'none', max_retries: 0, retry_count: 0, original_job_id: null, completion_checks: null, review_config: null, review_status: null, review_parent_job_id: null, created_by_agent_id: null, pre_debate_id: null, pre_debate_summary: null, workflow_id: null, workflow_cycle: null, workflow_phase: null, archived_at: null, created_at: 0, updated_at: 0 };
+    const stub: Job = { id: agent.job_id, title: '(deleted job)', description: '', context: null, status: 'failed', priority: 0, work_dir: null, max_turns: 0, stop_mode: 'turns', stop_value: null, model: null, template_id: null, depends_on: null, is_interactive: 0, use_worktree: 0, project_id: null, flagged: 0, debate_id: null, debate_loop: null, debate_round: null, debate_role: null, scheduled_at: null, repeat_interval_ms: null, retry_policy: 'none', max_retries: 0, retry_count: 0, original_job_id: null, completion_checks: null, review_config: null, review_status: null, review_parent_job_id: null, created_by_agent_id: null, pre_debate_id: null, pre_debate_summary: null, workflow_id: null, workflow_cycle: null, workflow_phase: null, archived_at: null, created_at: 0, updated_at: 0 };
     return { ...agent, job: stub, template_name: null, pending_question: null, active_locks: [], child_agents: [], warnings: [] };
   }
   const job = cast<Job>(jobRow);
@@ -2082,8 +2098,8 @@ export function getPrReviewsWithNewUserReplies(): any[] {
 export function insertWorkflow(workflow: Workflow): Workflow {
   const db = getDb();
   db.prepare(`
-    INSERT INTO workflows (id, title, task, work_dir, implementer_model, reviewer_model, max_cycles, current_cycle, current_phase, status, milestones_total, milestones_done, project_id, max_turns_assess, max_turns_review, max_turns_implement, template_id, use_worktree, worktree_path, worktree_branch, pr_url, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO workflows (id, title, task, work_dir, implementer_model, reviewer_model, max_cycles, current_cycle, current_phase, status, milestones_total, milestones_done, project_id, max_turns_assess, max_turns_review, max_turns_implement, stop_mode_assess, stop_value_assess, stop_mode_review, stop_value_review, stop_mode_implement, stop_value_implement, template_id, use_worktree, worktree_path, worktree_branch, pr_url, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     workflow.id, workflow.title, workflow.task, workflow.work_dir,
     workflow.implementer_model, workflow.reviewer_model,
@@ -2091,6 +2107,9 @@ export function insertWorkflow(workflow: Workflow): Workflow {
     workflow.milestones_total, workflow.milestones_done,
     workflow.project_id,
     workflow.max_turns_assess, workflow.max_turns_review, workflow.max_turns_implement,
+    workflow.stop_mode_assess, workflow.stop_value_assess ?? null,
+    workflow.stop_mode_review, workflow.stop_value_review ?? null,
+    workflow.stop_mode_implement, workflow.stop_value_implement ?? null,
     workflow.template_id, workflow.use_worktree,
     workflow.worktree_path ?? null, workflow.worktree_branch ?? null, workflow.pr_url ?? null,
     workflow.created_at, workflow.updated_at
@@ -2110,7 +2129,7 @@ export function listWorkflows(): Workflow[] {
   return rows.map((r: any) => cast<Workflow>(r));
 }
 
-export function updateWorkflow(id: string, fields: Partial<Pick<Workflow, 'current_cycle' | 'current_phase' | 'status' | 'milestones_total' | 'milestones_done' | 'worktree_path' | 'worktree_branch' | 'pr_url'>>): Workflow | null {
+export function updateWorkflow(id: string, fields: Partial<Pick<Workflow, 'current_cycle' | 'current_phase' | 'status' | 'milestones_total' | 'milestones_done' | 'worktree_path' | 'worktree_branch' | 'pr_url' | 'stop_mode_assess' | 'stop_value_assess' | 'stop_mode_review' | 'stop_value_review' | 'stop_mode_implement' | 'stop_value_implement'>>): Workflow | null {
   const db = getDb();
   const sets: string[] = ['updated_at = ?'];
   const values: unknown[] = [Date.now()];

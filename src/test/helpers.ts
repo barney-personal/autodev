@@ -165,11 +165,17 @@ export async function insertTestWorkflow(overrides: Partial<{
     max_turns_assess: 50,
     max_turns_review: 30,
     max_turns_implement: 100,
+    stop_mode_assess: 'turns',
+    stop_value_assess: 50,
+    stop_mode_review: 'turns',
+    stop_value_review: 30,
+    stop_mode_implement: 'turns',
+    stop_value_implement: 100,
     template_id: overrides.template_id ?? null,
     use_worktree: overrides.use_worktree ?? 0,
     created_at: Date.now(),
     updated_at: Date.now(),
-  });
+  } as any);
 }
 
 /**

@@ -87,6 +87,12 @@ export function initDb(dbPath: string): DatabaseSync {
   if (!agentCols.includes('pending_wait_ids')) {
     db.exec('ALTER TABLE agents ADD COLUMN pending_wait_ids TEXT');
   }
+  if (!agentCols.includes('estimated_input_tokens')) {
+    db.exec('ALTER TABLE agents ADD COLUMN estimated_input_tokens INTEGER');
+  }
+  if (!agentCols.includes('estimated_output_tokens')) {
+    db.exec('ALTER TABLE agents ADD COLUMN estimated_output_tokens INTEGER');
+  }
 
   // FTS5 virtual table for full-text search across agent output
   db.exec(`
@@ -321,6 +327,14 @@ export function initDb(dbPath: string): DatabaseSync {
   if (!jobCols.includes('pre_debate_summary')) {
     db.exec('ALTER TABLE jobs ADD COLUMN pre_debate_summary TEXT');
   }
+  if (!jobCols.includes('stop_mode')) {
+    db.exec("ALTER TABLE jobs ADD COLUMN stop_mode TEXT NOT NULL DEFAULT 'turns'");
+  }
+  if (!jobCols.includes('stop_value')) {
+    db.exec('ALTER TABLE jobs ADD COLUMN stop_value REAL');
+    // Backfill: existing rows get stop_value = max_turns
+    db.exec("UPDATE jobs SET stop_value = max_turns WHERE stop_mode = 'turns' AND stop_value IS NULL");
+  }
 
   // ── Eye: Discussions ───────────────────────────────────────────────────────
   db.exec(`CREATE TABLE IF NOT EXISTS discussions (
@@ -427,6 +441,18 @@ export function initDb(dbPath: string): DatabaseSync {
 
   // Workflow-level worktree columns (single worktree shared across all phases)
   const workflowCols = db.prepare('PRAGMA table_info(workflows)').all().map((c: any) => c.name);
+  if (!workflowCols.includes('stop_mode_assess')) {
+    db.exec("ALTER TABLE workflows ADD COLUMN stop_mode_assess TEXT NOT NULL DEFAULT 'turns'");
+    db.exec('ALTER TABLE workflows ADD COLUMN stop_value_assess REAL');
+    db.exec("ALTER TABLE workflows ADD COLUMN stop_mode_review TEXT NOT NULL DEFAULT 'turns'");
+    db.exec('ALTER TABLE workflows ADD COLUMN stop_value_review REAL');
+    db.exec("ALTER TABLE workflows ADD COLUMN stop_mode_implement TEXT NOT NULL DEFAULT 'turns'");
+    db.exec('ALTER TABLE workflows ADD COLUMN stop_value_implement REAL');
+    // Backfill: existing rows get stop_value = max_turns per phase
+    db.exec("UPDATE workflows SET stop_value_assess = max_turns_assess WHERE stop_mode_assess = 'turns' AND stop_value_assess IS NULL");
+    db.exec("UPDATE workflows SET stop_value_review = max_turns_review WHERE stop_mode_review = 'turns' AND stop_value_review IS NULL");
+    db.exec("UPDATE workflows SET stop_value_implement = max_turns_implement WHERE stop_mode_implement = 'turns' AND stop_value_implement IS NULL");
+  }
   if (!workflowCols.includes('worktree_path')) {
     db.exec('ALTER TABLE workflows ADD COLUMN worktree_path TEXT');
   }
