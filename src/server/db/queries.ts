@@ -128,7 +128,7 @@ export function listArchivedJobs(limit?: number, offset?: number): Job[] {
     }
   }
   const rows = db.prepare(sql).all(...args);
-  return rows.map(r => cast<Job>(r));
+  return rows.map((r: any) => cast<Job>(r));
 }
 
 export function listArchivedJobsSlim(limit?: number, offset?: number): Job[] {
@@ -176,7 +176,7 @@ export function listEyeJobs(): Job[] {
     ORDER BY created_at DESC
     LIMIT 200
   `).all();
-  return rows.map(r => cast<Job>(r));
+  return rows.map((r: any) => cast<Job>(r));
 }
 
 /**
@@ -503,7 +503,7 @@ export function getAgentsWithJobForSnapshot(): AgentWithJob[] {
 
   // Jobs — one query
   const jobRows = db.prepare(`SELECT * FROM jobs WHERE id IN (${ph(jobIds.length)})`).all(...jobIds);
-  const jobMap = new Map(jobRows.map(r => { const j = cast<Job>(r); return [j.id, j]; }));
+  const jobMap = new Map<string, Job>(jobRows.map((r: any) => { const j = cast<Job>(r); return [j.id, j]; }));
 
   // Pending questions — one query
   const qRows = db.prepare(`SELECT * FROM questions WHERE agent_id IN (${ph(agentIds.length)}) AND status = 'pending'`).all(...agentIds);
@@ -556,7 +556,7 @@ export function getAgentsWithJobForSnapshot(): AgentWithJob[] {
   return agents.map(agent => {
     const job = jobMap.get(agent.job_id);
     if (!job) {
-      const stub: Job = { id: agent.job_id, title: '(deleted job)', description: '', context: null, status: 'failed', priority: 0, work_dir: null, max_turns: 0, model: null, template_id: null, depends_on: null, is_interactive: 0, use_worktree: 0, project_id: null, flagged: 0, debate_id: null, debate_round: null, debate_role: null, scheduled_at: null, repeat_interval_ms: null, retry_policy: 'none', max_retries: 0, retry_count: 0, original_job_id: null, completion_checks: null, review_config: null, review_status: null, review_parent_job_id: null, archived_at: null, created_at: 0, updated_at: 0 };
+      const stub: Job = { id: agent.job_id, title: '(deleted job)', description: '', context: null, status: 'failed', priority: 0, work_dir: null, max_turns: 0, model: null, template_id: null, depends_on: null, is_interactive: 0, use_worktree: 0, project_id: null, flagged: 0, debate_id: null, debate_loop: null, debate_round: null, debate_role: null, scheduled_at: null, repeat_interval_ms: null, retry_policy: 'none', max_retries: 0, retry_count: 0, original_job_id: null, completion_checks: null, review_config: null, review_status: null, review_parent_job_id: null, created_by_agent_id: null, pre_debate_id: null, pre_debate_summary: null, workflow_id: null, workflow_cycle: null, workflow_phase: null, archived_at: null, created_at: 0, updated_at: 0 };
       return { ...agent, diff: null, job: stub, template_name: null, pending_question: null, active_locks: [], child_agents: [], warnings: [] } as AgentWithJob;
     }
     return {
@@ -599,7 +599,7 @@ export function getAgentsForJobIds(jobIds: string[]): AgentWithJob[] {
   // Enrich with job data (same pattern as getAgentsWithJobForSnapshot)
   const agentJobIds = [...new Set(agents.map(a => a.job_id))];
   const jobRows = db.prepare(`SELECT * FROM jobs WHERE id IN (${ph(agentJobIds.length)})`).all(...agentJobIds);
-  const jobMap = new Map(jobRows.map(r => { const j = cast<Job>(r); return [j.id, j]; }));
+  const jobMap = new Map<string, Job>(jobRows.map((r: any) => { const j = cast<Job>(r); return [j.id, j]; }));
 
   const templateIds = [...new Set(jobRows.map((r: any) => r.template_id).filter(Boolean))];
   const templateMap = new Map<string, string>();
@@ -653,7 +653,7 @@ function enrichAgent(agent: Agent): AgentWithJob {
   const jobRow = db.prepare('SELECT * FROM jobs WHERE id = ?').get(agent.job_id);
   if (!jobRow) {
     // Job was deleted while agent still references it — return a stub
-    const stub: Job = { id: agent.job_id, title: '(deleted job)', description: '', context: null, status: 'failed', priority: 0, model: null, template_id: null, depends_on: null, is_interactive: 0, use_worktree: 0, project_id: null, flagged: 0, debate_id: null, debate_loop: null, debate_round: null, debate_role: null, scheduled_at: null, repeat_interval_ms: null, retry_policy: 'none', max_retries: 0, retry_count: 0, original_job_id: null, completion_checks: null, review_config: null, review_status: null, review_parent_job_id: null, created_by_agent_id: null, pre_debate_id: null, pre_debate_summary: null, workflow_id: null, workflow_cycle: null, workflow_phase: null, archived_at: null, created_at: 0, updated_at: 0 };
+    const stub: Job = { id: agent.job_id, title: '(deleted job)', description: '', context: null, status: 'failed', priority: 0, work_dir: null, max_turns: 0, model: null, template_id: null, depends_on: null, is_interactive: 0, use_worktree: 0, project_id: null, flagged: 0, debate_id: null, debate_loop: null, debate_round: null, debate_role: null, scheduled_at: null, repeat_interval_ms: null, retry_policy: 'none', max_retries: 0, retry_count: 0, original_job_id: null, completion_checks: null, review_config: null, review_status: null, review_parent_job_id: null, created_by_agent_id: null, pre_debate_id: null, pre_debate_summary: null, workflow_id: null, workflow_cycle: null, workflow_phase: null, archived_at: null, created_at: 0, updated_at: 0 };
     return { ...agent, job: stub, template_name: null, pending_question: null, active_locks: [], child_agents: [], warnings: [] };
   }
   const job = cast<Job>(jobRow);
@@ -1402,7 +1402,7 @@ export function updateDebate(id: string, fields: Partial<Pick<Debate, 'current_r
 export function getJobsForDebate(debateId: string): Job[] {
   const db = getDb();
   const rows = db.prepare('SELECT * FROM jobs WHERE debate_id = ? ORDER BY debate_loop ASC, debate_round ASC, created_at ASC').all(debateId);
-  return rows.map(r => cast<Job>(r));
+  return rows.map((r: any) => cast<Job>(r));
 }
 
 export function getJobsForDebateRound(debateId: string, loop: number, round: number): Job[] {

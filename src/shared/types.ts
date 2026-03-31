@@ -18,6 +18,8 @@ export interface Job {
   context: string | null; // JSON string of extra k/v context
   status: JobStatus;
   priority: number;
+  work_dir: string | null;
+  max_turns: number;
   model: string | null;       // e.g. "claude-opus-4-6", null = auto-classify
   template_id: string | null; // FK → templates.id
   depends_on: string | null;  // JSON array of job IDs this job must wait for
@@ -220,6 +222,10 @@ export interface ServerToClientEvents {
   'eye:proposal:new': (payload: { proposal: Proposal }) => void;
   'eye:proposal:update': (payload: { proposal: Proposal }) => void;
   'eye:proposal:message': (payload: { message: ProposalMessage }) => void;
+  'eye:pr:new': (payload: { pr: Record<string, unknown> }) => void;
+  'eye:pr-review:new': (payload: { review: Record<string, unknown> }) => void;
+  'eye:pr-review:update': (payload: { review: Record<string, unknown> }) => void;
+  'eye:pr-review:message': (payload: { message: Record<string, unknown> }) => void;
 }
 
 export interface ClientToServerEvents {

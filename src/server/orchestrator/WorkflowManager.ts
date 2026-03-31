@@ -333,7 +333,7 @@ export function finalizeWorkflow(workflow: Workflow): void {
     try {
       const n = execSync(
         'git rev-list --count HEAD ^origin/HEAD 2>/dev/null || git rev-list --count HEAD',
-        { cwd: worktree_path, stdio: 'pipe', timeout: 10000, shell: true }
+        { cwd: worktree_path, stdio: 'pipe', timeout: 10000 }
       ).toString().trim();
       hasCommits = parseInt(n, 10) > 0;
     } catch { /* not a git repo or no remote — skip PR */ }
