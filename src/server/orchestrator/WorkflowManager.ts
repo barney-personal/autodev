@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { execSync } from 'child_process';
+import { mkdirSync } from 'fs';
 import path from 'path';
 import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
@@ -215,6 +216,7 @@ export function startWorkflow(workflow: Workflow): Job {
         .slice(0, 40);
       const branchName = `workflow/${slug}-${shortId}`;
       const worktreePath = path.resolve(workflow.work_dir, '..', '.orchestrator-worktrees', `wf-${shortId}`);
+      mkdirSync(path.dirname(worktreePath), { recursive: true });
       execSync(`git worktree add ${JSON.stringify(worktreePath)} -b ${JSON.stringify(branchName)}`, {
         cwd: workflow.work_dir,
         timeout: 30000,
