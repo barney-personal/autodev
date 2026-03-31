@@ -299,6 +299,6 @@ function _recoverStuckWorkflows(): void {
 
     if (hasNext) continue;
     console.log(`[recovery] workflow ${workflow.id} stuck — ${workflow.current_phase} C${jobCycle} done but no next phase; re-firing onJobCompleted`);
-    try { workflowOnJobCompleted(phaseJob); } catch (err) { console.error(`[recovery] stuck workflow re-fire error:`, err); }
+    try { workflowOnJobCompleted(phaseJob, { force: true }); } catch (err) { console.error(`[recovery] stuck workflow re-fire error:`, err); }
   }
 }

@@ -1,7 +1,7 @@
 /**
  * StuckJobWatchdog — periodic runtime monitor for stuck/inconsistent agent state.
  *
- * Runs every 30 seconds and handles three failure modes:
+ * Runs every 30 seconds and handles four failure modes:
  *
  * 1. Dead agents: an agent's tmux session (or legacy PID) has died but the DB
  *    still shows it as running. Mark done/failed and release locks.
@@ -9,7 +9,10 @@
  * 2. Orphaned waits: agent MCP connection dropped while wait_for_jobs was active,
  *    and all waited jobs have since finished. Kill session and re-queue.
  *
- * 3. Job/agent inconsistency: a job is marked terminal but an agent row still
+ * 3. MCP-disconnected agents: agent lost MCP connection outside of wait_for_jobs
+ *    and hasn't reconnected within the grace period. Kill and re-queue.
+ *
+ * 4. Job/agent inconsistency: a job is marked terminal but an agent row still
  *    shows 'running'. Clean up the stale row.
  */
 
@@ -20,10 +23,11 @@ import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
 import { runAgent, getLogPath } from './AgentRunner.js';
 import { onJobCompleted as debateOnJobCompleted } from './DebateManager.js';
+import { onJobCompleted as workflowOnJobCompleted } from './WorkflowManager.js';
 import { getFileLockRegistry } from './FileLockRegistry.js';
 import { isTmuxSessionAlive, startInteractiveAgent, saveSnapshot } from './PtyManager.js';
 import { handleRetry } from './RetryManager.js';
-import { orphanedWaits, hasActiveTransport } from '../mcp/McpServer.js';
+import { orphanedWaits, disconnectedAgents, hasActiveTransport } from '../mcp/McpServer.js';
 import { isCodexModel, isAutoExitJob } from '../../shared/types.js';
 
 const WATCHDOG_INTERVAL_MS = 30_000;
@@ -99,33 +103,35 @@ function check(): void {
     const pidAlive = agent.pid != null && isPidAlive(agent.pid);
 
     if (tmuxAlive || pidAlive) {
-      // Idle timeout: non-interactive tmux agents (Eye, worker agents) should be making
-      // MCP calls regularly. If updated_at hasn't changed in IDLE_THRESHOLD_MS and there's
-      // no active wait_for_jobs, the agent is likely stuck at Claude's ❯ prompt and will
-      // never call finish_job — kill and restart.
-      const IDLE_THRESHOLD_MS = 90 * 60 * 1000; // 90 minutes
-      if (tmuxAlive && agent.pid == null && !agent.pending_wait_ids) {
+      // Idle timeout: non-interactive agents should be making MCP calls regularly.
+      // If updated_at hasn't changed in IDLE_THRESHOLD_MS and there's no active
+      // wait_for_jobs, the agent is likely stuck (e.g. at Claude's ❯ prompt, or in
+      // a sleep-retry loop after MCP disconnect) — kill and restart.
+      const IDLE_THRESHOLD_MS = 20 * 60 * 1000; // 20 minutes
+      if ((tmuxAlive || pidAlive) && !agent.pending_wait_ids) {
         const idleJob = queries.getJobById(agent.job_id);
         const isStuckCandidate = idleJob && !idleJob.is_interactive && !isAutoExitJob(idleJob as any);
         const idleMs = Date.now() - agent.updated_at;
         if (isStuckCandidate && idleMs > IDLE_THRESHOLD_MS) {
-          console.warn(`[watchdog] non-interactive tmux agent ${agent.id} idle ${Math.round(idleMs / 60000)}min without MCP activity — killing stale session`);
-          saveSnapshot(agent.id);
-          try {
-            execFileSync('tmux', ['kill-session', '-t', `orchestrator-${agent.id}`], { stdio: 'pipe' });
-          } catch { /* already gone */ }
+          console.warn(`[watchdog] non-interactive agent ${agent.id} idle ${Math.round(idleMs / 60000)}min without MCP activity — killing`);
+          if (tmuxAlive) {
+            saveSnapshot(agent.id);
+            try { execFileSync('tmux', ['kill-session', '-t', `orchestrator-${agent.id}`], { stdio: 'pipe' }); } catch { /* already gone */ }
+          }
+          if (agent.pid != null) killProcess(agent.pid);
           queries.updateAgent(agent.id, {
             status: 'failed',
-            error_message: `Agent idle ${Math.round(idleMs / 60000)}min without MCP activity; watchdog killed stale session.`,
+            error_message: `Agent idle ${Math.round(idleMs / 60000)}min without MCP activity; watchdog killed.`,
             finished_at: Date.now(),
           });
           queries.updateJobStatus(agent.job_id, 'failed');
           getFileLockRegistry().releaseAll(agent.id);
+          disconnectedAgents.delete(agent.id);
           const pendingQ = queries.getPendingQuestion(agent.id);
           if (pendingQ) {
             queries.updateQuestion(pendingQ.id, {
               status: 'timeout',
-              answer: '[TIMEOUT] Agent went idle; watchdog killed stale session.',
+              answer: '[TIMEOUT] Agent went idle; watchdog killed.',
               answered_at: Date.now(),
             });
           }
@@ -134,6 +140,7 @@ function check(): void {
           const idleJobFresh = queries.getJobById(agent.job_id);
           if (idleJobFresh) {
             try { socket.emitJobUpdate(idleJobFresh); } catch { /* ignore */ }
+            try { workflowOnJobCompleted(idleJobFresh); } catch { /* ignore */ }
             if (idleJobFresh.repeat_interval_ms) {
               try {
                 const nextJob = queries.scheduleRepeatJob(idleJobFresh);
@@ -243,11 +250,12 @@ function check(): void {
     const updatedAgent = queries.getAgentWithJob(agent.id);
     if (updatedAgent) socket.emitAgentUpdate(updatedAgent);
 
-    // If this job belongs to a debate, trigger the debate state machine
+    // Trigger debate/workflow state machines for the completed job
     const updatedJob = queries.getJobById(agent.job_id);
     if (updatedJob) {
       try { socket.emitJobUpdate(updatedJob); } catch (err) { console.error(`[watchdog] emitJobUpdate error:`, err); }
       try { debateOnJobCompleted(updatedJob); } catch (err) { console.error(`[watchdog] debateOnJobCompleted error:`, err); }
+      try { workflowOnJobCompleted(updatedJob); } catch (err) { console.error(`[watchdog] workflowOnJobCompleted error:`, err); }
       // For repeat jobs (e.g. Eye cycles), schedule the next run so the cycle continues
       if (updatedJob.repeat_interval_ms) {
         try {
@@ -350,7 +358,83 @@ function check(): void {
     console.log(`[watchdog] re-spawned agent ${newAgentId} for job ${job.id}`);
   }
 
-  // ── Check 3: Job/agent inconsistency ───────────────────────────────────────
+  // ── Check 3: MCP-disconnected agents (not in wait_for_jobs) ────────────────
+  // When an MCP session closes and the agent was NOT in wait_for_jobs, it's
+  // tracked in disconnectedAgents. If the agent hasn't reconnected within the
+  // grace period, it's stuck in a sleep-retry loop and should be killed + restarted.
+  const MCP_DISCONNECT_GRACE_MS = 120_000; // 2 minutes
+  for (const [agentId, disconnectedAt] of disconnectedAgents) {
+    if (Date.now() - disconnectedAt < MCP_DISCONNECT_GRACE_MS) continue;
+
+    // Agent reconnected? Clear and skip
+    if (hasActiveTransport(agentId)) {
+      disconnectedAgents.delete(agentId);
+      continue;
+    }
+
+    const agent = queries.getAgentById(agentId);
+    if (!agent || agent.status !== 'running') {
+      disconnectedAgents.delete(agentId);
+      continue;
+    }
+
+    const job = queries.getJobById(agent.job_id);
+    if (!job || TERMINAL.includes(job.status)) {
+      disconnectedAgents.delete(agentId);
+      continue;
+    }
+
+    const stuckMs = Date.now() - disconnectedAt;
+    console.warn(`[watchdog] agent ${agentId} MCP-disconnected ${Math.round(stuckMs / 1000)}s without reconnecting — killing and restarting job ${job.id}`);
+    disconnectedAgents.delete(agentId);
+
+    // Kill the session/process
+    if (isTmuxSessionAlive(agentId)) {
+      saveSnapshot(agentId);
+      try { execFileSync('tmux', ['kill-session', '-t', `orchestrator-${agentId}`], { stdio: 'pipe' }); } catch { /* already gone */ }
+    }
+    if (agent.pid != null) killProcess(agent.pid);
+
+    // Mark old agent failed
+    queries.updateAgent(agent.id, {
+      status: 'failed',
+      error_message: `MCP connection lost (not in wait_for_jobs); watchdog restarted after ${Math.round(stuckMs / 1000)}s.`,
+      finished_at: Date.now(),
+    });
+    queries.updateJobStatus(agent.job_id, 'failed');
+    getFileLockRegistry().releaseAll(agent.id);
+
+    const pendingQ = queries.getPendingQuestion(agent.id);
+    if (pendingQ) {
+      queries.updateQuestion(pendingQ.id, {
+        status: 'timeout',
+        answer: '[TIMEOUT] MCP connection lost; watchdog restarted agent.',
+        answered_at: Date.now(),
+      });
+    }
+
+    const updatedAgent = queries.getAgentWithJob(agent.id);
+    if (updatedAgent) socket.emitAgentUpdate(updatedAgent);
+
+    // Re-queue with a new agent
+    const newAgentId = randomUUID();
+    queries.insertAgent({ id: newAgentId, job_id: job.id, status: 'starting' });
+    queries.updateJobStatus(job.id, 'assigned');
+
+    const newAgentWithJob = queries.getAgentWithJob(newAgentId);
+    if (newAgentWithJob) socket.emitAgentNew(newAgentWithJob);
+    const updatedJob = queries.getJobById(job.id);
+    if (updatedJob) socket.emitJobUpdate(updatedJob);
+
+    if (job.is_interactive) {
+      startInteractiveAgent({ agentId: newAgentId, job });
+    } else {
+      runAgent({ agentId: newAgentId, job, resumeSessionId: agent.session_id ?? undefined });
+    }
+    console.log(`[watchdog] re-spawned agent ${newAgentId} for job ${job.id} (MCP disconnect recovery)`);
+  }
+
+  // ── Check 4: Job/agent inconsistency ───────────────────────────────────────
   // A job is in a terminal state but an agent row still shows 'running'.
   for (const agent of queries.listAllRunningAgents()) {
     const job = queries.getJobById(agent.job_id);
@@ -373,7 +457,7 @@ function check(): void {
     if (updatedAgent) socket.emitAgentUpdate(updatedAgent);
   }
 
-  // ── Check 5: Debates stuck in 'running' with no active jobs ─────────────────
+  // ── Check 6: Debates stuck in 'running' with no active jobs ─────────────────
   // Can happen when the server restarts after debate jobs finish but before the
   // state machine fires — recovery skips agents already in a terminal state so
   // the debate record is never advanced.

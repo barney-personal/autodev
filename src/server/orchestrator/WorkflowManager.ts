@@ -15,9 +15,9 @@ const _processedJobs = new Set<string>();
  * Called from AgentRunner.handleJobCompletion after a job's status is finalized.
  * If the job belongs to a workflow, advances to the next phase or completes the workflow.
  */
-export function onJobCompleted(job: Job): void {
+export function onJobCompleted(job: Job, { force = false }: { force?: boolean } = {}): void {
   if (!job.workflow_id) return;
-  if (_processedJobs.has(job.id)) return;
+  if (!force && _processedJobs.has(job.id)) return;
   _processedJobs.add(job.id);
   // Prevent unbounded growth
   if (_processedJobs.size > 500) {

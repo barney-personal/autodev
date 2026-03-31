@@ -29,6 +29,15 @@ const agentTransports: Map<string, Map<string, StreamableHTTPServerTransport>> =
  */
 export const orphanedWaits = new Map<string, { job_ids: string[]; disconnected_at: number }>();
 
+/**
+ * Agents whose MCP connection dropped while NOT in wait_for_jobs.
+ * agentId → timestamp of disconnect.
+ * Consumed by StuckJobWatchdog: if an agent stays disconnected for more than
+ * a grace period and is still "running", it's stuck (e.g. sleeping in a retry
+ * loop) and should be killed + restarted.
+ */
+export const disconnectedAgents = new Map<string, number>();
+
 export function hasActiveTransport(agentId: string): boolean {
   return agentTransports.has(agentId);
 }
@@ -46,6 +55,7 @@ export async function closeAllMcpSessions(): Promise<void> {
   }
   await Promise.all(promises);
   agentTransports.clear();
+  disconnectedAgents.clear();
 }
 
 function makeOnClose(agentId: string, transportMap: Map<string, StreamableHTTPServerTransport>, transport: { sessionId?: string }) {
@@ -60,7 +70,8 @@ function makeOnClose(agentId: string, transportMap: Map<string, StreamableHTTPSe
       abortAgentWait(agentId);
       orphanedWaits.set(agentId, { job_ids: [...waitingOn], disconnected_at: Date.now() });
     } else {
-      console.log(`[mcp] session closed: agent ${agentId}`);
+      console.warn(`[mcp] session closed: agent ${agentId} — registering as disconnected`);
+      disconnectedAgents.set(agentId, Date.now());
     }
   };
 }
@@ -112,8 +123,9 @@ export function createMcpApp(): express.Application {
         transport = transportMap.get(sessionId)!;
       } else if (!sessionId && isInitializeRequest(req.body)) {
         console.log(`[mcp] new session: agent ${agentId}`);
-        // Clear any orphaned wait — agent has reconnected
+        // Clear any orphaned wait / disconnect — agent has reconnected
         orphanedWaits.delete(agentId);
+        disconnectedAgents.delete(agentId);
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           enableJsonResponse: true,
@@ -129,8 +141,9 @@ export function createMcpApp(): express.Application {
       } else if (isInitializeRequest(req.body)) {
         // Re-initialization with a stale session ID (e.g. after server restart) — create fresh session
         console.log(`[mcp] re-initialize: agent ${agentId} (stale session)`);
-        // Clear any orphaned wait — agent has reconnected
+        // Clear any orphaned wait / disconnect — agent has reconnected
         orphanedWaits.delete(agentId);
+        disconnectedAgents.delete(agentId);
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           enableJsonResponse: true,
@@ -157,6 +170,7 @@ export function createMcpApp(): express.Application {
 
         console.warn(`[mcp] unknown session: agent ${agentId} session ${sessionId} — auto-recovering transport (server restart?)`);
         orphanedWaits.delete(agentId);
+        disconnectedAgents.delete(agentId);
 
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => sessionId!,
