@@ -222,10 +222,10 @@ export interface ServerToClientEvents {
   'eye:proposal:new': (payload: { proposal: Proposal }) => void;
   'eye:proposal:update': (payload: { proposal: Proposal }) => void;
   'eye:proposal:message': (payload: { message: ProposalMessage }) => void;
-  'eye:pr:new': (payload: { pr: Record<string, unknown> }) => void;
-  'eye:pr-review:new': (payload: { review: Record<string, unknown> }) => void;
-  'eye:pr-review:update': (payload: { review: Record<string, unknown> }) => void;
-  'eye:pr-review:message': (payload: { message: Record<string, unknown> }) => void;
+  'eye:pr:new': (payload: { pr: Pr }) => void;
+  'eye:pr-review:new': (payload: { review: PrReview }) => void;
+  'eye:pr-review:update': (payload: { review: PrReview }) => void;
+  'eye:pr-review:message': (payload: { message: PrReviewMessage }) => void;
 }
 
 export interface ClientToServerEvents {
@@ -626,6 +626,18 @@ export interface ProposalMessage {
   proposal_id: string;
   role: 'eye' | 'user';
   content: string;
+  created_at: number;
+}
+
+// ─── PRs ────────────────────────────────────────────────────────────────────
+
+export interface Pr {
+  id: string;
+  url: string;
+  title: string;
+  description: string | null;
+  proposal_id: string | null;
+  status: 'draft' | 'open' | 'merged' | 'closed';
   created_at: number;
 }
 

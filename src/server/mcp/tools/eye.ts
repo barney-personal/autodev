@@ -235,7 +235,7 @@ export async function reportPrHandler(agentId: string, input: z.infer<typeof rep
   const { url, title, description, proposal_id } = input;
 
   const id = randomUUID();
-  const pr = { id, url, title, description: description ?? null, proposal_id: proposal_id ?? null, status: 'draft', created_at: Date.now() };
+  const pr: import('../../../shared/types.js').Pr = { id, url, title, description: description ?? null, proposal_id: proposal_id ?? null, status: 'draft', created_at: Date.now() };
   queries.upsertNote(`pr:${id}`, JSON.stringify(pr), agentId);
   socket.emitPrNew(pr);
 

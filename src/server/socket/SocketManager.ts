@@ -1,6 +1,6 @@
 import { Server as HttpServer } from 'http';
 import { Server as SocketIoServer } from 'socket.io';
-import type { ServerToClientEvents, ClientToServerEvents, AgentWithJob, Job, Question, FileLock, AgentOutput, QueueSnapshot, Debate, AgentWarning, Discussion, DiscussionMessage, Proposal, ProposalMessage, Workflow } from '../../shared/types.js';
+import type { ServerToClientEvents, ClientToServerEvents, AgentWithJob, Job, Question, FileLock, AgentOutput, QueueSnapshot, Debate, AgentWarning, Discussion, DiscussionMessage, Proposal, ProposalMessage, Workflow, Pr, PrReview, PrReviewMessage } from '../../shared/types.js';
 
 let _io: SocketIoServer<ClientToServerEvents, ServerToClientEvents> | null = null;
 
@@ -103,7 +103,7 @@ export function emitDiscussionUpdate(discussion: Discussion): void { getIo().emi
 export function emitProposalNew(proposal: Proposal): void { getIo().emit('eye:proposal:new', { proposal }); }
 export function emitProposalUpdate(proposal: Proposal): void { getIo().emit('eye:proposal:update', { proposal }); }
 export function emitProposalMessage(message: ProposalMessage): void { getIo().emit('eye:proposal:message', { message }); }
-export function emitPrNew(pr: Record<string, unknown>): void { getIo().emit('eye:pr:new', { pr }); }
-export function emitPrReviewNew(review: Record<string, unknown>): void { getIo().emit('eye:pr-review:new', { review }); }
-export function emitPrReviewUpdate(review: Record<string, unknown>): void { getIo().emit('eye:pr-review:update', { review }); }
-export function emitPrReviewMessage(message: Record<string, unknown>): void { getIo().emit('eye:pr-review:message', { message }); }
+export function emitPrNew(pr: Pr): void { getIo().emit('eye:pr:new', { pr }); }
+export function emitPrReviewNew(review: PrReview): void { getIo().emit('eye:pr-review:new', { review }); }
+export function emitPrReviewUpdate(review: PrReview): void { getIo().emit('eye:pr-review:update', { review }); }
+export function emitPrReviewMessage(message: PrReviewMessage): void { getIo().emit('eye:pr-review:message', { message }); }
