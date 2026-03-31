@@ -11,7 +11,7 @@ import { runCompletionChecks } from './CompletionChecks.js';
 import { handleRetry } from './RetryManager.js';
 import { triageLearnings } from './MemoryTriager.js';
 import type { Job, ClaudeStreamEvent, CodexStreamEvent } from '../../shared/types.js';
-import { isCodexModel, codexModelName } from '../../shared/types.js';
+import { isCodexModel, codexModelName, effectiveMaxTurns } from '../../shared/types.js';
 import { buildEyePrompt, isEyeJob } from './EyeConfig.js';
 import { ensureCodexTrusted } from './PtyManager.js';
 
@@ -182,7 +182,9 @@ export function runAgent(options: RunOptions): void {
   const errFd = fs.openSync(errPath, 'w');
 
   const workDir = (job as any).work_dir ?? process.cwd();
-  const maxTurns = (job as any).max_turns ?? 50;
+  const stopMode = (job as any).stop_mode ?? 'turns';
+  const stopValue = (job as any).stop_value ?? null;
+  const maxTurns = effectiveMaxTurns(stopMode, stopValue);
   const model: string | null = (job as any).model ?? null;
   const useCodex = isCodexModel(model);
   if (useCodex) ensureCodexTrusted(workDir);
@@ -730,8 +732,45 @@ function handleStreamEvent(agentId: string, event: ClaudeStreamEvent | CodexStre
     queries.updateAgent(agentId, { session_id: (event as CodexStreamEvent).thread_id });
   }
 
+  // Token accumulation for cost estimation (budget stop mode)
+  extractAndAccumulateTokens(agentId, event, raw);
+
   const latestRow = queries.getLatestAgentOutput(agentId);
   if (latestRow) socket.emitAgentOutput(agentId, latestRow);
+}
+
+/**
+ * Extract token usage from Claude assistant events and Codex usage events,
+ * then accumulate on the agent row for cost estimation.
+ */
+function extractAndAccumulateTokens(agentId: string, event: ClaudeStreamEvent | CodexStreamEvent, raw: string): void {
+  let inputTokens = 0;
+  let outputTokens = 0;
+
+  if (event.type === 'assistant') {
+    // Claude assistant events carry usage in the raw JSON (not on the typed interface)
+    try {
+      const parsed = JSON.parse(raw);
+      const usage = parsed.usage;
+      if (usage) {
+        inputTokens = (usage.input_tokens ?? 0)
+          + (usage.cache_creation_input_tokens ?? 0)
+          + (usage.cache_read_input_tokens ?? 0);
+        outputTokens = usage.output_tokens ?? 0;
+      }
+    } catch { /* malformed JSON — skip */ }
+  }
+
+  // Codex emits a top-level usage object on certain events
+  const codexUsage = (event as CodexStreamEvent).usage;
+  if (codexUsage) {
+    inputTokens = (codexUsage.input_tokens ?? 0) + (codexUsage.cached_input_tokens ?? 0);
+    outputTokens = codexUsage.output_tokens ?? 0;
+  }
+
+  if (inputTokens > 0 || outputTokens > 0) {
+    queries.accumulateAgentTokens(agentId, inputTokens, outputTokens);
+  }
 }
 
 function storeOutput(agentId: string, seq: number, eventType: string, content: string): void {
