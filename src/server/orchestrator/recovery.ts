@@ -251,4 +251,32 @@ export function runRecovery(): void {
   if (tmuxReattached > 0) console.log(`[recovery] reattached ${tmuxReattached} tmux agents`);
   if (tmuxRecovered > 0) console.log(`[recovery] recovered ${tmuxRecovered} completed tmux agents`);
   if (tmuxFailed > 0) console.log(`[recovery] failed ${tmuxFailed} dead tmux agents`);
+
+  // Gap detector: find running workflows whose current-phase job is done but no next phase was spawned.
+  // This happens when the server restarts between finish_job and onJobCompleted.
+  _recoverStuckWorkflows();
+}
+
+function _recoverStuckWorkflows(): void {
+  const runningWorkflows = queries.listWorkflows().filter(w => w.status === 'running');
+  for (const workflow of runningWorkflows) {
+    if (workflow.current_phase === 'idle') continue;
+    const jobs = queries.getJobsForWorkflow(workflow.id);
+    // Find the most recent job for the current phase+cycle
+    const phaseJob = jobs
+      .filter(j => j.workflow_phase === workflow.current_phase && j.workflow_cycle === workflow.current_cycle)
+      .sort((a, b) => b.created_at - a.created_at)[0];
+    if (!phaseJob || phaseJob.status !== 'done') continue;
+    // Check if the expected next-phase job already exists.
+    // Progression: assess→review(C1), review→implement(Cn), implement→review(Cn+1)
+    const cycle = workflow.current_cycle;
+    const hasNext = workflow.current_phase === 'implement'
+      ? jobs.some(j => j.workflow_phase === 'review' && j.workflow_cycle === cycle + 1)
+      : workflow.current_phase === 'review'
+        ? jobs.some(j => j.workflow_phase === 'implement' && j.workflow_cycle === cycle)
+        : jobs.some(j => j.workflow_phase === 'review' && j.workflow_cycle === 1);
+    if (hasNext) continue;
+    console.log(`[recovery] workflow ${workflow.id} stuck — ${workflow.current_phase} C${workflow.current_cycle} done but no next phase; re-firing onJobCompleted`);
+    try { workflowOnJobCompleted(phaseJob); } catch (err) { console.error(`[recovery] stuck workflow re-fire error:`, err); }
+  }
 }

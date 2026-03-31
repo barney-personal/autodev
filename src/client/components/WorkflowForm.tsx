@@ -150,7 +150,7 @@ export function WorkflowForm({ onSubmit, onClose }: WorkflowFormProps) {
                 checked={useWorktree}
                 onChange={e => setUseWorktree(e.target.checked)}
               />
-              Use git worktree (recommended — isolates each phase in its own branch)
+              Use git worktree (recommended — all phases share one branch, changes accumulate linearly)
             </label>
           </div>
 
