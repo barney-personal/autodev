@@ -3,6 +3,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
+import { estimateCostUsd } from './CostEstimator.js';
+import { getFileLockRegistry } from './FileLockRegistry.js';
+import type { StopMode } from '../../shared/types.js';
 
 const PTY_LOG_DIR = path.join(process.cwd(), 'data', 'agent-logs');
 
@@ -10,6 +13,7 @@ const TICK_INTERVAL_MS = 30_000;
 const STALL_THRESHOLD_MS = 10 * 60 * 1000;  // 10 minutes
 const LONG_RUNNING_THRESHOLD_MS = 60 * 60 * 1000;  // 60 minutes
 const TURN_WARNING_RATIO = 0.8;  // warn at 80% of max_turns
+const LIMIT_WARNING_RATIO = 0.8;  // warn at 80% of budget/time limit
 
 let _timer: NodeJS.Timeout | null = null;
 
@@ -89,7 +93,83 @@ function tick(): void {
         emitWarning(agent.id, 'long_running', `Running for ${mins} minutes`);
       }
     }
+
+    // ── Budget enforcement (stop_mode === 'budget') ──────────────────────
+    const stopMode: StopMode = (job as any).stop_mode ?? 'turns';
+    const stopValue: number | null = (job as any).stop_value ?? null;
+
+    if (stopMode === 'budget' && stopValue != null) {
+      const inputTokens = agent.estimated_input_tokens ?? 0;
+      const outputTokens = agent.estimated_output_tokens ?? 0;
+      const model: string | null = (job as any).model ?? null;
+      const estimated = estimateCostUsd(model, inputTokens, outputTokens);
+      const ratio = estimated / stopValue;
+
+      if (ratio >= 1.0) {
+        console.log(`[health] agent ${agent.id.slice(0, 6)} hit budget limit ($${estimated.toFixed(2)} >= $${stopValue.toFixed(2)}) — stopping gracefully`);
+        killAgentGracefully(agent.id, `Budget limit reached ($${estimated.toFixed(2)}/$${stopValue.toFixed(2)})`);
+      } else if (ratio >= LIMIT_WARNING_RATIO && !queries.hasUndismissedWarning(agent.id, 'budget_warning')) {
+        emitWarning(agent.id, 'budget_warning', `Estimated cost $${estimated.toFixed(2)} (${Math.round(ratio * 100)}% of $${stopValue.toFixed(2)} limit)`);
+      }
+    }
+
+    // ── Time enforcement (stop_mode === 'time') ──────────────────────────
+    if (stopMode === 'time' && stopValue != null && agent.started_at) {
+      const limitMs = stopValue * 60 * 1000; // stopValue is in minutes
+      const elapsed = now - agent.started_at;
+      const ratio = elapsed / limitMs;
+
+      if (ratio >= 1.0) {
+        const mins = Math.round(elapsed / 60_000);
+        console.log(`[health] agent ${agent.id.slice(0, 6)} hit time limit (${mins}min >= ${stopValue}min) — stopping gracefully`);
+        killAgentGracefully(agent.id, `Time limit reached (${mins}/${stopValue} minutes)`);
+      } else if (ratio >= LIMIT_WARNING_RATIO && !queries.hasUndismissedWarning(agent.id, 'time_warning')) {
+        const mins = Math.round(elapsed / 60_000);
+        emitWarning(agent.id, 'time_warning', `Running ${mins} minutes (${Math.round(ratio * 100)}% of ${stopValue}min limit)`);
+      }
+    }
   }
+}
+
+/**
+ * Gracefully stop an agent that has hit a budget or time limit.
+ * Marks as done (not failed) — the limit was expected, not an error.
+ */
+function killAgentGracefully(agentId: string, reason: string): void {
+  const agent = queries.getAgentById(agentId);
+  if (!agent) return;
+
+  // Kill the process
+  if (agent.pid != null) {
+    try {
+      process.kill(-agent.pid, 'SIGTERM');
+    } catch { /* already gone */ }
+  }
+
+  // Mark agent as done with a status message explaining the stop
+  queries.updateAgent(agentId, {
+    status: 'done',
+    status_message: reason,
+    finished_at: Date.now(),
+  });
+
+  // Mark job as done (limit reached is a successful stop, not a failure)
+  queries.updateJobStatus(agent.job_id, 'done');
+
+  // Release all file locks held by this agent
+  getFileLockRegistry().releaseAll(agentId);
+
+  // Emit updates
+  const agentWithJob = queries.getAgentWithJob(agentId);
+  if (agentWithJob) {
+    try { socket.emitAgentUpdate(agentWithJob); } catch { /* ignore */ }
+  }
+  const updatedJob = queries.getJobById(agent.job_id);
+  if (updatedJob) {
+    try { socket.emitJobUpdate(updatedJob); } catch { /* ignore */ }
+  }
+
+  console.log(`[health] agent ${agentId.slice(0, 6)} stopped: ${reason}`);
 }
 
 function emitWarning(agentId: string, type: string, message: string): void {
