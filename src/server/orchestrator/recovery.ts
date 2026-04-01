@@ -10,6 +10,7 @@ import { orphanedWaits } from '../mcp/McpServer.js';
 import type { ClaudeStreamEvent } from '../../shared/types.js';
 import { isCodexModel, isAutoExitJob } from '../../shared/types.js';
 import { handleRetry } from './RetryManager.js';
+import { claimRecovery } from './RecoveryLedger.js';
 
 function isPidAlive(pid: number): boolean {
   try {
@@ -186,6 +187,7 @@ export function runRecovery(): void {
               try {
                 const jobIds: string[] = JSON.parse(pendingWaitIds);
                 if (Array.isArray(jobIds) && jobIds.length > 0) {
+                  if (!claimRecovery(job, 'recovery-orphaned-wait-registration')) continue;
                   orphanedWaits.set(agent.id, {
                     job_ids: jobIds,
                     disconnected_at: Date.now() - 61_000, // bypass the 60s grace period

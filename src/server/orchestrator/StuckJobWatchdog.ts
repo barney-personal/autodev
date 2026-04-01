@@ -30,7 +30,8 @@ import { isTmuxSessionAlive, startInteractiveAgent, saveSnapshot } from './PtyMa
 import { handleRetry } from './RetryManager.js';
 import { orphanedWaits, disconnectedAgents, hasActiveTransport } from '../mcp/McpServer.js';
 import { isCodexModel, isAutoExitJob } from '../../shared/types.js';
-import { markModelRateLimited, getFallbackModel } from './ModelClassifier.js';
+import { markModelRateLimited, getFallbackModel, getModelProvider, markProviderRateLimited } from './ModelClassifier.js';
+import { claimRecovery } from './RecoveryLedger.js';
 
 const WATCHDOG_INTERVAL_MS = 30_000;
 
@@ -171,6 +172,7 @@ function check(): void {
           const waitedJobs = waitedIds.map(id => queries.getJobById(id));
           const allDone = waitedJobs.every(j => j && j.status === 'done');
           if (allDone && job && !TERMINAL.includes(job.status)) {
+            if (!claimRecovery(job, 'watchdog-wait-for-jobs-auto-resume')) continue;
             console.log(`[watchdog] agent ${agent.id} died in wait_for_jobs with all deps done — auto-resuming job ${job.id}`);
             queries.updateAgent(agent.id, {
               status: 'failed',
@@ -313,6 +315,7 @@ function check(): void {
     const stuckMs = Date.now() - orphan.disconnected_at;
     console.warn(`[watchdog] agent ${agentId} stuck after MCP disconnect (${stuckMs}ms), all sub-jobs terminal — restarting job ${job.id}`);
     orphanedWaits.delete(agentId);
+    if (!claimRecovery(job, 'watchdog-orphaned-wait-restart')) continue;
 
     // Capture a snapshot before killing the stuck tmux session
     if (isTmuxSessionAlive(agentId)) {
@@ -389,6 +392,7 @@ function check(): void {
     const stuckMs = Date.now() - disconnectedAt;
     console.warn(`[watchdog] agent ${agentId} MCP-disconnected ${Math.round(stuckMs / 1000)}s without reconnecting — killing and restarting job ${job.id}`);
     disconnectedAgents.delete(agentId);
+    if (!claimRecovery(job, 'watchdog-mcp-disconnect-restart')) continue;
 
     // Kill the session/process
     if (isTmuxSessionAlive(agentId)) {
@@ -525,6 +529,7 @@ function check(): void {
       if (!currentModel) continue;
 
       markModelRateLimited(currentModel, 5 * 60 * 1000);
+      markProviderRateLimited(getModelProvider(currentModel), 5 * 60 * 1000);
       const fallbackModel = getFallbackModel(currentModel);
 
       if (fallbackModel === currentModel) {

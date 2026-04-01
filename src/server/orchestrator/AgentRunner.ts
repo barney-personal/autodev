@@ -11,6 +11,7 @@ import { onJobCompleted as workflowOnJobCompleted } from './WorkflowManager.js';
 import { runCompletionChecks } from './CompletionChecks.js';
 import { handleRetry } from './RetryManager.js';
 import { triageLearnings } from './MemoryTriager.js';
+import { claimRecovery, clearRecoveryState } from './RecoveryLedger.js';
 import type { Job, ClaudeStreamEvent, CodexStreamEvent } from '../../shared/types.js';
 import { isCodexModel, codexModelName, effectiveMaxTurns } from '../../shared/types.js';
 import { buildEyePrompt, isEyeJob } from './EyeConfig.js';
@@ -515,6 +516,7 @@ export async function handleJobCompletion(
   }
 
   queries.updateJobStatus(job.id, finalStatus);
+  if (finalStatus === 'done') clearRecoveryState(job);
   getFileLockRegistry().releaseAll(agentId);
 
   // Triage any learnings the agent reported
@@ -651,6 +653,7 @@ function handleAgentExit(agentId: string, job: Job, exitCode: number | null): vo
       const waitedJobs = waitedIds.map(id => queries.getJobById(id));
       const stillPending = waitedJobs.filter(j => j && !TERMINAL_S.includes(j.status));
       if (stillPending.length > 0) {
+        if (!claimRecovery(job, 'premature-done-auto-resume')) return;
         console.log(`[agent ${agentId}] marked done but ${stillPending.length} sub-jobs still pending: [${stillPending.map(j => j!.id).join(', ')}] — auto-resuming`);
         const agentRec2 = queries.getAgentById(agentId);
         const sessionId = agentRec2?.session_id ?? null;
@@ -688,6 +691,7 @@ function handleAgentExit(agentId: string, job: Job, exitCode: number | null): vo
       const waitedJobs = waitedIds.map(id => queries.getJobById(id));
       const allDone = waitedJobs.every(j => j && j.status === 'done');
       if (allDone) {
+        if (!claimRecovery(job, 'wait-for-jobs-auto-resume')) return;
         console.log(`[agent ${agentId}] died in wait_for_jobs with all deps done — auto-resuming job ${job.id}`);
         const agentRec2 = queries.getAgentById(agentId);
         const sessionId = agentRec2?.session_id ?? null;

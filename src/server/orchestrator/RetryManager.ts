@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
 import type { Job } from '../../shared/types.js';
+import { claimRecovery } from './RecoveryLedger.js';
 
 /**
  * Handles retry logic for a failed job.
@@ -11,6 +12,9 @@ export function handleRetry(job: Job, agentId: string): boolean {
   if (job.retry_policy === 'none') return false;
   if (job.retry_count >= job.max_retries) {
     console.log(`[retry] job ${job.id} exhausted all ${job.max_retries} retries`);
+    return false;
+  }
+  if (!claimRecovery(job, 'retry-policy', { maxAttempts: job.max_retries + 1, lockMs: 60_000 })) {
     return false;
   }
 

@@ -137,7 +137,7 @@ router.post('/:id/retry', (req, res) => {
     description: originalJob.description,
     context: originalJob.context ?? null,
     priority: original.job.priority,
-    status: 'running',
+    status: 'queued',
     work_dir: originalJob.work_dir ?? null,
     max_turns: originalJob.max_turns ?? 50,
     model: original.job.model,
@@ -146,19 +146,7 @@ router.post('/:id/retry', (req, res) => {
     project_id: originalJob.project_id ?? null,
   });
   socket.emitJobNew(retryJob);
-
-  const agentId = randomUUID();
-  queries.insertAgent({ id: agentId, job_id: retryJob.id, status: 'starting' });
-  const newAgent = queries.getAgentWithJob(agentId)!;
-  socket.emitAgentNew(newAgent);
-
-  if (interactive) {
-    startInteractiveAgent({ agentId, job: retryJob });
-  } else {
-    runAgent({ agentId, job: retryJob });
-  }
-
-  res.status(201).json(queries.getAgentWithJob(agentId));
+  res.status(201).json({ job: retryJob, queued: true });
 });
 
 router.post('/:id/continue', (req, res) => {
@@ -177,7 +165,7 @@ router.post('/:id/continue', (req, res) => {
     description: message.trim(),
     context: originalJob.context ?? null,
     priority: original.job.priority,
-    status: 'running',
+    status: 'queued',
     work_dir: originalJob.work_dir ?? null,
     max_turns: originalJob.max_turns ?? 50,
     model: original.job.model,
@@ -185,20 +173,11 @@ router.post('/:id/continue', (req, res) => {
     is_interactive: interactive ? 1 : 0,
     project_id: originalJob.project_id ?? null,
   });
-  socket.emitJobNew(contJob);
-
-  const agentId = randomUUID();
-  queries.insertAgent({ id: agentId, job_id: contJob.id, status: 'starting', parent_agent_id: req.params.id });
-  const newAgent = queries.getAgentWithJob(agentId)!;
-  socket.emitAgentNew(newAgent);
-
-  if (interactive) {
-    startInteractiveAgent({ agentId, job: contJob, ...(agent.session_id ? { resumeSessionId: agent.session_id } : {}) });
-  } else {
-    runAgent({ agentId, job: contJob, ...(agent.session_id ? { resumeSessionId: agent.session_id } : {}) });
+  if (agent.session_id) {
+    queries.upsertNote(`job-resume:${contJob.id}`, agent.session_id, null);
   }
-
-  res.status(201).json(queries.getAgentWithJob(agentId));
+  socket.emitJobNew(contJob);
+  res.status(201).json({ job: contJob, queued: true, resumes_session: !!agent.session_id });
 });
 
 router.post('/:id/cancel', (req, res) => {

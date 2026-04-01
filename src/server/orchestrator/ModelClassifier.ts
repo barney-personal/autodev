@@ -1,6 +1,7 @@
 import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
 import type { Job } from '../../shared/types.js';
+import { isCodexModel } from '../../shared/types.js';
 
 // The model used to do the classification itself — always Haiku, cheap and fast
 const CLASSIFIER_MODEL = 'claude-haiku-4-5-20251001';
@@ -27,6 +28,51 @@ const DEFAULT_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
 
 const _rateLimitCooldowns = new Map<string, number>();
 
+export type ModelProvider = 'anthropic' | 'openai' | 'unknown';
+
+function providerCooldownKey(provider: ModelProvider): string {
+  return `ratelimit:provider:${provider}`;
+}
+
+export function getModelProvider(model: string | null): ModelProvider {
+  if (!model) return 'unknown';
+  if (isCodexModel(model)) return 'openai';
+  if (model.startsWith('claude-')) return 'anthropic';
+  return 'unknown';
+}
+
+export function markProviderRateLimited(provider: ModelProvider, cooldownMs = DEFAULT_COOLDOWN_MS): void {
+  if (provider === 'unknown') return;
+  const expiry = Date.now() + cooldownMs;
+  _rateLimitCooldowns.set(providerCooldownKey(provider), expiry);
+  queries.upsertNote(providerCooldownKey(provider), String(expiry), null);
+  console.log(`[classifier] marked provider ${provider} as rate-limited for ${Math.round(cooldownMs / 1000)}s (until ${new Date(expiry).toISOString()})`);
+}
+
+export function clearProviderRateLimit(provider: ModelProvider): void {
+  _rateLimitCooldowns.delete(providerCooldownKey(provider));
+  try { queries.upsertNote(providerCooldownKey(provider), '0', null); } catch { /* ignore */ }
+}
+
+export function isProviderRateLimited(provider: ModelProvider): boolean {
+  if (provider === 'unknown') return false;
+  const key = providerCooldownKey(provider);
+  const memExpiry = _rateLimitCooldowns.get(key);
+  if (memExpiry) {
+    if (Date.now() < memExpiry) return true;
+    _rateLimitCooldowns.delete(key);
+  }
+  const note = queries.getNote(key);
+  if (note) {
+    const exp = parseInt(note.value, 10);
+    if (!isNaN(exp) && Date.now() < exp) {
+      _rateLimitCooldowns.set(key, exp);
+      return true;
+    }
+  }
+  return false;
+}
+
 export function markModelRateLimited(model: string, cooldownMs = DEFAULT_COOLDOWN_MS): void {
   const expiry = Date.now() + cooldownMs;
   _rateLimitCooldowns.set(model, expiry);
@@ -40,6 +86,7 @@ export function clearModelRateLimit(model: string): void {
 }
 
 export function isModelRateLimited(model: string): boolean {
+  if (isProviderRateLimited(getModelProvider(model))) return true;
   const memExpiry = _rateLimitCooldowns.get(model);
   if (memExpiry) {
     if (Date.now() < memExpiry) return true;
@@ -59,21 +106,28 @@ export function isModelRateLimited(model: string): boolean {
 /**
  * Given a preferred model, return the best available model that isn't
  * currently rate-limited. Falls through MODEL_FALLBACK_CHAIN in order.
- * If the preferred model isn't in the chain, returns it as-is.
+ * If no model is available, returns null.
  */
-export function getFallbackModel(preferredModel: string): string {
+export function getAvailableModel(preferredModel: string): string | null {
   if (!isModelRateLimited(preferredModel)) return preferredModel;
   const idx = MODEL_FALLBACK_CHAIN.indexOf(preferredModel);
-  if (idx < 0) return preferredModel;
+  if (idx < 0) return null;
   for (let i = idx + 1; i < MODEL_FALLBACK_CHAIN.length; i++) {
     if (!isModelRateLimited(MODEL_FALLBACK_CHAIN[i])) {
       console.log(`[classifier] ${preferredModel} rate-limited → falling back to ${MODEL_FALLBACK_CHAIN[i]}`);
       return MODEL_FALLBACK_CHAIN[i];
     }
   }
-  const last = MODEL_FALLBACK_CHAIN[MODEL_FALLBACK_CHAIN.length - 1];
-  console.log(`[classifier] all models rate-limited → using ${last} (lowest tier)`);
-  return last;
+  console.log(`[classifier] no available fallback model for ${preferredModel}`);
+  return null;
+}
+
+/**
+ * Legacy convenience wrapper: prefers a real available model, otherwise returns
+ * the originally requested model so existing callers remain total functions.
+ */
+export function getFallbackModel(preferredModel: string): string {
+  return getAvailableModel(preferredModel) ?? preferredModel;
 }
 
 export function getRateLimitStatus(): Array<{ model: string; rateLimited: boolean; expiresAt: number | null }> {
@@ -83,7 +137,15 @@ export function getRateLimitStatus(): Array<{ model: string; rateLimited: boolea
       const note = queries.getNote(`ratelimit:${model}`);
       return note ? parseInt(note.value, 10) : 0;
     })();
-    const expiry = Math.max(memExpiry ?? 0, noteExpiry);
+    const provider = getModelProvider(model);
+    const providerExpiry = (() => {
+      if (provider === 'unknown') return 0;
+      const note = queries.getNote(providerCooldownKey(provider));
+      const persisted = note ? parseInt(note.value, 10) : 0;
+      const inMem = _rateLimitCooldowns.get(providerCooldownKey(provider)) ?? 0;
+      return Math.max(inMem, persisted);
+    })();
+    const expiry = Math.max(memExpiry ?? 0, noteExpiry, providerExpiry);
     const limited = expiry > Date.now();
     return { model, rateLimited: limited, expiresAt: limited ? expiry : null };
   });
@@ -99,10 +161,11 @@ export function getRateLimitStatus(): Array<{ model: string; rateLimited: boolea
  *
  * Returns the model string that should be passed to the agent.
  */
-export async function resolveModel(job: Job): Promise<string> {
+export async function resolveModel(job: Job): Promise<string | null> {
   // Explicit model chosen by user — respect it, but check rate limits
   if (job.model !== null) {
-    const effective = getFallbackModel(job.model);
+    const effective = getAvailableModel(job.model);
+    if (effective == null) return null;
     if (effective !== job.model) {
       queries.updateJobModel(job.id, effective);
       socket.emitJobUpdate(queries.getJobById(job.id)!);
@@ -112,7 +175,8 @@ export async function resolveModel(job: Job): Promise<string> {
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
-    const fallback = getFallbackModel('claude-sonnet-4-6[1m]');
+    const fallback = getAvailableModel('claude-sonnet-4-6[1m]');
+    if (fallback == null) return null;
     console.warn(`[classifier] ANTHROPIC_API_KEY not set — defaulting to ${fallback}`);
     queries.updateJobModel(job.id, fallback);
     socket.emitJobUpdate(queries.getJobById(job.id)!);
@@ -141,6 +205,10 @@ export async function resolveModel(job: Job): Promise<string> {
     clearTimeout(timeout);
 
     if (!response.ok) {
+      if (response.status === 429 || response.status === 529) {
+        markProviderRateLimited('anthropic');
+        markModelRateLimited(CLASSIFIER_MODEL);
+      }
       throw new Error(`Anthropic API ${response.status}: ${await response.text()}`);
     }
 
@@ -148,7 +216,8 @@ export async function resolveModel(job: Job): Promise<string> {
     const word = (data.content?.[0]?.text ?? '').trim().toLowerCase();
     const complexity = (['simple', 'medium', 'complex'] as const).find(c => word.includes(c)) ?? 'medium';
     const classified = COMPLEXITY_TO_MODEL[complexity];
-    const model = getFallbackModel(classified);
+    const model = getAvailableModel(classified);
+    if (model == null) return null;
 
     console.log(`[classifier] "${job.title}" → ${complexity} → ${classified}${model !== classified ? ` → ${model} (fallback)` : ''}`);
 
@@ -157,12 +226,17 @@ export async function resolveModel(job: Job): Promise<string> {
 
     return model;
   } catch (err) {
-    const fallback = getFallbackModel('claude-sonnet-4-6[1m]');
+    const fallback = getAvailableModel('claude-sonnet-4-6[1m]');
+    if (fallback == null) return null;
     console.error(`[classifier] failed, falling back to ${fallback}:`, err);
     queries.updateJobModel(job.id, fallback);
     socket.emitJobUpdate(queries.getJobById(job.id)!);
     return fallback;
   }
+}
+
+export function _resetForTest(): void {
+  _rateLimitCooldowns.clear();
 }
 
 function buildClassifierPrompt(job: Job): string {

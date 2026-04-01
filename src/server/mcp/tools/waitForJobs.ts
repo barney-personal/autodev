@@ -9,11 +9,11 @@ export const waitForJobsSchema = z.object({
 });
 
 const TERMINAL: JobStatus[] = ['done', 'failed', 'cancelled'];
-const POLL_MS = 2000;
 // rmcp (Codex CLI's Rust MCP client) has a hardcoded 120s timeout for all tool
 // calls. Cap each wait_for_jobs call to 90s so we always return before that
 // limit fires. Codex agents are expected to retry for still-pending jobs.
 const MAX_SINGLE_WAIT_MS = 90_000;
+const POLL_SEQUENCE_MS = [2000, 3000, 5000, 8000, 13000, 15000] as const;
 
 /**
  * In-memory registry of active wait_for_jobs calls: agentId → job_ids[].
@@ -31,6 +31,11 @@ const activeWaitAborts = new Map<string, AbortController>();
  */
 export function abortAgentWait(agentId: string): void {
   activeWaitAborts.get(agentId)?.abort();
+}
+
+export function nextWaitPollMs(iteration: number): number {
+  const idx = Math.min(Math.max(iteration, 0), POLL_SEQUENCE_MS.length - 1);
+  return POLL_SEQUENCE_MS[idx];
 }
 
 export async function waitForJobsHandler(
@@ -68,6 +73,7 @@ export async function waitForJobsHandler(
 
   updateStatus(job_ids.length);
   let lastReportedPending = job_ids.length;
+  let iteration = 0;
 
   try {
     while (Date.now() < deadline && !abortCtrl.signal.aborted) {
@@ -112,7 +118,9 @@ export async function waitForJobsHandler(
         lastReportedPending = pending.length;
       }
 
-      await new Promise(resolve => setTimeout(resolve, POLL_MS));
+      const waitMs = nextWaitPollMs(iteration++);
+      const jitterMs = Math.floor(Math.random() * 750);
+      await new Promise(resolve => setTimeout(resolve, waitMs + jitterMs));
     }
 
     // Aborted (MCP connection closed) — exit silently; McpServer will track for recovery
