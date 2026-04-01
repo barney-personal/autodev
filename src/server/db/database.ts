@@ -463,6 +463,11 @@ export function initDb(dbPath: string): DatabaseSync {
     db.exec('ALTER TABLE workflows ADD COLUMN pr_url TEXT');
   }
 
+  // ── jobs.pr_url migration ──────────────────────────────────────────────────
+  if (!jobCols.includes('pr_url')) {
+    db.exec('ALTER TABLE jobs ADD COLUMN pr_url TEXT');
+  }
+
   // ── Performance indexes ────────────────────────────────────────────────────
   db.exec('CREATE INDEX IF NOT EXISTS idx_agents_job_id ON agents(job_id)');
   db.exec("CREATE INDEX IF NOT EXISTS idx_jobs_context_eye ON jobs(status) WHERE json_extract(context, '$.eye') = 1");

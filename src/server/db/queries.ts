@@ -263,6 +263,11 @@ export function updateJobTitle(id: string, title: string): void {
   db.prepare('UPDATE jobs SET title = ?, updated_at = ? WHERE id = ?').run(title, Date.now(), id);
 }
 
+export function updateJobPrUrl(id: string, prUrl: string): void {
+  const db = getDb();
+  db.prepare('UPDATE jobs SET pr_url = ?, updated_at = ? WHERE id = ?').run(prUrl, Date.now(), id);
+}
+
 export function updateJobFlagged(id: string, flagged: number): void {
   const db = getDb();
   db.prepare('UPDATE jobs SET flagged = ?, updated_at = ? WHERE id = ?').run(flagged, Date.now(), id);

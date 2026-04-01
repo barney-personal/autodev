@@ -12,6 +12,7 @@ import { runCompletionChecks } from './CompletionChecks.js';
 import { handleRetry } from './RetryManager.js';
 import { triageLearnings } from './MemoryTriager.js';
 import { claimRecovery, clearRecoveryState } from './RecoveryLedger.js';
+import { createPrForJob, pushBranchForFailedJob } from './PrCreator.js';
 import type { Job, ClaudeStreamEvent, CodexStreamEvent } from '../../shared/types.js';
 import { isCodexModel, codexModelName, effectiveMaxTurns } from '../../shared/types.js';
 import { buildEyePrompt, isEyeJob } from './EyeConfig.js';
@@ -535,6 +536,27 @@ export async function handleJobCompletion(
     // If this job is part of a debate, check if the round is complete
     try { debateOnJobCompleted(updatedJob); } catch (err) { console.error(`[agent ${agentId}] debateOnJobCompleted error:`, err); Sentry.captureException(err); }
     try { workflowOnJobCompleted(updatedJob); } catch (err) { console.error(`[agent ${agentId}] workflowOnJobCompleted error:`, err); Sentry.captureException(err); }
+    // Create PR for worktree jobs that completed with commits (async, non-blocking).
+    // Skip workflow jobs — those are handled by WorkflowManager.finalizeWorkflow.
+    if (updatedJob.use_worktree === 1 && !updatedJob.workflow_id) {
+      if (updatedJob.status === 'done') {
+        createPrForJob(updatedJob).then(prUrl => {
+          if (prUrl) {
+            queries.updateJobPrUrl(updatedJob.id, prUrl);
+            const refreshed = queries.getJobById(updatedJob.id);
+            if (refreshed) socket.emitJobUpdate(refreshed);
+          }
+        }).catch(err => {
+          console.error(`[agent ${agentId}] PR creation error:`, err);
+          Sentry.captureException(err);
+        });
+      } else if (updatedJob.status === 'failed') {
+        // Push branch for failed jobs to preserve work (sync, best-effort)
+        try { pushBranchForFailedJob(updatedJob); } catch (err) {
+          console.error(`[agent ${agentId}] failed-job branch push error:`, err);
+        }
+      }
+    }
     // If the job has a repeat interval, queue the next run regardless of success/failure
     if (updatedJob.repeat_interval_ms) {
       try {

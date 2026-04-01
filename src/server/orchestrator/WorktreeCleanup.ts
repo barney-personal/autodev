@@ -31,6 +31,11 @@ function tick(): void {
     if (job.status !== 'done' && job.status !== 'failed' && job.status !== 'cancelled') continue;
     // Don't clean up if another active job is using this path as its work_dir
     if (queries.isWorkDirInUse(wt.path)) continue;
+    // Don't clean up worktree jobs that are awaiting PR creation (done + use_worktree + no pr_url yet).
+    // Give PR creation up to 5 minutes before allowing cleanup to proceed.
+    const PR_CREATION_GRACE_MS = 5 * 60 * 1000;
+    if (job.use_worktree === 1 && job.status === 'done' && !job.pr_url && !job.workflow_id
+        && (Date.now() - job.updated_at) < PR_CREATION_GRACE_MS) continue;
 
     try {
       removeWorktree(wt.path, wt.branch);

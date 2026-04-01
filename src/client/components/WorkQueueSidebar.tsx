@@ -416,6 +416,16 @@ export function WorkQueueSidebar({
         <RetryBadge job={job} />
         <RepeatBadge job={job} />
         <ProjectTag job={job} />
+        {job.pr_url && (
+          <a
+            href={job.pr_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="sidebar-pr-link"
+            title="View PR"
+            onClick={e => e.stopPropagation()}
+          >PR</a>
+        )}
         {sectionKey === 'queued' && onCancelJob && (
           <button
             className="sidebar-job-cancel"

@@ -50,6 +50,7 @@ export interface Job {
   workflow_id: string | null;           // FK → workflows.id
   workflow_cycle: number | null;        // which cycle this job belongs to (0-based)
   workflow_phase: WorkflowPhase | null; // 'assess' | 'review' | 'implement'
+  pr_url: string | null;          // GitHub PR URL, auto-created for worktree jobs on completion
   archived_at: number | null;
   created_at: number;
   updated_at: number;
