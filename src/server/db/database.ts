@@ -481,12 +481,44 @@ export function initDb(dbPath: string): DatabaseSync {
   db.exec('CREATE INDEX IF NOT EXISTS idx_agents_job_id ON agents(job_id)');
   db.exec("CREATE INDEX IF NOT EXISTS idx_jobs_context_eye ON jobs(status) WHERE json_extract(context, '$.eye') = 1");
 
+  // ── Database integrity check ──────────────────────────────────────────────
+  // Run a quick integrity check on startup to detect corruption early.
+  // PRAGMA quick_check is fast (doesn't scan all data pages like integrity_check).
+  try {
+    const result = db.prepare('PRAGMA quick_check(1)').get() as any;
+    if (result && result.quick_check !== 'ok') {
+      console.error(`[db] INTEGRITY WARNING: quick_check returned "${result.quick_check}"`);
+    }
+  } catch (err) {
+    console.error('[db] integrity check failed:', err);
+  }
+
+  // Clean up orphaned records: jobs stuck in 'assigned' status from a previous crash
+  // (the agent dispatch was interrupted before it could run or fail).
+  try {
+    const stuck = db.prepare(
+      "SELECT id FROM jobs WHERE status = 'assigned' AND updated_at < ?"
+    ).all(Date.now() - 60_000) as Array<{ id: string }>;
+    if (stuck.length > 0) {
+      for (const row of stuck) {
+        db.prepare("UPDATE jobs SET status = 'queued', updated_at = ? WHERE id = ?").run(Date.now(), row.id);
+      }
+      console.log(`[db] reset ${stuck.length} stale assigned job(s) back to queued`);
+    }
+  } catch (err) {
+    console.error('[db] stale job cleanup error:', err);
+  }
+
   _db = db;
   return db;
 }
 
 export function closeDb(): void {
   if (_db) {
+    // Run a final WAL checkpoint before closing to minimize WAL file size
+    try {
+      _db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    } catch { /* ignore — may fail on :memory: DBs */ }
     _db.close();
     _db = null;
   }
