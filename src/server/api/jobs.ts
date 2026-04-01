@@ -159,19 +159,7 @@ router.post('/', (req, res) => {
   }
 });
 
-// Short-TTL cache — when CPU is contended, prevents duplicate heavy work
-const jobsCache = new Map<string, { data: any; expires: number }>();
-const JOBS_CACHE_TTL = 1500; // 1.5s
-
 router.get('/', (req, res) => {
-  const now = Date.now();
-  const cacheKey = req.originalUrl;
-  const cached = jobsCache.get(cacheKey);
-  if (cached && now < cached.expires) {
-    res.json(cached.data);
-    return;
-  }
-
   let data: any;
   if (req.query.archived === '1' || req.query.archived === 'true') {
     const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
@@ -183,14 +171,6 @@ router.get('/', (req, res) => {
   } else {
     const status = req.query.status as string | undefined;
     data = queries.listJobsSlim(status as any);
-  }
-
-  jobsCache.set(cacheKey, { data, expires: now + JOBS_CACHE_TTL });
-  // Evict stale entries to prevent unbounded growth
-  if (jobsCache.size > 20) {
-    for (const [k, v] of jobsCache) {
-      if (now >= v.expires) jobsCache.delete(k);
-    }
   }
   res.json(data);
 });
