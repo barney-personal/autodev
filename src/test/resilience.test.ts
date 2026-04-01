@@ -625,3 +625,85 @@ describe('Double-dispatch prevention', () => {
     expect(next2).toBeNull();
   });
 });
+
+describe('Queue metrics', () => {
+  it('getQueueMetrics returns initial state', async () => {
+    const { getQueueMetrics } = await import('../server/orchestrator/WorkQueueManager.js');
+    const metrics = getQueueMetrics();
+    expect(typeof metrics.running).toBe('boolean');
+    expect(typeof metrics.maxConcurrent).toBe('number');
+    expect(typeof metrics.totalDispatched).toBe('number');
+    expect(typeof metrics.totalDispatchFailed).toBe('number');
+    expect(metrics.classifying).toBe(0);
+  });
+});
+
+describe('Health endpoint enrichment', () => {
+  beforeEach(async () => {
+    await setupTestDb();
+  });
+
+  afterEach(async () => {
+    await cleanupTestDb();
+  });
+
+  it('recovery notes can be read and parsed', async () => {
+    const queries = await import('../server/db/queries.js');
+
+    // Write a recovery state note
+    const state = {
+      attempts: 1,
+      window_started_at: Date.now(),
+      lock_until: Date.now() + 60000,
+      last_claim_at: Date.now(),
+      last_reason: 'test',
+    };
+    queries.upsertNote('recovery:test-family', JSON.stringify(state), null);
+
+    const notes = queries.listNotes('recovery:');
+    expect(notes.length).toBe(1);
+
+    const full = queries.getNote('recovery:test-family');
+    expect(full).toBeDefined();
+    const parsed = JSON.parse(full!.value);
+    expect(parsed.attempts).toBe(1);
+    expect(parsed.lock_until).toBeGreaterThan(Date.now() - 1000);
+  });
+
+  it('workflow status counts are accurate', async () => {
+    const queries = await import('../server/db/queries.js');
+    const now = Date.now();
+
+    queries.insertProject({ id: 'health-proj', name: 'test', description: 'test', created_at: now, updated_at: now });
+
+    queries.insertWorkflow({
+      id: 'health-wf-1', title: 'Running', task: 't', work_dir: null,
+      implementer_model: 'm', reviewer_model: 'm', max_cycles: 1,
+      current_cycle: 1, current_phase: 'implement', status: 'running',
+      milestones_total: 0, milestones_done: 0, project_id: 'health-proj',
+      max_turns_assess: 50, max_turns_review: 30, max_turns_implement: 100,
+      stop_mode_assess: 'turns', stop_value_assess: 50,
+      stop_mode_review: 'turns', stop_value_review: 30,
+      stop_mode_implement: 'turns', stop_value_implement: 100,
+      template_id: null, use_worktree: 0, created_at: now, updated_at: now,
+    } as any);
+
+    queries.insertWorkflow({
+      id: 'health-wf-2', title: 'Blocked', task: 't', work_dir: null,
+      implementer_model: 'm', reviewer_model: 'm', max_cycles: 1,
+      current_cycle: 1, current_phase: 'review', status: 'blocked',
+      milestones_total: 0, milestones_done: 0, project_id: 'health-proj',
+      max_turns_assess: 50, max_turns_review: 30, max_turns_implement: 100,
+      stop_mode_assess: 'turns', stop_value_assess: 50,
+      stop_mode_review: 'turns', stop_value_review: 30,
+      stop_mode_implement: 'turns', stop_value_implement: 100,
+      template_id: null, use_worktree: 0, created_at: now, updated_at: now,
+    } as any);
+
+    const workflows = queries.listWorkflows();
+    const running = workflows.filter(w => w.status === 'running').length;
+    const blocked = workflows.filter(w => w.status === 'blocked').length;
+    expect(running).toBe(1);
+    expect(blocked).toBe(1);
+  });
+});

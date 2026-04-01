@@ -16,6 +16,7 @@ import { execFileSync } from 'child_process';
 import * as path from 'path';
 import { getDb } from '../db/database.js';
 import * as queries from '../db/queries.js';
+import { getQueueMetrics } from '../orchestrator/WorkQueueManager.js';
 
 const router = Router();
 
@@ -52,12 +53,61 @@ router.get('/', (_req, res) => {
     checks.agents = { status: 'error', error: err.message };
   }
 
-  // Active file locks
+  // Active file locks with contention metrics
   try {
     const locks = queries.getAllActiveLocks();
-    checks.locks = { active: locks.length };
+    // Count unique files and agents involved in locking
+    const uniqueFiles = new Set(locks.map(l => l.file_path)).size;
+    const uniqueAgents = new Set(locks.map(l => l.agent_id)).size;
+    // Check for expired but unreleased locks (contention indicator)
+    const expired = queries.getExpiredUnreleasedLocks();
+    checks.locks = {
+      active: locks.length,
+      unique_files: uniqueFiles,
+      agents_holding: uniqueAgents,
+      expired_unreleased: expired.length,
+    };
+    if (expired.length > 10) {
+      if (status === 'ok') status = 'degraded';
+      checks.locks.warning = 'many expired unreleased locks';
+    }
   } catch (err: any) {
     checks.locks = { status: 'error', error: err.message };
+  }
+
+  // Recovery state: check for active recovery ledger entries
+  try {
+    const recoveryNotes = queries.listNotes('recovery:');
+    let activeRecoveries = 0;
+    for (const note of recoveryNotes) {
+      const full = queries.getNote(note.key);
+      if (full?.value) {
+        try {
+          const state = JSON.parse(full.value);
+          if (state.lock_until > Date.now()) activeRecoveries++;
+        } catch { /* malformed JSON */ }
+      }
+    }
+    checks.recovery = {
+      active_recoveries: activeRecoveries,
+      total_recovery_entries: recoveryNotes.length,
+    };
+  } catch (err: any) {
+    checks.recovery = { status: 'error', error: err.message };
+  }
+
+  // Workflows
+  try {
+    const workflows = queries.listWorkflows();
+    const running = workflows.filter(w => w.status === 'running').length;
+    const blocked = workflows.filter(w => w.status === 'blocked').length;
+    checks.workflows = { running, blocked, total: workflows.length };
+    if (blocked > 0) {
+      if (status === 'ok') status = 'degraded';
+      checks.workflows.warning = `${blocked} blocked workflow(s)`;
+    }
+  } catch (err: any) {
+    checks.workflows = { status: 'error', error: err.message };
   }
 
   // Disk space
@@ -93,6 +143,13 @@ router.get('/', (_req, res) => {
   if (rssMb > 1024) {
     if (status === 'ok') status = 'degraded';
     checks.memory.warning = 'high memory usage';
+  }
+
+  // Queue dispatch metrics
+  try {
+    checks.dispatch = getQueueMetrics();
+  } catch (err: any) {
+    checks.dispatch = { status: 'error', error: err.message };
   }
 
   // Uptime

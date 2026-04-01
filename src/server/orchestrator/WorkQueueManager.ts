@@ -23,6 +23,22 @@ let _timer: NodeJS.Timeout | null = null;
 // Tracks jobs currently being classified so the next tick doesn't re-pick them
 const _classifying = new Set<string>();
 
+// Queue metrics for health endpoint
+let _totalDispatched = 0;
+let _totalFailed = 0;
+let _lastDispatchAt = 0;
+
+export function getQueueMetrics() {
+  return {
+    running: _running,
+    maxConcurrent: _maxConcurrent,
+    classifying: _classifying.size,
+    totalDispatched: _totalDispatched,
+    totalDispatchFailed: _totalFailed,
+    lastDispatchAt: _lastDispatchAt || null,
+  };
+}
+
 export function startWorkQueue(): void {
   if (_running) return;
   _running = true;
@@ -117,6 +133,8 @@ async function tick(): Promise<void> {
     const isDebateStage = isAutoExitJob(dispatchJob as any);
     const autoFinish = !dispatchJob.is_interactive && !isDebateStage;
     const resumeSessionId = queries.getNote(`job-resume:${job.id}`)?.value ?? undefined;
+    _totalDispatched++;
+    _lastDispatchAt = Date.now();
     console.log(`[queue] dispatching "${job.title}" → agent ${agentId} (model: ${model}, interactive: ${!!readyJob.is_interactive}${readyJob.use_worktree ? ', worktree' : ''}${useCodexBatch ? ', codex-batch' : ''}${isDebateStage ? ', auto-exit' : ''})`);
     if (useCodexBatch) {
       runAgent({ agentId, job: dispatchJob, resumeSessionId });
@@ -125,6 +143,7 @@ async function tick(): Promise<void> {
     }
     if (resumeSessionId) queries.upsertNote(`job-resume:${job.id}`, '', null);
   } catch (err: any) {
+    _totalFailed++;
     console.error(`[queue] dispatch failed for job ${job.id}:`, err);
     Sentry.captureException(err);
     queries.updateJobStatus(job.id, 'failed');
