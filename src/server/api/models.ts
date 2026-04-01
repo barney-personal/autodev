@@ -3,6 +3,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import type { ModelOption } from '../../shared/models.js';
 import { CODEX_MODEL_OPTIONS_FALLBACK, CLAUDE_MODEL_OPTIONS } from '../../shared/models.js';
+import { getRateLimitStatus, markModelRateLimited, clearModelRateLimit } from '../orchestrator/ModelClassifier.js';
 
 const router = Router();
 
@@ -72,7 +73,27 @@ router.get('/', (_req, res) => {
     claude: CLAUDE_MODEL_OPTIONS,
     codex: cachedCodexModels,
     lastFetchedAt,
+    rateLimits: getRateLimitStatus(),
   });
+});
+
+router.get('/rate-limits', (_req, res) => {
+  res.json(getRateLimitStatus());
+});
+
+router.post('/rate-limits', (req, res) => {
+  const { model, cooldownMs } = req.body;
+  if (!model || typeof model !== 'string') {
+    res.status(400).json({ error: 'model is required' });
+    return;
+  }
+  markModelRateLimited(model, cooldownMs ?? 300_000);
+  res.json(getRateLimitStatus());
+});
+
+router.delete('/rate-limits/:model', (req, res) => {
+  clearModelRateLimit(decodeURIComponent(req.params.model));
+  res.json(getRateLimitStatus());
 });
 
 export default router;

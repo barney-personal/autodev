@@ -404,18 +404,33 @@ export function attachPty(agentId: string, job: Job, cols = 100, rows = 50): voi
       })(),
     });
   } catch (err: any) {
-    // For auto-exit jobs (workflow/debate phases), tailing is already running above —
-    // the job will complete naturally when Claude finishes and calls finish_job.
-    // PTY attachment is visual-only for these jobs, so log a warning and carry on.
+    // PTY viewer failed but the tmux session (and Claude process) may still be running.
+    // For auto-exit jobs, tailing is already set up above.
+    // For all jobs, set up a tmux poll to detect when the agent exits.
     if (isAutoExitJob(job as any)) {
       console.warn(`[pty ${agentId}] PTY attach failed (tailing continues):`, err.message);
-      return;
+    } else {
+      console.warn(`[pty ${agentId}] PTY attach failed (agent may still be running):`, err.message);
     }
-    console.error(`[pty ${agentId}] failed to spawn PTY:`, err.message);
-    queries.updateAgent(agentId, { status: 'failed', error_message: err.message, finished_at: Date.now() });
-    queries.updateJobStatus(job.id, 'failed');
-    const updated = queries.getAgentWithJob(agentId);
-    if (updated) socket.emitAgentUpdate(updated);
+    if (isTmuxSessionAlive(agentId)) {
+      const exitPoll = setInterval(() => {
+        if (isTmuxSessionAlive(agentId)) return;
+        clearInterval(exitPoll);
+        const agentRec = queries.getAgentById(agentId);
+        const TERMINAL = ['done', 'failed', 'cancelled'];
+        if (agentRec && TERMINAL.includes(agentRec.status)) return;
+        console.log(`[pty ${agentId}] tmux session ended (detected via fallback poll)`);
+        handleJobCompletion(agentId, job, 'done').catch(err2 =>
+          console.error(`[pty ${agentId}] handleJobCompletion error:`, err2)
+        );
+      }, 5000);
+    } else if (!isAutoExitJob(job as any)) {
+      // Tmux session didn't start — genuinely failed
+      queries.updateAgent(agentId, { status: 'failed', error_message: err.message, finished_at: Date.now() });
+      queries.updateJobStatus(job.id, 'failed');
+      const updated = queries.getAgentWithJob(agentId);
+      if (updated) socket.emitAgentUpdate(updated);
+    }
     return;
   }
 

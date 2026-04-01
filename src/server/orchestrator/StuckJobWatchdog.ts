@@ -29,6 +29,7 @@ import { isTmuxSessionAlive, startInteractiveAgent, saveSnapshot } from './PtyMa
 import { handleRetry } from './RetryManager.js';
 import { orphanedWaits, disconnectedAgents, hasActiveTransport } from '../mcp/McpServer.js';
 import { isCodexModel, isAutoExitJob } from '../../shared/types.js';
+import { markModelRateLimited, getFallbackModel } from './ModelClassifier.js';
 
 const WATCHDOG_INTERVAL_MS = 30_000;
 
@@ -479,6 +480,83 @@ function check(): void {
     const lastJob = currentLoopJobs[currentLoopJobs.length - 1];
     console.warn(`[watchdog] debate ${debate.id} stuck in 'running' with no active jobs — re-triggering state machine via job ${lastJob.id.slice(0, 8)}`);
     try { debateOnJobCompleted(lastJob); } catch (err) { console.error(`[watchdog] stuck-debate recovery error for debate ${debate.id}:`, err); }
+  }
+
+  // ── Check 5: Rate-limited agents in tmux ──────────────────────────────────
+  // Scan all orchestrator tmux sessions for rate limit errors (429/529).
+  // When detected, mark the model as rate-limited, kill the stuck agent,
+  // and restart the job with a fallback model.
+  const RATE_LIMIT_STUCK_THRESHOLD_MS = 3 * 60 * 1000; // 3 minutes stuck on rate limit
+  try {
+    const sessionsRaw = execFileSync('tmux', ['list-sessions', '-F', '#{session_name}'], {
+      encoding: 'utf8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
+    for (const session of sessionsRaw.split('\n')) {
+      if (!session.startsWith('orchestrator-')) continue;
+      const agentId = session.replace('orchestrator-', '');
+
+      const agent = queries.getAgentById(agentId);
+      if (!agent) continue;
+      // Check agents that are running OR were marked failed by PTY posix_spawnp
+      // (those are actually running in tmux despite the DB status)
+      if (!['running', 'starting', 'failed'].includes(agent.status)) continue;
+
+      const job = queries.getJobById(agent.job_id);
+      if (!job) continue;
+      // Skip if job is already terminal and agent isn't in the PTY-failed state
+      if (TERMINAL.includes(job.status) && agent.status !== 'failed') continue;
+
+      let output: string;
+      try {
+        output = execFileSync('tmux', [
+          'capture-pane', '-t', session, '-p', '-S', '-30',
+        ], { encoding: 'utf8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] });
+      } catch { continue; }
+
+      const hasRateLimit = output.includes('rate_limit_error') || output.includes('overloaded_error');
+      if (!hasRateLimit) continue;
+
+      // Check how long the agent has been stuck (last MCP heartbeat)
+      const stuckMs = Date.now() - agent.updated_at;
+      if (stuckMs < RATE_LIMIT_STUCK_THRESHOLD_MS) continue;
+
+      const currentModel = (job as any).model ?? null;
+      if (!currentModel) continue;
+
+      markModelRateLimited(currentModel, 5 * 60 * 1000);
+      const fallbackModel = getFallbackModel(currentModel);
+
+      if (fallbackModel === currentModel) {
+        console.log(`[watchdog] agent ${agentId.slice(0, 8)} rate-limited on ${currentModel} but no fallback available — letting it retry`);
+        continue;
+      }
+
+      console.warn(`[watchdog] agent ${agentId.slice(0, 8)} stuck on rate limit (${currentModel}, ${Math.round(stuckMs / 60000)}min) → restarting with ${fallbackModel}`);
+
+      saveSnapshot(agentId);
+      try { execFileSync('tmux', ['kill-session', '-t', session], { stdio: 'pipe' }); } catch { /* already gone */ }
+
+      queries.updateAgent(agentId, {
+        status: 'failed',
+        error_message: `Rate-limited on ${currentModel}; watchdog restarting with ${fallbackModel}.`,
+        finished_at: Date.now(),
+      });
+      getFileLockRegistry().releaseAll(agentId);
+
+      // Update the job's model and re-queue it
+      queries.updateJobModel(job.id, fallbackModel);
+      queries.updateJobStatus(job.id, 'queued');
+      const updatedJob = queries.getJobById(job.id);
+      if (updatedJob) socket.emitJobUpdate(updatedJob);
+      const updatedAgent = queries.getAgentWithJob(agentId);
+      if (updatedAgent) socket.emitAgentUpdate(updatedAgent);
+
+      console.log(`[watchdog] re-queued job "${job.title}" with model ${fallbackModel}`);
+    }
+  } catch (err: any) {
+    if (!err.message?.includes('no server running')) {
+      console.warn('[watchdog] rate-limit scan error:', err.message);
+    }
   }
 
   // ── Check 4: Orphaned locks from terminal agents ────────────────────────────
