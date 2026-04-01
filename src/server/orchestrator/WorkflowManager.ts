@@ -301,8 +301,13 @@ export function startWorkflow(workflow: Workflow): Job {
 
 /**
  * Resume a blocked workflow by re-spawning the phase that failed.
+ * Optionally accepts a target phase/cycle to enable partial workflow recovery
+ * (e.g. restart just the implement phase instead of the whole workflow).
  */
-export function resumeWorkflow(workflow: Workflow): Job {
+export function resumeWorkflow(
+  workflow: Workflow,
+  options: { phase?: WorkflowPhase; cycle?: number } = {},
+): Job {
   if (workflow.status !== 'blocked') {
     throw new Error(`Cannot resume workflow in status '${workflow.status}'`);
   }
@@ -310,9 +315,18 @@ export function resumeWorkflow(workflow: Workflow): Job {
   updateAndEmit(workflow.id, { status: 'running' });
   const updated = queries.getWorkflowById(workflow.id)!;
 
-  // Re-spawn the phase that was blocked
-  const phase = updated.current_phase === 'idle' ? 'assess' : updated.current_phase;
-  const cycle = updated.current_cycle;
+  // Use target phase/cycle if provided, otherwise resume the blocked phase
+  const phase = options.phase ?? (updated.current_phase === 'idle' ? 'assess' : updated.current_phase);
+  const cycle = options.cycle ?? updated.current_cycle;
+
+  // Update workflow state to reflect the target phase/cycle
+  if (options.phase || options.cycle) {
+    updateAndEmit(workflow.id, {
+      current_phase: phase,
+      current_cycle: cycle,
+    });
+    console.log(`[workflow ${workflow.id}] partial recovery: resuming from ${phase} cycle ${cycle}`);
+  }
 
   let model: string;
   let maxTurns: number;

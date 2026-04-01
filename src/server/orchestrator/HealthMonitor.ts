@@ -107,15 +107,34 @@ function tick(): void {
       }
     }
 
+    // ── Token tracking for PTY agents ──────────────────────────────────
+    // NDJSON agents get token counts from stream events, but tmux/PTY agents
+    // don't. Scrape the cost from tmux pane content where Claude Code outputs
+    // cost summaries like "Total cost: $1.23" or "Cost: $0.45".
+    if ((agent.estimated_input_tokens ?? 0) === 0 && (agent.estimated_output_tokens ?? 0) === 0) {
+      const tmuxCost = extractCostFromTmux(agent.id);
+      if (tmuxCost !== null) {
+        // Store as cost_usd directly rather than token counts — more accurate for PTY agents
+        queries.updateAgent(agent.id, { cost_usd: tmuxCost });
+      }
+    }
+
     // ── Budget enforcement (stop_mode === 'budget') ──────────────────────
     const stopMode: StopMode = (job as any).stop_mode ?? 'turns';
     const stopValue: number | null = (job as any).stop_value ?? null;
 
     if (stopMode === 'budget' && stopValue != null) {
-      const inputTokens = agent.estimated_input_tokens ?? 0;
-      const outputTokens = agent.estimated_output_tokens ?? 0;
-      const model: string | null = (job as any).model ?? null;
-      const estimated = estimateCostUsd(model, inputTokens, outputTokens);
+      // Use direct cost_usd if available (from PTY scraping), otherwise estimate from tokens
+      const agentRec = queries.getAgentById(agent.id);
+      let estimated: number;
+      if (agentRec?.cost_usd != null && agentRec.cost_usd > 0) {
+        estimated = agentRec.cost_usd;
+      } else {
+        const inputTokens = agent.estimated_input_tokens ?? 0;
+        const outputTokens = agent.estimated_output_tokens ?? 0;
+        const model: string | null = (job as any).model ?? null;
+        estimated = estimateCostUsd(model, inputTokens, outputTokens);
+      }
       const ratio = estimated / stopValue;
 
       if (ratio >= 1.0) {
@@ -209,6 +228,39 @@ function killAgentGracefully(agentId: string, reason: string): void {
   }
 
   console.log(`[health] agent ${agentId.slice(0, 6)} stopped: ${reason}`);
+}
+
+/**
+ * Extract cost from tmux pane content for PTY agents.
+ * Claude Code displays cost info like "$1.23" or "Total cost: $0.45" in its output.
+ * Returns the highest dollar amount found, or null if none found.
+ */
+function extractCostFromTmux(agentId: string): number | null {
+  const sessionName = `orchestrator-${agentId}`;
+  try {
+    // Capture the last 50 lines of the tmux pane (cost summary appears near the end)
+    const output = execFileSync('tmux', [
+      'capture-pane', '-t', sessionName, '-p', '-S', '-50',
+    ], { encoding: 'utf8', timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'] });
+
+    if (!output) return null;
+
+    // Look for cost patterns: "$X.XX", "cost: $X.XX", "Total cost: $X.XX"
+    // Claude Code displays: "Total cost: $X.XX" at the end of a session
+    const costPattern = /\$(\d+\.?\d*)/g;
+    let maxCost: number | null = null;
+
+    for (const match of output.matchAll(costPattern)) {
+      const cost = parseFloat(match[1]);
+      if (!isNaN(cost) && cost > 0 && (maxCost === null || cost > maxCost)) {
+        maxCost = cost;
+      }
+    }
+
+    return maxCost;
+  } catch {
+    return null;
+  }
 }
 
 /**

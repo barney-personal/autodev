@@ -317,3 +317,159 @@ describe('EventQueue', () => {
     expect(events.length).toBeGreaterThanOrEqual(1);
   });
 });
+
+describe('Partial workflow recovery', () => {
+  beforeEach(async () => {
+    await setupTestDb();
+    await resetManagerState();
+  });
+
+  afterEach(async () => {
+    await cleanupTestDb();
+  });
+
+  it('resumeWorkflow accepts phase override', async () => {
+    const queries = await import('../server/db/queries.js');
+    const { resumeWorkflow } = await import('../server/orchestrator/WorkflowManager.js');
+
+    // Create a project for the workflow
+    queries.insertProject({
+      id: 'proj-resume-1',
+      name: 'Test',
+      description: 'test',
+      created_at: Date.now(),
+      updated_at: Date.now(),
+    });
+
+    // Create a blocked workflow stuck in 'implement' at cycle 2
+    const now = Date.now();
+    queries.insertWorkflow({
+      id: 'wf-resume-1',
+      title: 'Test Workflow',
+      task: 'test task',
+      work_dir: '/tmp/test',
+      implementer_model: 'claude-sonnet-4-6',
+      reviewer_model: 'codex',
+      max_cycles: 10,
+      current_cycle: 2,
+      current_phase: 'implement',
+      status: 'blocked',
+      milestones_total: 5,
+      milestones_done: 3,
+      project_id: 'proj-resume-1',
+      max_turns_assess: 50,
+      max_turns_review: 30,
+      max_turns_implement: 100,
+      stop_mode_assess: 'turns',
+      stop_value_assess: 50,
+      stop_mode_review: 'turns',
+      stop_value_review: 30,
+      stop_mode_implement: 'turns',
+      stop_value_implement: 100,
+      template_id: null,
+      use_worktree: 0,
+      created_at: now,
+      updated_at: now,
+    } as any);
+
+    const workflow = queries.getWorkflowById('wf-resume-1')!;
+
+    // Resume from 'review' at cycle 1 (partial recovery — go back to review)
+    const job = resumeWorkflow(workflow, { phase: 'review', cycle: 1 });
+    expect(job).toBeDefined();
+    expect(job.workflow_phase).toBe('review');
+    expect(job.workflow_cycle).toBe(1);
+    expect(job.title).toContain('Review');
+    expect(job.title).toContain('resumed');
+
+    // Verify workflow state was updated
+    const updatedWf = queries.getWorkflowById('wf-resume-1')!;
+    expect(updatedWf.status).toBe('running');
+    expect(updatedWf.current_phase).toBe('review');
+    expect(updatedWf.current_cycle).toBe(1);
+  });
+
+  it('resumeWorkflow defaults to blocked phase when no override', async () => {
+    const queries = await import('../server/db/queries.js');
+    const { resumeWorkflow } = await import('../server/orchestrator/WorkflowManager.js');
+
+    queries.insertProject({
+      id: 'proj-resume-2',
+      name: 'Test',
+      description: 'test',
+      created_at: Date.now(),
+      updated_at: Date.now(),
+    });
+
+    const now = Date.now();
+    queries.insertWorkflow({
+      id: 'wf-resume-2',
+      title: 'Test Workflow 2',
+      task: 'test task',
+      work_dir: '/tmp/test',
+      implementer_model: 'claude-sonnet-4-6',
+      reviewer_model: 'codex',
+      max_cycles: 10,
+      current_cycle: 3,
+      current_phase: 'implement',
+      status: 'blocked',
+      milestones_total: 5,
+      milestones_done: 2,
+      project_id: 'proj-resume-2',
+      max_turns_assess: 50,
+      max_turns_review: 30,
+      max_turns_implement: 100,
+      stop_mode_assess: 'turns',
+      stop_value_assess: 50,
+      stop_mode_review: 'turns',
+      stop_value_review: 30,
+      stop_mode_implement: 'turns',
+      stop_value_implement: 100,
+      template_id: null,
+      use_worktree: 0,
+      created_at: now,
+      updated_at: now,
+    } as any);
+
+    const workflow = queries.getWorkflowById('wf-resume-2')!;
+    const job = resumeWorkflow(workflow); // no override
+    expect(job.workflow_phase).toBe('implement');
+    expect(job.workflow_cycle).toBe(3);
+  });
+});
+
+describe('Token tracking for PTY agents', () => {
+  beforeEach(async () => {
+    await setupTestDb();
+  });
+
+  afterEach(async () => {
+    await cleanupTestDb();
+  });
+
+  it('cost_usd column can be set on agents', async () => {
+    const queries = await import('../server/db/queries.js');
+
+    queries.insertJob({ id: 'cost-job', title: 'test', description: 'test', context: null, priority: 0 });
+    queries.insertAgent({ id: 'cost-agent', job_id: 'cost-job', status: 'running' });
+
+    // Update with a cost
+    queries.updateAgent('cost-agent', { cost_usd: 1.23 });
+
+    const agent = queries.getAgentById('cost-agent');
+    expect(agent).toBeDefined();
+    expect(agent!.cost_usd).toBeCloseTo(1.23, 2);
+  });
+
+  it('estimateCostUsd calculates correctly', async () => {
+    const { estimateCostUsd } = await import('../server/orchestrator/CostEstimator.js');
+
+    // Sonnet: $3/M input, $15/M output
+    const cost = estimateCostUsd('claude-sonnet-4-6', 1_000_000, 100_000);
+    expect(cost).toBeCloseTo(3 + 1.5, 1); // $3 input + $1.5 output
+
+    // Opus: $15/M input, $75/M output
+    const opusCost = estimateCostUsd('claude-opus-4-6', 500_000, 50_000);
+    expect(opusCost).toBeCloseTo(7.5 + 3.75, 1);
+  });
+});
