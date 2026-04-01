@@ -45,7 +45,7 @@ async function processInput() {
 
   const tool_name = data?.tool_name;
   const tool_input = data?.tool_input;
-  const apiUrl = process.env.ORCHESTRATOR_API_URL ?? 'http://localhost:3000';
+  const apiUrl = process.env.ORCHESTRATOR_API_URL ?? 'http://localhost:3456';
 
   // ── Bash tool: enforce checkout lock for destructive git commands ──────────
   if (tool_name === 'Bash') {

@@ -248,7 +248,7 @@ export function runAgent(options: RunOptions): void {
       const env = { ...process.env };
       delete env['CLAUDECODE'];
       env['ORCHESTRATOR_AGENT_ID'] = agentId;
-      env['ORCHESTRATOR_API_URL'] = `http://localhost:${process.env.PORT ?? 3000}`;
+      env['ORCHESTRATOR_API_URL'] = `http://localhost:${process.env.PORT ?? 3456}`;
       // Auto-activate Python virtual environment if present in the working directory,
       // so tools like pytest are on PATH when the agent runs shell commands.
       for (const venvName of ['venv', '.venv', 'env', '.env']) {

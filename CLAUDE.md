@@ -74,19 +74,19 @@ If everything looks good, start the server with:
 npm run dev
 ```
 
-Then open http://localhost:3000.
+Then open http://localhost:3456.
 
 ---
 
 ## Dev Commands
 
-- `npm run dev` — start server (port 3000) + Vite dev server concurrently, both with hot reload
+- `npm run dev` — start server (port 3456) + Vite dev server concurrently, both with hot reload
 - `npm run build` — compile TypeScript and bundle client for production
 - `npm run server:start` — run production build
 
 ## Architecture
 
-- Server: Express + Socket.io on :3000; MCP SSE server on :3947
+- Server: Express + Socket.io on :3456; MCP SSE server on :3947
 - Client: React 18 + Vite
 - Database: SQLite via `node:sqlite` experimental (auto-created at `data/orchestrator.db`)
 - Agents: spawned as `claude --print --output-format stream-json --verbose` subprocesses

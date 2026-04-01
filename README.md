@@ -55,9 +55,9 @@ export CLAUDE_BIN=/path/to/claude
 npm run dev
 ```
 
-This starts the Express + Socket.io server on port 3000 and the Vite dev server concurrently, both with hot reload.
+This starts the Express + Socket.io server on port 3456 and the Vite dev server concurrently, both with hot reload.
 
-Open **http://localhost:3000** in your browser.
+Open **http://localhost:3456** in your browser.
 
 For production:
 
@@ -559,12 +559,12 @@ Click the settings icon in the header to open the Settings modal. Currently conf
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PORT` | `3000` | HTTP + UI server port |
+| `PORT` | `3456` | HTTP + UI server port |
 | `MCP_PORT` | `3947` | MCP tool server port (agents connect here) |
 | `DB_PATH` | `data/orchestrator.db` | SQLite database location |
 | `CLAUDE_BIN` | `$(which claude)` | Path to the Claude Code CLI |
 | `ORCHESTRATOR_AGENT_ID` | *(set automatically)* | Agent identity; used by the lock hook |
-| `ORCHESTRATOR_API_URL` | `http://localhost:3000` | Base URL for lock verification |
+| `ORCHESTRATOR_API_URL` | `http://localhost:3456` | Base URL for lock verification |
 
 ## Project Structure
 

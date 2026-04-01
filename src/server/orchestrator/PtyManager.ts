@@ -238,7 +238,7 @@ export function startInteractiveAgent({ agentId, job, cols = 100, rows = 50, res
   const scriptLines = [
     '#!/bin/sh',
     `export ORCHESTRATOR_AGENT_ID=${JSON.stringify(agentId)}`,
-    `export ORCHESTRATOR_API_URL=${JSON.stringify(`http://localhost:${process.env.PORT ?? 3000}`)}`,
+    `export ORCHESTRATOR_API_URL=${JSON.stringify(`http://localhost:${process.env.PORT ?? 3456}`)}`,
     `unset CLAUDECODE`,
     // Ensure the correct branch is checked out before the agent runs.
     // Prevents agents from committing to main when working in a worktree.
