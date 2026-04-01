@@ -18,6 +18,7 @@ import { startKBConsolidator, stopKBConsolidator } from './orchestrator/KBConsol
 import { startGitHubPoller, stopGitHubPoller } from './integrations/GitHubPoller.js';
 import { runRecovery, startWorkflowGapDetector, stopWorkflowGapDetector } from './orchestrator/recovery.js';
 import { startResourceMonitor, stopResourceMonitor, setQueueControls } from './orchestrator/ResourceMonitor.js';
+import { startDbBackup, stopDbBackup, runBackupNow } from './orchestrator/DbBackup.js';
 import { writeInput, resizePty, resizeAndSnapshot, saveSnapshot, isTmuxSessionAlive } from './orchestrator/PtyManager.js';
 import * as queries from './db/queries.js';
 
@@ -149,6 +150,7 @@ async function main() {
   startKBConsolidator();
   startGitHubPoller();
   startResourceMonitor();
+  startDbBackup(DB_PATH);
   setQueueControls(stopWorkQueue, startWorkQueue);
 
   // Restore persisted settings
@@ -211,6 +213,10 @@ async function main() {
     stopKBConsolidator();
     stopGitHubPoller();
     stopResourceMonitor();
+    stopDbBackup();
+
+    // Run a final backup before closing the database
+    runBackupNow();
 
     // Phase 4: Save tmux snapshots for all running agents so recovery on restart
     // has the latest terminal state.

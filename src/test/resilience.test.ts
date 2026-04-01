@@ -707,3 +707,80 @@ describe('Health endpoint enrichment', () => {
     expect(blocked).toBe(1);
   });
 });
+
+describe('Output pruning', () => {
+  beforeEach(async () => {
+    await setupTestDb();
+  });
+
+  afterEach(async () => {
+    await cleanupTestDb();
+  });
+
+  it('pruneOldAgentOutput removes old output but keeps tail', async () => {
+    const queries = await import('../server/db/queries.js');
+
+    queries.insertJob({ id: 'prune-job', title: 'test', description: 'test', context: null, priority: 0, status: 'done' });
+    queries.insertAgent({ id: 'prune-agent', job_id: 'prune-job', status: 'done' });
+    // Set finished_at to 48h ago so it passes the maxAge check
+    queries.updateAgent('prune-agent', { finished_at: Date.now() - 48 * 60 * 60 * 1000 });
+
+    // Insert 50 output rows
+    for (let i = 0; i < 50; i++) {
+      queries.insertAgentOutput({
+        agent_id: 'prune-agent', seq: i, event_type: 'assistant',
+        content: `line ${i}`, created_at: Date.now(),
+      });
+    }
+
+    // Prune with keepTail=10 and maxAge=1hr
+    const deleted = queries.pruneOldAgentOutput(1 * 60 * 60 * 1000, 10);
+    expect(deleted).toBe(40); // 50 - 10 = 40
+
+    // Should have exactly 10 rows remaining
+    const remaining = queries.getAgentOutput('prune-agent');
+    expect(remaining).toHaveLength(10);
+  });
+
+  it('pruneOldAgentOutput does not prune recent agents', async () => {
+    const queries = await import('../server/db/queries.js');
+
+    queries.insertJob({ id: 'prune-job2', title: 'test', description: 'test', context: null, priority: 0, status: 'done' });
+    queries.insertAgent({ id: 'prune-agent2', job_id: 'prune-job2', status: 'done' });
+    // Set finished_at to 5 minutes ago — should NOT be pruned with 1hr maxAge
+    queries.updateAgent('prune-agent2', { finished_at: Date.now() - 5 * 60 * 1000 });
+
+    for (let i = 0; i < 50; i++) {
+      queries.insertAgentOutput({
+        agent_id: 'prune-agent2', seq: i, event_type: 'assistant',
+        content: `line ${i}`, created_at: Date.now(),
+      });
+    }
+
+    const deleted = queries.pruneOldAgentOutput(1 * 60 * 60 * 1000, 10);
+    expect(deleted).toBe(0); // too recent to prune
+
+    const remaining = queries.getAgentOutput('prune-agent2');
+    expect(remaining).toHaveLength(50);
+  });
+
+  it('pruneOldAgentOutput does not prune running agents', async () => {
+    const queries = await import('../server/db/queries.js');
+
+    queries.insertJob({ id: 'prune-job3', title: 'test', description: 'test', context: null, priority: 0 });
+    queries.insertAgent({ id: 'prune-agent3', job_id: 'prune-job3', status: 'running' });
+
+    for (let i = 0; i < 50; i++) {
+      queries.insertAgentOutput({
+        agent_id: 'prune-agent3', seq: i, event_type: 'assistant',
+        content: `line ${i}`, created_at: Date.now(),
+      });
+    }
+
+    const deleted = queries.pruneOldAgentOutput(0, 10); // maxAge=0 would match everything
+    expect(deleted).toBe(0); // running agents should never be pruned
+
+    const remaining = queries.getAgentOutput('prune-agent3');
+    expect(remaining).toHaveLength(50);
+  });
+});
