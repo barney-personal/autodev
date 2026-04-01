@@ -41,8 +41,12 @@ export async function cleanupTestDb() {
 export async function resetManagerState() {
   const { _resetForTest: resetWorkflow } = await import('../server/orchestrator/WorkflowManager.js');
   const { _resetForTest: resetDebate } = await import('../server/orchestrator/DebateManager.js');
+  const { _resetForTest: resetModelClassifier } = await import('../server/orchestrator/ModelClassifier.js');
+  const { _resetForTest: resetRecoveryLedger } = await import('../server/orchestrator/RecoveryLedger.js');
   resetWorkflow();
   resetDebate();
+  resetModelClassifier();
+  resetRecoveryLedger();
 }
 
 // ─── Socket Mock ──────────────────────────────────────────────────────────────

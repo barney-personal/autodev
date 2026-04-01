@@ -38,7 +38,14 @@ vi.mock('../server/orchestrator/ModelClassifier.js', () => ({
     return model; // no fallback
   }),
   markModelRateLimited: vi.fn(),
+  markProviderRateLimited: vi.fn(),
+  getModelProvider: vi.fn((model: string) => model.startsWith('codex') ? 'openai' : 'anthropic'),
   resolveModel: vi.fn(async (job: any) => job.model ?? 'claude-sonnet-4-6'),
+  _resetForTest: vi.fn(),
+}));
+
+vi.mock('../server/orchestrator/FailureClassifier.js', () => ({
+  classifyJobFailure: vi.fn(() => 'unknown'),
 }));
 
 // Shared job ID used to prove cross-test dedup independence
@@ -214,6 +221,7 @@ describe('WorkflowManager: onJobCompleted phase transitions', () => {
   it('failed phase job auto-retries with fallback model before blocking', async () => {
     const socket = await import('../server/socket/SocketManager.js');
     const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    const { classifyJobFailure } = await import('../server/orchestrator/FailureClassifier.js');
     const { upsertNote, getWorkflowById, getJobsForWorkflow } = await import('../server/db/queries.js');
 
     const project = await insertTestProject();
@@ -231,6 +239,8 @@ describe('WorkflowManager: onJobCompleted phase transitions', () => {
       workflow_phase: 'implement',
       status: 'failed',
     });
+
+    vi.mocked(classifyJobFailure).mockReturnValue('rate_limit');
 
     onJobCompleted(job);
 
@@ -250,6 +260,39 @@ describe('WorkflowManager: onJobCompleted phase transitions', () => {
     // Should NOT have emitted blocked status
     const statuses = updateCalls.map(c => c[0].status);
     expect(statuses).not.toContain('blocked');
+  });
+
+  it('generic phase failures block the workflow instead of poisoning the model', async () => {
+    const socket = await import('../server/socket/SocketManager.js');
+    const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    const { classifyJobFailure } = await import('../server/orchestrator/FailureClassifier.js');
+    const { getWorkflowById, getJobsForWorkflow } = await import('../server/db/queries.js');
+
+    const project = await insertTestProject();
+    const workflow = await insertTestWorkflow({
+      project_id: project.id,
+      status: 'running',
+      current_phase: 'implement',
+      current_cycle: 2,
+    });
+
+    const job = await insertTestJob({
+      workflow_id: workflow.id,
+      workflow_cycle: 2,
+      workflow_phase: 'implement',
+      status: 'failed',
+    });
+
+    vi.mocked(classifyJobFailure).mockReturnValue('task_failure');
+
+    onJobCompleted(job);
+
+    const updated = getWorkflowById(workflow.id)!;
+    expect(updated.status).toBe('blocked');
+    expect(getJobsForWorkflow(workflow.id)).toHaveLength(1);
+
+    const statuses = vi.mocked(socket.emitWorkflowUpdate).mock.calls.map(c => c[0].status);
+    expect(statuses).toContain('blocked');
   });
 
   it('non-workflow job is silently ignored', async () => {

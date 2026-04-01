@@ -12,6 +12,7 @@ import { isCodexModel, isAutoExitJob } from '../../shared/types.js';
 
 let _maxConcurrent = Number(process.env.MAX_CONCURRENT_AGENTS ?? 20);
 const POLL_INTERVAL_MS = 2000;
+const PROVIDER_PAUSE_RETRY_MS = 60_000;
 
 export function getMaxConcurrent(): number { return _maxConcurrent; }
 export function setMaxConcurrent(n: number): void { _maxConcurrent = n; }
@@ -67,6 +68,13 @@ async function tick(): Promise<void> {
   try {
     // Classify & resolve model (no-op if user already picked one)
     const model = await resolveModel(job);
+    if (model == null) {
+      console.warn(`[queue] no dispatchable model available for "${job.title}" — cooling job for ${Math.round(PROVIDER_PAUSE_RETRY_MS / 1000)}s`);
+      queries.updateJobStatus(job.id, 'queued');
+      queries.updateJobScheduledAt(job.id, Date.now() + PROVIDER_PAUSE_RETRY_MS);
+      socket.emitJobUpdate(queries.getJobById(job.id)!);
+      return;
+    }
 
     // Re-fetch so the agent sees the now-resolved model field
     const readyJob = queries.getJobById(job.id)!;
@@ -86,12 +94,14 @@ async function tick(): Promise<void> {
     const useCodexBatch = isCodexModel((dispatchJob as any).model ?? null) && !dispatchJob.is_interactive;
     const isDebateStage = isAutoExitJob(dispatchJob as any);
     const autoFinish = !dispatchJob.is_interactive && !isDebateStage;
+    const resumeSessionId = queries.getNote(`job-resume:${job.id}`)?.value ?? undefined;
     console.log(`[queue] dispatching "${job.title}" → agent ${agentId} (model: ${model}, interactive: ${!!readyJob.is_interactive}${readyJob.use_worktree ? ', worktree' : ''}${useCodexBatch ? ', codex-batch' : ''}${isDebateStage ? ', auto-exit' : ''})`);
     if (useCodexBatch) {
-      runAgent({ agentId, job: dispatchJob });
+      runAgent({ agentId, job: dispatchJob, resumeSessionId });
     } else {
-      startInteractiveAgent({ agentId, job: dispatchJob, autoFinish });
+      startInteractiveAgent({ agentId, job: dispatchJob, autoFinish, ...(resumeSessionId ? { resumeSessionId } : {}) });
     }
+    if (resumeSessionId) queries.upsertNote(`job-resume:${job.id}`, '', null);
   } catch (err: any) {
     console.error(`[queue] dispatch failed for job ${job.id}:`, err);
     Sentry.captureException(err);

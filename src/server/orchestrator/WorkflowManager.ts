@@ -8,7 +8,8 @@ import * as socket from '../socket/SocketManager.js';
 import type { Job, Workflow, WorkflowPhase, StopMode } from '../../shared/types.js';
 import { effectiveMaxTurns } from '../../shared/types.js';
 import { buildAssessPrompt, buildReviewPrompt, buildImplementPrompt } from './WorkflowPrompts.js';
-import { getFallbackModel, markModelRateLimited } from './ModelClassifier.js';
+import { getFallbackModel, getModelProvider, markModelRateLimited, markProviderRateLimited } from './ModelClassifier.js';
+import { classifyJobFailure } from './FailureClassifier.js';
 
 // Track jobs we've already processed to prevent double-exit race from triggering
 // duplicate spawns. Same pattern as DebateManager.
@@ -56,17 +57,24 @@ function _onJobCompleted(job: Job): void {
   // Rate limits are transient — Codex can take over when Claude is down.
   if (job.status === 'failed') {
     const currentModel = job.model ?? workflow.implementer_model;
-    // Mark the model as rate-limited so getFallbackModel skips it
-    markModelRateLimited(currentModel, 5 * 60 * 1000);
-    const fallbackModel = getFallbackModel(currentModel);
-    if (fallbackModel !== currentModel) {
-      console.log(`[workflow ${workflow.id}] phase '${job.workflow_phase}' failed on ${currentModel} → retrying with ${fallbackModel}`);
-      const phase = job.workflow_phase as WorkflowPhase;
-      const cycle = job.workflow_cycle ?? workflow.current_cycle;
-      spawnPhaseJob(workflow, phase, cycle, fallbackModel);
+    const failureKind = classifyJobFailure(job.id);
+    if (failureKind === 'rate_limit' || failureKind === 'provider_overload') {
+      // Mark the model and provider as rate-limited so getFallbackModel skips them.
+      markModelRateLimited(currentModel, 5 * 60 * 1000);
+      markProviderRateLimited(getModelProvider(currentModel), 5 * 60 * 1000);
+      const fallbackModel = getFallbackModel(currentModel);
+      if (fallbackModel !== currentModel) {
+        console.log(`[workflow ${workflow.id}] phase '${job.workflow_phase}' failed on ${currentModel} (${failureKind}) → retrying with ${fallbackModel}`);
+        const phase = job.workflow_phase as WorkflowPhase;
+        const cycle = job.workflow_cycle ?? workflow.current_cycle;
+        spawnPhaseJob(workflow, phase, cycle, fallbackModel);
+        return;
+      }
+      console.log(`[workflow ${workflow.id}] phase '${job.workflow_phase}' failed with ${failureKind}, but no fallback model is available — marking workflow blocked`);
+      updateAndEmit(workflow.id, { status: 'blocked', current_phase: job.workflow_phase ?? 'idle' });
       return;
     }
-    console.log(`[workflow ${workflow.id}] phase '${job.workflow_phase}' job ${job.id} failed, no fallback available — marking workflow blocked`);
+    console.log(`[workflow ${workflow.id}] phase '${job.workflow_phase}' job ${job.id} failed (${failureKind}) — marking workflow blocked`);
     updateAndEmit(workflow.id, { status: 'blocked', current_phase: job.workflow_phase ?? 'idle' });
     return;
   }
