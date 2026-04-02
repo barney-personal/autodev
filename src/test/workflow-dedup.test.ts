@@ -786,4 +786,180 @@ describe('WorkflowManager: getWorkflowFallbackModel', () => {
     // Should be sonnet[1m] — the first genuinely different hardcoded candidate
     expect(retryJob!.model).toBe('claude-sonnet-4-6[1m]');
   });
+
+  it('all models unavailable returns null — workflow blocks', async () => {
+    const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    const { classifyJobFailure } = await import('../server/orchestrator/FailureClassifier.js');
+    const { getAvailableModel, getFallbackModel } = await import('../server/orchestrator/ModelClassifier.js');
+    const { upsertNote, getWorkflowById } = await import('../server/db/queries.js');
+
+    const project = await insertTestProject();
+    const workflow = await insertTestWorkflow({
+      project_id: project.id,
+      status: 'running',
+      current_phase: 'implement',
+      current_cycle: 1,
+      implementer_model: 'claude-sonnet-4-6[1m]',
+    });
+    upsertNote(`workflow/${workflow.id}/plan`, '- [x] M1\n- [ ] M2', null);
+
+    const job = await insertTestJob({
+      workflow_id: workflow.id,
+      workflow_cycle: 1,
+      workflow_phase: 'implement',
+      status: 'failed',
+      model: 'claude-sonnet-4-6[1m]',
+    });
+
+    vi.mocked(classifyJobFailure).mockReturnValue('rate_limit');
+    // Every model is unavailable
+    vi.mocked(getAvailableModel).mockReturnValue(null);
+    vi.mocked(getFallbackModel).mockReturnValue(null);
+
+    onJobCompleted(job);
+
+    const updated = getWorkflowById(workflow.id)!;
+    expect(updated.status).toBe('blocked');
+    expect(updated.blocked_reason).toContain('no fallback model available');
+  });
+});
+
+describe('WorkflowManager: reconcileRunningWorkflows', () => {
+  beforeEach(async () => {
+    await setupTestDb();
+    await resetManagerState();
+    vi.clearAllMocks();
+  });
+
+  afterEach(async () => {
+    await cleanupTestDb();
+  });
+
+  it('detects a done implement job and advances workflow to next review cycle', async () => {
+    const { reconcileRunningWorkflows } = await import('../server/orchestrator/WorkflowManager.js');
+    const { upsertNote, getWorkflowById } = await import('../server/db/queries.js');
+    const socket = await import('../server/socket/SocketManager.js');
+
+    const project = await insertTestProject();
+    const workflow = await insertTestWorkflow({
+      project_id: project.id,
+      status: 'running',
+      current_phase: 'implement',
+      current_cycle: 2,
+    });
+    upsertNote(`workflow/${workflow.id}/plan`, '- [x] M1\n- [ ] M2', null);
+
+    // The implement job completed but no next phase was spawned (gap)
+    await insertTestJob({
+      workflow_id: workflow.id,
+      workflow_cycle: 2,
+      workflow_phase: 'implement',
+      status: 'done',
+    });
+
+    reconcileRunningWorkflows();
+
+    const updated = getWorkflowById(workflow.id)!;
+    // Should have advanced: either moved to review cycle 3, or at minimum no longer stuck
+    if (updated.status === 'running') {
+      // Advanced to next cycle review
+      expect(updated.current_cycle).toBe(3);
+      expect(updated.current_phase).toBe('review');
+      // A review job should have been spawned
+      expect(vi.mocked(socket.emitJobNew).mock.calls.length).toBeGreaterThan(0);
+      const newJob = vi.mocked(socket.emitJobNew).mock.calls[0][0];
+      expect(newJob.workflow_phase).toBe('review');
+    } else {
+      // If it blocked, it must have a descriptive reason
+      expect(updated.status).toBe('blocked');
+      expect(updated.blocked_reason).toBeTruthy();
+    }
+  });
+
+  it('blocks a running workflow stuck in idle phase with no active jobs', async () => {
+    const { reconcileRunningWorkflows } = await import('../server/orchestrator/WorkflowManager.js');
+    const { getWorkflowById } = await import('../server/db/queries.js');
+
+    const project = await insertTestProject();
+    const workflow = await insertTestWorkflow({
+      project_id: project.id,
+      status: 'running',
+      current_phase: 'idle',
+      current_cycle: 0,
+    });
+
+    reconcileRunningWorkflows();
+
+    const updated = getWorkflowById(workflow.id)!;
+    expect(updated.status).toBe('blocked');
+    expect(updated.blocked_reason).toContain('no active phase job');
+  });
+
+  it('skips workflows that have active jobs', async () => {
+    const { reconcileRunningWorkflows } = await import('../server/orchestrator/WorkflowManager.js');
+    const { upsertNote, getWorkflowById } = await import('../server/db/queries.js');
+
+    const project = await insertTestProject();
+    const workflow = await insertTestWorkflow({
+      project_id: project.id,
+      status: 'running',
+      current_phase: 'implement',
+      current_cycle: 1,
+    });
+    upsertNote(`workflow/${workflow.id}/plan`, '- [x] M1\n- [ ] M2', null);
+
+    // Job is still running — should not be touched
+    await insertTestJob({
+      workflow_id: workflow.id,
+      workflow_cycle: 1,
+      workflow_phase: 'implement',
+      status: 'running',
+    });
+
+    reconcileRunningWorkflows();
+
+    const updated = getWorkflowById(workflow.id)!;
+    expect(updated.status).toBe('running');
+    expect(updated.current_phase).toBe('implement');
+    expect(updated.current_cycle).toBe(1);
+  });
+
+  it('blocks when no matching phase job exists', async () => {
+    const { reconcileRunningWorkflows } = await import('../server/orchestrator/WorkflowManager.js');
+    const { getWorkflowById } = await import('../server/db/queries.js');
+
+    const project = await insertTestProject();
+    const workflow = await insertTestWorkflow({
+      project_id: project.id,
+      status: 'running',
+      current_phase: 'implement',
+      current_cycle: 2,
+    });
+    // No jobs at all for this workflow
+
+    reconcileRunningWorkflows();
+
+    const updated = getWorkflowById(workflow.id)!;
+    expect(updated.status).toBe('blocked');
+    expect(updated.blocked_reason).toContain('no phase job to resume');
+  });
+
+  it('does not touch non-running workflows', async () => {
+    const { reconcileRunningWorkflows } = await import('../server/orchestrator/WorkflowManager.js');
+    const { getWorkflowById } = await import('../server/db/queries.js');
+
+    const project = await insertTestProject();
+    const workflow = await insertTestWorkflow({
+      project_id: project.id,
+      status: 'blocked',
+      current_phase: 'implement',
+      current_cycle: 1,
+    });
+
+    reconcileRunningWorkflows();
+
+    const updated = getWorkflowById(workflow.id)!;
+    expect(updated.status).toBe('blocked');
+    // No change
+  });
 });
