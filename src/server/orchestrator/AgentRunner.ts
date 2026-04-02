@@ -214,6 +214,9 @@ export function runAgent(options: RunOptions): void {
       '--skip-git-repo-check',
       '-c', `mcp_servers.orchestrator.url="${mcpUrl}"`,
       ...(codexSubModel ? ['-m', codexSubModel] : []),
+      // Pass prompt as positional arg so Codex exits after processing it.
+      // Piping via stdin causes Codex to loop and hang on "Reading prompt from stdin..."
+      buildPrompt(job),
     ];
     binary = CODEX;
     args = codexArgs;
@@ -273,8 +276,12 @@ export function runAgent(options: RunOptions): void {
   fs.closeSync(logFd);
   fs.closeSync(errFd);
 
-  // Write prompt to stdin then close (child reads it all before doing anything else)
-  child.stdin!.write(buildPrompt(job));
+  // Write prompt to stdin then close (child reads it all before doing anything else).
+  // Codex gets the prompt as a positional arg instead — piping via stdin causes it to
+  // hang on "Reading prompt from stdin..." after finishing the first prompt.
+  if (!useCodex) {
+    child.stdin!.write(buildPrompt(job));
+  }
   child.stdin!.end();
 
   // Capture the current git HEAD SHA so we can diff after the agent finishes

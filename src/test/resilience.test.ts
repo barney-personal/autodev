@@ -540,6 +540,13 @@ describe('Failure classification', () => {
     expect(classifyFailureText('Service unavailable (503)')).toBe('provider_overload');
   });
 
+  it('classifies provider capability and billing failures', async () => {
+    const { classifyFailureText } = await import('../server/orchestrator/FailureClassifier.js');
+    expect(classifyFailureText('API Error: Extra usage is required for 1M context')).toBe('provider_capability');
+    expect(classifyFailureText('Model not available on your plan')).toBe('provider_capability');
+    expect(classifyFailureText('Payment required: insufficient credits')).toBe('provider_billing');
+  });
+
   it('classifies OOM errors', async () => {
     const { classifyFailureText } = await import('../server/orchestrator/FailureClassifier.js');
     expect(classifyFailureText('FATAL ERROR: JavaScript heap out of memory')).toBe('out_of_memory');

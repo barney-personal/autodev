@@ -3,6 +3,8 @@ import * as queries from '../db/queries.js';
 export type FailureKind =
   | 'rate_limit'
   | 'provider_overload'
+  | 'provider_capability'
+  | 'provider_billing'
   | 'mcp_disconnect'
   | 'timeout'
   | 'out_of_memory'
@@ -25,6 +27,24 @@ const PROVIDER_OVERLOAD_PATTERNS = [
   /\b529\b/,
   /\bservice[_ -]?unavailable\b/i,
   /\b503\b/,
+];
+
+const PROVIDER_CAPABILITY_PATTERNS = [
+  /\bextra usage is required\b/i,
+  /\brequires extra usage\b/i,
+  /\b1m context\b/i,
+  /\bunsupported model\b/i,
+  /\bmodel not available\b/i,
+  /\bnot available on your plan\b/i,
+  /\bdoes not support\b.*\bcontext\b/i,
+];
+
+const PROVIDER_BILLING_PATTERNS = [
+  /\binsufficient credits?\b/i,
+  /\binsufficient balance\b/i,
+  /\bbilling\b/i,
+  /\bpayment required\b/i,
+  /\bcredit balance\b/i,
 ];
 
 const MCP_DISCONNECT_PATTERNS = [
@@ -80,6 +100,8 @@ export function classifyFailureText(text: string | null | undefined): FailureKin
   // Check patterns in order of specificity / priority
   if (RATE_LIMIT_PATTERNS.some(pattern => pattern.test(text))) return 'rate_limit';
   if (PROVIDER_OVERLOAD_PATTERNS.some(pattern => pattern.test(text))) return 'provider_overload';
+  if (PROVIDER_CAPABILITY_PATTERNS.some(pattern => pattern.test(text))) return 'provider_capability';
+  if (PROVIDER_BILLING_PATTERNS.some(pattern => pattern.test(text))) return 'provider_billing';
   if (AUTH_PATTERNS.some(pattern => pattern.test(text))) return 'auth_failure';
   if (OOM_PATTERNS.some(pattern => pattern.test(text))) return 'out_of_memory';
   if (DISK_FULL_PATTERNS.some(pattern => pattern.test(text))) return 'disk_full';
@@ -99,4 +121,17 @@ export function classifyJobFailure(jobId: string): FailureKind {
   const combined = [latestAgent.error_message, transcript].filter(Boolean).join('\n');
 
   return classifyFailureText(combined);
+}
+
+export function isFallbackEligibleFailure(kind: FailureKind): boolean {
+  return kind === 'rate_limit'
+    || kind === 'provider_overload'
+    || kind === 'provider_capability'
+    || kind === 'provider_billing';
+}
+
+export function shouldMarkProviderUnavailable(kind: FailureKind): boolean {
+  return kind === 'rate_limit'
+    || kind === 'provider_overload'
+    || kind === 'provider_billing';
 }

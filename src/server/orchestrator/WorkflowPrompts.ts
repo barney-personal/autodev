@@ -72,6 +72,51 @@ Also write the operating contract using \`write_note\` with key \`${contractKey}
 - Call \`report_status\` to update your progress.`;
 }
 
+export function buildWorkflowRepairPrompt(
+  workflow: Workflow,
+  phase: 'assess' | 'review',
+  cycle: number,
+  missingArtifacts: string[],
+): string {
+  const planKey = `workflow/${workflow.id}/plan`;
+  const contractKey = `workflow/${workflow.id}/contract`;
+  const artifactList = missingArtifacts.map(a => `- \`${a}\``).join('\n');
+  const writeTargets = [
+    missingArtifacts.includes('plan') ? `- Write or rewrite the plan note: \`write_note("${planKey}", <plan>)\`` : null,
+    missingArtifacts.includes('contract') ? `- Write or rewrite the contract note: \`write_note("${contractKey}", <contract>)\`` : null,
+  ].filter(Boolean).join('\n');
+
+  return `# Autonomous Agent Run: Repair Phase (${phase} cycle ${cycle})
+
+You are repairing a workflow phase that finished without writing all required shared notes.
+Do not implement product changes. Repair the missing workflow artifacts only.
+
+## Task
+${workflow.task}
+
+## Working Directory
+${workflow.work_dir ?? '(not specified)'}
+
+## Missing Artifacts
+${artifactList}
+
+## Instructions
+1. Read any existing workflow context first:
+   - Plan: \`read_note("${planKey}")\`
+   - Contract: \`read_note("${contractKey}")\`
+2. Reconstruct the missing artifacts from the task and current workflow state.
+3. Write only the missing artifacts back to the shared scratchpad.
+
+## Required Writes
+${writeTargets}
+
+## Rules
+- Do NOT make code changes.
+- Do NOT switch branches.${workflow.worktree_branch ? `
+- **You are on branch \`${workflow.worktree_branch}\`. Do NOT switch branches or checkout main.**` : ''}
+- Call \`report_status\` with what you are repairing.`;
+}
+
 /**
  * Build the review phase prompt.
  * Cycle 1: plan quality review only (no code yet).

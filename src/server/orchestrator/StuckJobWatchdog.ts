@@ -32,6 +32,7 @@ import { orphanedWaits, disconnectedAgents, hasActiveTransport } from '../mcp/Mc
 import { isCodexModel, isAutoExitJob } from '../../shared/types.js';
 import { markModelRateLimited, getFallbackModel, getModelProvider, markProviderRateLimited } from './ModelClassifier.js';
 import { claimRecovery } from './RecoveryLedger.js';
+import { classifyFailureText, isFallbackEligibleFailure, shouldMarkProviderUnavailable } from './FailureClassifier.js';
 
 const WATCHDOG_INTERVAL_MS = 30_000;
 
@@ -518,8 +519,8 @@ function check(): void {
         ], { encoding: 'utf8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] });
       } catch { continue; }
 
-      const hasRateLimit = output.includes('rate_limit_error') || output.includes('overloaded_error');
-      if (!hasRateLimit) continue;
+      const failureKind = classifyFailureText(output);
+      if (!isFallbackEligibleFailure(failureKind)) continue;
 
       // Check how long the agent has been stuck (last MCP heartbeat)
       const stuckMs = Date.now() - agent.updated_at;
@@ -529,22 +530,24 @@ function check(): void {
       if (!currentModel) continue;
 
       markModelRateLimited(currentModel, 5 * 60 * 1000);
-      markProviderRateLimited(getModelProvider(currentModel), 5 * 60 * 1000);
+      if (shouldMarkProviderUnavailable(failureKind)) {
+        markProviderRateLimited(getModelProvider(currentModel), 5 * 60 * 1000);
+      }
       const fallbackModel = getFallbackModel(currentModel);
 
       if (fallbackModel === currentModel) {
-        console.log(`[watchdog] agent ${agentId.slice(0, 8)} rate-limited on ${currentModel} but no fallback available — letting it retry`);
+        console.log(`[watchdog] agent ${agentId.slice(0, 8)} hit ${failureKind} on ${currentModel} but no fallback available — letting it retry`);
         continue;
       }
 
-      console.warn(`[watchdog] agent ${agentId.slice(0, 8)} stuck on rate limit (${currentModel}, ${Math.round(stuckMs / 60000)}min) → restarting with ${fallbackModel}`);
+      console.warn(`[watchdog] agent ${agentId.slice(0, 8)} stuck on ${failureKind} (${currentModel}, ${Math.round(stuckMs / 60000)}min) → restarting with ${fallbackModel}`);
 
       saveSnapshot(agentId);
       try { execFileSync('tmux', ['kill-session', '-t', session], { stdio: 'pipe' }); } catch { /* already gone */ }
 
       queries.updateAgent(agentId, {
         status: 'failed',
-        error_message: `Rate-limited on ${currentModel}; watchdog restarting with ${fallbackModel}.`,
+        error_message: `Provider failure (${failureKind}) on ${currentModel}; watchdog restarting with ${fallbackModel}.`,
         finished_at: Date.now(),
       });
       getFileLockRegistry().releaseAll(agentId);

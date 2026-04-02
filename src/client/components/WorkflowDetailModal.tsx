@@ -14,6 +14,15 @@ interface WorkflowDetailModalProps {
   onWorkflowUpdate: (workflow: Workflow) => void;
 }
 
+interface ParsedWorklog {
+  milestone: string | null;
+  timestamp: string | null;
+  commits: string[];
+  tests: string[];
+  blockers: string[];
+  nextStep: string | null;
+}
+
 const STATUS_COLORS: Record<string, string> = {
   running: '#22c55e',
   complete: '#3b82f6',
@@ -32,7 +41,9 @@ const PHASE_LABELS: Record<string, string> = {
 export function WorkflowDetailModal({ workflow, agents, onClose, onWorkflowUpdate }: WorkflowDetailModalProps) {
   const [detail, setDetail] = useState<WorkflowDetail | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
-  const [activeTab, setActiveTab] = useState<'progress' | 'plan' | 'worklog' | 'jobs'>('progress');
+  const [activeTab, setActiveTab] = useState<'summary' | 'progress' | 'plan' | 'worklog' | 'jobs'>(
+    ['complete', 'blocked', 'failed', 'cancelled'].includes(workflow.status) ? 'summary' : 'progress'
+  );
   const [loading, setLoading] = useState(true);
   const [acting, setActing] = useState(false);
 
@@ -50,6 +61,11 @@ export function WorkflowDetailModal({ workflow, agents, onClose, onWorkflowUpdat
   }, [workflow.id]);
 
   useEffect(() => { fetchDetail(); }, [fetchDetail]);
+  useEffect(() => {
+    if (['complete', 'blocked', 'failed', 'cancelled'].includes(workflow.status)) {
+      setActiveTab(current => (current === 'progress' ? 'summary' : current));
+    }
+  }, [workflow.status]);
 
   const handleCancel = async () => {
     if (!confirm('Cancel this autonomous agent run?')) return;
@@ -81,6 +97,21 @@ export function WorkflowDetailModal({ workflow, agents, onClose, onWorkflowUpdat
     : 0;
 
   const statusColor = STATUS_COLORS[workflow.status] ?? '#6b7280';
+  const orderedWorklogs = [...(detail?.worklogs ?? [])].sort((a, b) => b.updated_at - a.updated_at);
+  const latestWorklog = orderedWorklogs[0] ?? null;
+  const relevantJobs = jobs.filter(job => job.status !== 'cancelled');
+  const latestJob = relevantJobs[relevantJobs.length - 1] ?? jobs[jobs.length - 1] ?? null;
+  const totalCost = relevantJobs.reduce((sum, job) => {
+    const agent = agents.find(a => a.job_id === job.id);
+    return sum + (agent?.cost_usd ?? 0);
+  }, 0);
+  const totalDurationMs = relevantJobs.reduce((sum, job) => {
+    const agent = agents.find(a => a.job_id === job.id);
+    return sum + (agent?.duration_ms ?? 0);
+  }, 0);
+  const completionSummary = summarizeOutcome(workflow.status, latestJob);
+  const parsedLatestWorklog = latestWorklog ? parseWorklog(latestWorklog.value) : null;
+  const hasSummary = !!(latestWorklog || workflow.pr_url || jobs.length > 0);
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -128,7 +159,7 @@ export function WorkflowDetailModal({ workflow, agents, onClose, onWorkflowUpdat
 
         {/* Tabs */}
         <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid #333' }}>
-          {(['progress', 'plan', 'worklog', 'jobs'] as const).map(tab => (
+          {(['summary', 'progress', 'plan', 'worklog', 'jobs'] as const).map(tab => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -150,6 +181,72 @@ export function WorkflowDetailModal({ workflow, agents, onClose, onWorkflowUpdat
             <div style={{ color: '#888', textAlign: 'center', padding: 40 }}>Loading...</div>
           ) : (
             <>
+              {activeTab === 'summary' && (
+                <div style={{ display: 'grid', gap: 16 }}>
+                  <div style={{ background: '#171717', border: '1px solid #2e2e2e', borderRadius: 8, padding: 16 }}>
+                    <div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>Run Outcome</div>
+                    <div style={{ fontSize: 20, fontWeight: 700, color: statusColor, marginBottom: 8 }}>
+                      {completionSummary.title}
+                    </div>
+                    <div style={{ fontSize: 13, color: '#ccc', lineHeight: 1.5 }}>
+                      {completionSummary.body}
+                    </div>
+                    {!hasSummary && (
+                      <div style={{ marginTop: 12, fontSize: 13, color: '#888' }}>
+                        This run has not produced a plan, worklog, or PR yet.
+                      </div>
+                    )}
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
+                    <SummaryCard label="PR" value={workflow.pr_url ? 'Open pull request' : 'No PR'} href={workflow.pr_url ?? undefined} />
+                    <SummaryCard label="Branch" value={detail?.worktree_branch ?? workflow.worktree_branch ?? 'Not recorded'} mono />
+                    <SummaryCard label="Jobs" value={`${jobs.length}`} />
+                    <SummaryCard label="Milestones" value={`${workflow.milestones_done}/${workflow.milestones_total}`} />
+                    <SummaryCard label="Total Cost" value={totalCost > 0 ? `$${totalCost.toFixed(4)}` : 'Not recorded'} />
+                    <SummaryCard label="Total Runtime" value={formatDuration(totalDurationMs)} />
+                  </div>
+
+                  {parsedLatestWorklog && (
+                    <div style={{ background: '#171717', border: '1px solid #2e2e2e', borderRadius: 8, padding: 16 }}>
+                      <div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>Latest Worklog</div>
+                      <div style={{ fontSize: 15, fontWeight: 600, color: '#fff', marginBottom: 10 }}>
+                        {parsedLatestWorklog.milestone ?? 'Latest cycle update'}
+                      </div>
+                      <div style={{ display: 'grid', gap: 10 }}>
+                        {parsedLatestWorklog.commits.length > 0 && (
+                          <SummaryList title="Commits" items={parsedLatestWorklog.commits} mono />
+                        )}
+                        {parsedLatestWorklog.tests.length > 0 && (
+                          <SummaryList title="Tests" items={parsedLatestWorklog.tests} />
+                        )}
+                        {parsedLatestWorklog.blockers.length > 0 && (
+                          <SummaryList title="Blockers" items={parsedLatestWorklog.blockers} />
+                        )}
+                        {parsedLatestWorklog.nextStep && (
+                          <div>
+                            <div style={{ fontSize: 12, color: '#888', marginBottom: 4 }}>Next Step</div>
+                            <div style={{ fontSize: 13, color: '#ddd', lineHeight: 1.5 }}>{parsedLatestWorklog.nextStep}</div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {latestJob && (
+                    <div style={{ background: '#171717', border: '1px solid #2e2e2e', borderRadius: 8, padding: 16 }}>
+                      <div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>Latest Phase</div>
+                      <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', fontSize: 13, color: '#ddd' }}>
+                        <strong>{latestJob.title}</strong>
+                        <span style={{ color: STATUS_COLORS[latestJob.status] ?? '#aaa' }}>{latestJob.status}</span>
+                        <span>{latestJob.model ?? 'auto'}</span>
+                        <span>Cycle {latestJob.workflow_cycle ?? '-'}</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {activeTab === 'progress' && (
                 <div>
                   <div style={{ marginBottom: 16 }}>
@@ -250,6 +347,120 @@ export function WorkflowDetailModal({ workflow, agents, onClose, onWorkflowUpdat
             </>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+function summarizeOutcome(status: Workflow['status'], latestJob: Job | null): { title: string; body: string } {
+  if (status === 'complete') {
+    return {
+      title: 'Run Completed',
+      body: latestJob
+        ? `The run finished successfully. The last phase was ${latestJob.workflow_phase ?? 'unknown'} on cycle ${latestJob.workflow_cycle ?? '-'}.`
+        : 'The run finished successfully.',
+    };
+  }
+  if (status === 'blocked') {
+    return {
+      title: 'Run Blocked',
+      body: latestJob
+        ? `The run stopped progressing after ${latestJob.title}. Review the latest worklog and resume the run if the state looks recoverable.`
+        : 'The run is blocked and needs attention before it can continue.',
+    };
+  }
+  if (status === 'failed') {
+    return {
+      title: 'Run Failed',
+      body: latestJob
+        ? `The run failed during ${latestJob.title}. Check the jobs tab and latest worklog to see what broke before retrying.`
+        : 'The run failed before completion.',
+    };
+  }
+  if (status === 'cancelled') {
+    return {
+      title: 'Run Cancelled',
+      body: 'The run was cancelled before it completed.',
+    };
+  }
+  return {
+    title: 'Run In Progress',
+    body: latestJob
+      ? `The run is currently in ${latestJob.workflow_phase ?? 'an active'} phase on cycle ${latestJob.workflow_cycle ?? '-'}.`
+      : 'The run is currently active.',
+  };
+}
+
+function parseWorklog(value: string): ParsedWorklog {
+  const milestoneMatch = value.match(/^##\s+Cycle\s+\d+\s+—\s+(.+)$/m);
+  const timestampMatch = value.match(/\*\*Timestamp:\*\*\s+(.+)$/m);
+  const commits = extractBulletLines(value, '### Commits');
+  const tests = extractBulletLines(value, '### Test results');
+  const blockers = extractBulletLines(value, '### Blockers');
+  const nextStep = extractSectionText(value, '### Next step');
+  return {
+    milestone: milestoneMatch?.[1]?.trim() ?? null,
+    timestamp: timestampMatch?.[1]?.trim() ?? null,
+    commits,
+    tests,
+    blockers,
+    nextStep,
+  };
+}
+
+function extractBulletLines(text: string, heading: string): string[] {
+  const section = extractSectionText(text, heading);
+  if (!section) return [];
+  return section
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => line.startsWith('- '))
+    .map(line => line.slice(2).trim());
+}
+
+function extractSectionText(text: string, heading: string): string | null {
+  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = text.match(new RegExp(`${escaped}\\n([\\s\\S]*?)(?:\\n### |$)`));
+  return match?.[1]?.trim() || null;
+}
+
+function formatDuration(durationMs: number): string {
+  if (!durationMs) return 'Not recorded';
+  const totalSeconds = Math.round(durationMs / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
+}
+
+function SummaryCard({ label, value, href, mono = false }: { label: string; value: string; href?: string; mono?: boolean }) {
+  const content = href ? (
+    <a href={href} target="_blank" rel="noopener noreferrer" style={{ color: '#60a5fa', textDecoration: 'none' }}>
+      {value} ↗
+    </a>
+  ) : (
+    <span style={{ fontFamily: mono ? 'monospace' : undefined }}>{value}</span>
+  );
+  return (
+    <div style={{ background: '#171717', border: '1px solid #2e2e2e', borderRadius: 8, padding: 14 }}>
+      <div style={{ fontSize: 12, color: '#888', marginBottom: 6 }}>{label}</div>
+      <div style={{ fontSize: 13, color: '#eee', wordBreak: 'break-word' }}>{content}</div>
+    </div>
+  );
+}
+
+function SummaryList({ title, items, mono = false }: { title: string; items: string[]; mono?: boolean }) {
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: '#888', marginBottom: 4 }}>{title}</div>
+      <div style={{ display: 'grid', gap: 4 }}>
+        {items.map((item, index) => (
+          <div key={`${title}-${index}`} style={{ fontSize: 13, color: '#ddd', fontFamily: mono ? 'monospace' : undefined }}>
+            {item}
+          </div>
+        ))}
       </div>
     </div>
   );
