@@ -2252,6 +2252,96 @@ export function getLastImplementDiff(workflowId: string): string | null {
   return row?.diff ?? null;
 }
 
+/**
+ * Compute latency metrics for a workflow by joining jobs and agents.
+ * Returns per-phase timing plus aggregated summary.
+ */
+export function getWorkflowMetrics(workflowId: string): import('../../shared/types.js').WorkflowMetrics | null {
+  const workflow = getWorkflowById(workflowId);
+  if (!workflow) return null;
+
+  const db = getDb();
+  // Get all workflow phase jobs with their agent timing, ordered by cycle + creation
+  const rows = db.prepare(`
+    SELECT
+      j.id AS job_id,
+      j.workflow_cycle AS cycle,
+      j.workflow_phase AS phase,
+      j.created_at AS job_created_at,
+      a.started_at AS agent_started_at,
+      a.finished_at AS agent_finished_at,
+      a.cost_usd AS agent_cost_usd
+    FROM jobs j
+    LEFT JOIN agents a ON a.job_id = j.id
+    WHERE j.workflow_id = ?
+    ORDER BY j.workflow_cycle ASC, j.created_at ASC
+  `).all(workflowId) as Array<{
+    job_id: string;
+    cycle: number;
+    phase: string;
+    job_created_at: number;
+    agent_started_at: number | null;
+    agent_finished_at: number | null;
+    agent_cost_usd: number | null;
+  }>;
+
+  const phases: import('../../shared/types.js').WorkflowPhaseMetric[] = [];
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const queueWait = r.agent_started_at != null ? r.agent_started_at - r.job_created_at : null;
+    const agentDuration = (r.agent_started_at != null && r.agent_finished_at != null)
+      ? r.agent_finished_at - r.agent_started_at : null;
+    // Handoff = next phase's job_created_at - this agent's finished_at
+    const next = rows[i + 1];
+    const handoff = (r.agent_finished_at != null && next)
+      ? next.job_created_at - r.agent_finished_at : null;
+
+    phases.push({
+      cycle: r.cycle,
+      phase: r.phase,
+      job_id: r.job_id,
+      job_created_at: r.job_created_at,
+      agent_started_at: r.agent_started_at,
+      agent_finished_at: r.agent_finished_at,
+      agent_cost_usd: r.agent_cost_usd,
+      queue_wait_ms: queueWait,
+      agent_duration_ms: agentDuration,
+      handoff_ms: handoff,
+    });
+  }
+
+  // Summary
+  const queueWaits = phases.map(p => p.queue_wait_ms).filter((v): v is number => v != null);
+  const handoffs = phases.map(p => p.handoff_ms).filter((v): v is number => v != null);
+  const agentDurations = phases.map(p => p.agent_duration_ms).filter((v): v is number => v != null);
+  const costs = phases.map(p => p.agent_cost_usd).filter((v): v is number => v != null);
+
+  const firstCreated = phases.length > 0 ? phases[0].job_created_at : workflow.created_at;
+  const lastFinished = phases.length > 0
+    ? phases.reduce((max, p) => {
+        const t = p.agent_finished_at ?? 0;
+        return t > max ? t : max;
+      }, 0)
+    : 0;
+  const now = Date.now();
+  const endTime = (workflow.status === 'running' || workflow.status === 'blocked') ? now : (lastFinished || now);
+
+  return {
+    workflow_id: workflowId,
+    phases,
+    summary: {
+      total_wall_clock_ms: endTime - firstCreated,
+      total_agent_ms: agentDurations.reduce((s, v) => s + v, 0),
+      total_queue_wait_ms: queueWaits.reduce((s, v) => s + v, 0),
+      total_handoff_ms: handoffs.reduce((s, v) => s + v, 0),
+      avg_queue_wait_ms: queueWaits.length > 0 ? Math.round(queueWaits.reduce((s, v) => s + v, 0) / queueWaits.length) : null,
+      avg_handoff_ms: handoffs.length > 0 ? Math.round(handoffs.reduce((s, v) => s + v, 0) / handoffs.length) : null,
+      total_cost_usd: costs.reduce((s, v) => s + v, 0),
+      phase_count: phases.length,
+    },
+  };
+}
+
 /** Check if any non-terminal job has work_dir set to the given path. */
 export function isWorkDirInUse(dirPath: string): boolean {
   const db = getDb();

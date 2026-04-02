@@ -131,6 +131,26 @@ router.get('/', (_req, res) => {
         if (status === 'ok') status = 'degraded';
         checks.workflows.warning = `${blocked} blocked workflow(s)`;
       }
+
+      // Latency summary for active workflows
+      const activeWorkflows = workflows.filter(w => w.status === 'running' || w.status === 'blocked');
+      if (activeWorkflows.length > 0) {
+        const latency: Array<{ id: string; title: string; wall_clock_ms: number; avg_queue_wait_ms: number | null; avg_handoff_ms: number | null; total_cost_usd: number }> = [];
+        for (const wf of activeWorkflows) {
+          const m = queries.getWorkflowMetrics(wf.id);
+          if (m) {
+            latency.push({
+              id: wf.id,
+              title: wf.title,
+              wall_clock_ms: m.summary.total_wall_clock_ms,
+              avg_queue_wait_ms: m.summary.avg_queue_wait_ms,
+              avg_handoff_ms: m.summary.avg_handoff_ms,
+              total_cost_usd: m.summary.total_cost_usd,
+            });
+          }
+        }
+        checks.workflows.latency = latency;
+      }
     } catch (err: any) {
       checks.workflows = { status: 'error', error: err.message };
     }

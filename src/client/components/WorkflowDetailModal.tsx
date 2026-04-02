@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import type { Workflow, Job, AgentWithJob } from '@shared/types';
+import type { Workflow, Job, AgentWithJob, WorkflowMetrics } from '@shared/types';
 
 interface WorkflowDetail extends Workflow {
   plan: string | null;
@@ -29,21 +29,32 @@ const PHASE_LABELS: Record<string, string> = {
   implement: 'Implement',
 };
 
+function formatDuration(ms: number | null | undefined): string {
+  if (ms == null) return '-';
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  if (ms < 3_600_000) return `${(ms / 60_000).toFixed(1)}m`;
+  return `${(ms / 3_600_000).toFixed(1)}h`;
+}
+
 export function WorkflowDetailModal({ workflow, agents, onClose, onWorkflowUpdate }: WorkflowDetailModalProps) {
   const [detail, setDetail] = useState<WorkflowDetail | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
-  const [activeTab, setActiveTab] = useState<'progress' | 'plan' | 'worklog' | 'jobs'>('progress');
+  const [metrics, setMetrics] = useState<WorkflowMetrics | null>(null);
+  const [activeTab, setActiveTab] = useState<'progress' | 'plan' | 'worklog' | 'jobs' | 'metrics'>('progress');
   const [loading, setLoading] = useState(true);
   const [acting, setActing] = useState(false);
 
   const fetchDetail = useCallback(async () => {
     try {
-      const [detailRes, jobsRes] = await Promise.all([
+      const [detailRes, jobsRes, metricsRes] = await Promise.all([
         fetch(`/api/autonomous-agent-runs/${workflow.id}`),
         fetch(`/api/autonomous-agent-runs/${workflow.id}/jobs`),
+        fetch(`/api/autonomous-agent-runs/${workflow.id}/metrics`),
       ]);
       if (detailRes.ok) setDetail(await detailRes.json());
       if (jobsRes.ok) setJobs(await jobsRes.json());
+      if (metricsRes.ok) setMetrics(await metricsRes.json());
     } catch { /* ignore */ } finally {
       setLoading(false);
     }
@@ -128,7 +139,7 @@ export function WorkflowDetailModal({ workflow, agents, onClose, onWorkflowUpdat
 
         {/* Tabs */}
         <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid #333' }}>
-          {(['progress', 'plan', 'worklog', 'jobs'] as const).map(tab => (
+          {(['progress', 'plan', 'worklog', 'jobs', 'metrics'] as const).map(tab => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -245,6 +256,74 @@ export function WorkflowDetailModal({ workflow, agents, onClose, onWorkflowUpdat
                       )}
                     </tbody>
                   </table>
+                </div>
+              )}
+
+              {activeTab === 'metrics' && (
+                <div>
+                  {metrics ? (
+                    <>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 20 }}>
+                        {[
+                          { label: 'Wall Clock', value: formatDuration(metrics.summary.total_wall_clock_ms) },
+                          { label: 'Agent Time', value: formatDuration(metrics.summary.total_agent_ms) },
+                          { label: 'Avg Queue Wait', value: formatDuration(metrics.summary.avg_queue_wait_ms) },
+                          { label: 'Avg Handoff', value: formatDuration(metrics.summary.avg_handoff_ms) },
+                        ].map(({ label, value }) => (
+                          <div key={label} style={{ background: '#1a1a1a', border: '1px solid #333', borderRadius: 6, padding: 12, textAlign: 'center' }}>
+                            <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>{label}</div>
+                            <div style={{ fontSize: 18, fontWeight: 600, color: '#ddd' }}>{value}</div>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 20 }}>
+                        {[
+                          { label: 'Total Queue Wait', value: formatDuration(metrics.summary.total_queue_wait_ms) },
+                          { label: 'Total Handoff', value: formatDuration(metrics.summary.total_handoff_ms) },
+                          { label: 'Total Cost', value: `$${metrics.summary.total_cost_usd.toFixed(4)}` },
+                        ].map(({ label, value }) => (
+                          <div key={label} style={{ background: '#1a1a1a', border: '1px solid #333', borderRadius: 6, padding: 12, textAlign: 'center' }}>
+                            <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>{label}</div>
+                            <div style={{ fontSize: 16, fontWeight: 600, color: '#ddd' }}>{value}</div>
+                          </div>
+                        ))}
+                      </div>
+
+                      <h3 style={{ margin: '0 0 8px', fontSize: 14, color: '#aaa' }}>Per-Phase Breakdown</h3>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                        <thead>
+                          <tr style={{ color: '#888', textAlign: 'left' }}>
+                            <th style={{ padding: '4px 8px' }}>Cycle</th>
+                            <th style={{ padding: '4px 8px' }}>Phase</th>
+                            <th style={{ padding: '4px 8px' }}>Queue Wait</th>
+                            <th style={{ padding: '4px 8px' }}>Agent Duration</th>
+                            <th style={{ padding: '4px 8px' }}>Handoff</th>
+                            <th style={{ padding: '4px 8px' }}>Cost</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {metrics.phases.map(p => (
+                            <tr key={p.job_id} style={{ borderTop: '1px solid #2a2a2a' }}>
+                              <td style={{ padding: '6px 8px' }}>{p.cycle}</td>
+                              <td style={{ padding: '6px 8px', textTransform: 'capitalize' }}>{p.phase}</td>
+                              <td style={{ padding: '6px 8px', color: '#aaa' }}>{formatDuration(p.queue_wait_ms)}</td>
+                              <td style={{ padding: '6px 8px', color: '#aaa' }}>{formatDuration(p.agent_duration_ms)}</td>
+                              <td style={{ padding: '6px 8px', color: '#aaa' }}>{formatDuration(p.handoff_ms)}</td>
+                              <td style={{ padding: '6px 8px', color: '#888' }}>{p.agent_cost_usd != null ? `$${p.agent_cost_usd.toFixed(4)}` : '-'}</td>
+                            </tr>
+                          ))}
+                          {metrics.phases.length === 0 && (
+                            <tr><td colSpan={6} style={{ padding: 20, color: '#888', textAlign: 'center' }}>No phase data yet</td></tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </>
+                  ) : (
+                    <div style={{ color: '#888', fontSize: 13, textAlign: 'center', padding: 40 }}>
+                      No metrics available yet.
+                    </div>
+                  )}
                 </div>
               )}
             </>

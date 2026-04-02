@@ -193,6 +193,36 @@ export interface AgentOutputSegment {
   truncated?: boolean; // true when output was capped by a tail limit
 }
 
+// ─── Workflow Latency Metrics ────────────────────────────────────────────────
+
+export interface WorkflowPhaseMetric {
+  cycle: number;
+  phase: string;
+  job_id: string;
+  job_created_at: number;
+  agent_started_at: number | null;
+  agent_finished_at: number | null;
+  agent_cost_usd: number | null;
+  queue_wait_ms: number | null;     // agent_started_at - job_created_at
+  agent_duration_ms: number | null; // agent_finished_at - agent_started_at
+  handoff_ms: number | null;        // next phase job_created_at - this agent_finished_at
+}
+
+export interface WorkflowMetrics {
+  workflow_id: string;
+  phases: WorkflowPhaseMetric[];
+  summary: {
+    total_wall_clock_ms: number;
+    total_agent_ms: number;
+    total_queue_wait_ms: number;
+    total_handoff_ms: number;
+    avg_queue_wait_ms: number | null;
+    avg_handoff_ms: number | null;
+    total_cost_usd: number;
+    phase_count: number;
+  };
+}
+
 // ─── Socket.io Event Payloads ────────────────────────────────────────────────
 
 export interface QueueSnapshot {

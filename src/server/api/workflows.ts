@@ -35,6 +35,13 @@ router.get('/:id', (req, res) => {
   });
 });
 
+// GET /api/workflows/:id/metrics — latency metrics for a workflow
+router.get('/:id/metrics', (req, res) => {
+  const metrics = queries.getWorkflowMetrics(req.params.id);
+  if (!metrics) { res.status(404).json({ error: 'not found' }); return; }
+  res.json(metrics);
+});
+
 // GET /api/workflows/:id/jobs — list all jobs for a workflow
 router.get('/:id/jobs', (req, res) => {
   const workflow = queries.getWorkflowById(req.params.id);
