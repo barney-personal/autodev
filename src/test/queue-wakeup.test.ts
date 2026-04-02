@@ -55,6 +55,7 @@ vi.mock('../server/orchestrator/WorkflowPrompts.js', () => ({
 vi.mock('../server/orchestrator/FailureClassifier.js', () => ({
   classifyJobFailure: vi.fn(() => 'unknown'),
   isFallbackEligibleFailure: vi.fn(() => false),
+  isSameModelRetryEligible: vi.fn(() => false),
   shouldMarkProviderUnavailable: vi.fn(() => false),
 }));
 

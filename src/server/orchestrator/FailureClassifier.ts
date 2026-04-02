@@ -12,6 +12,7 @@ export type FailureKind =
   | 'disk_full'
   | 'auth_failure'
   | 'context_overflow'
+  | 'codex_cli_crash'
   | 'task_failure'
   | 'unknown';
 
@@ -104,6 +105,11 @@ const CONTEXT_OVERFLOW_PATTERNS = [
   /\bcontext overflow\b/i,
 ];
 
+const CODEX_CLI_CRASH_PATTERNS = [
+  /\breading (?:additional )?input from stdin\b/i,
+  /\breading prompt from stdin\b/i,
+];
+
 export function classifyFailureText(text: string | null | undefined): FailureKind {
   if (!text) return 'unknown';
 
@@ -119,6 +125,7 @@ export function classifyFailureText(text: string | null | undefined): FailureKin
   if (CONTEXT_OVERFLOW_PATTERNS.some(pattern => pattern.test(text))) return 'context_overflow';
   if (MCP_DISCONNECT_PATTERNS.some(pattern => pattern.test(text))) return 'mcp_disconnect';
   if (TIMEOUT_PATTERNS.some(pattern => pattern.test(text))) return 'timeout';
+  if (CODEX_CLI_CRASH_PATTERNS.some(pattern => pattern.test(text))) return 'codex_cli_crash';
 
   return 'task_failure';
 }
@@ -141,6 +148,10 @@ export function isFallbackEligibleFailure(kind: FailureKind): boolean {
     || kind === 'provider_capability'
     || kind === 'provider_billing'
     || kind === 'auth_failure';
+}
+
+export function isSameModelRetryEligible(kind: FailureKind): boolean {
+  return kind === 'codex_cli_crash';
 }
 
 export function shouldMarkProviderUnavailable(kind: FailureKind): boolean {

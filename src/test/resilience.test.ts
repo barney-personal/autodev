@@ -578,6 +578,13 @@ describe('Failure classification', () => {
     expect(classifyFailureText('socket hang up')).toBe('mcp_disconnect');
   });
 
+  it('classifies Codex stdin hang as codex_cli_crash', async () => {
+    const { classifyFailureText } = await import('../server/orchestrator/FailureClassifier.js');
+    expect(classifyFailureText('Reading additional input from stdin...')).toBe('codex_cli_crash');
+    expect(classifyFailureText('Reading input from stdin...')).toBe('codex_cli_crash');
+    expect(classifyFailureText('Reading prompt from stdin...')).toBe('codex_cli_crash');
+  });
+
   it('returns task_failure for unrecognized errors', async () => {
     const { classifyFailureText } = await import('../server/orchestrator/FailureClassifier.js');
     expect(classifyFailureText('Something went wrong in the build')).toBe('task_failure');

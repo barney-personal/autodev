@@ -9,7 +9,7 @@ import type { Job, Workflow, WorkflowPhase, StopMode } from '../../shared/types.
 import { effectiveMaxTurns } from '../../shared/types.js';
 import { buildAssessPrompt, buildReviewPrompt, buildImplementPrompt, buildWorkflowRepairPrompt } from './WorkflowPrompts.js';
 import { getAvailableModel, getFallbackModel, getModelProvider, markModelRateLimited, markProviderRateLimited } from './ModelClassifier.js';
-import { classifyJobFailure, isFallbackEligibleFailure, shouldMarkProviderUnavailable } from './FailureClassifier.js';
+import { classifyJobFailure, isFallbackEligibleFailure, isSameModelRetryEligible, shouldMarkProviderUnavailable } from './FailureClassifier.js';
 
 // Track jobs we've already processed to prevent double-exit race from triggering
 // duplicate spawns. Same pattern as DebateManager.
@@ -78,6 +78,22 @@ function _onJobCompleted(job: Job): void {
       updateAndEmit(workflow.id, { status: 'blocked', current_phase: job.workflow_phase ?? 'idle', blocked_reason: noFallbackReason });
       return;
     }
+    // Transient CLI crashes (e.g. Codex stdin hang) — retry same model, not a provider issue.
+    if (isSameModelRetryEligible(failureKind)) {
+      const phase = job.workflow_phase as WorkflowPhase;
+      const cycle = job.workflow_cycle ?? workflow.current_cycle;
+      const attemptsKey = `workflow/${workflow.id}/cli-retry/${phase}/cycle-${cycle}`;
+      const attempts = parseInt(queries.getNote(attemptsKey)?.value ?? '0', 10);
+      const MAX_CLI_RETRIES = 3;
+      if (attempts < MAX_CLI_RETRIES) {
+        queries.upsertNote(attemptsKey, String(attempts + 1), null);
+        console.log(`[workflow ${workflow.id}] phase '${phase}' hit ${failureKind} on ${currentModel} — same-model retry ${attempts + 1}/${MAX_CLI_RETRIES}`);
+        spawnPhaseJob(workflow, phase, cycle);
+        return;
+      }
+      console.log(`[workflow ${workflow.id}] phase '${phase}' hit ${failureKind} on ${currentModel} — exhausted ${MAX_CLI_RETRIES} retries`);
+    }
+
     const failReason = `Phase '${job.workflow_phase}' job ${job.id.slice(0, 8)} failed (${failureKind})`;
     console.log(`[workflow ${workflow.id}] ${failReason} — marking workflow blocked`);
     updateAndEmit(workflow.id, { status: 'blocked', current_phase: job.workflow_phase ?? 'idle', blocked_reason: failReason });

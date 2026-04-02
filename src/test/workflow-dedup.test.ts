@@ -59,6 +59,9 @@ vi.mock('../server/orchestrator/FailureClassifier.js', () => ({
       || kind === 'provider_capability'
       || kind === 'provider_billing'
   ),
+  isSameModelRetryEligible: vi.fn((kind: string) =>
+    kind === 'codex_cli_crash'
+  ),
   shouldMarkProviderUnavailable: vi.fn((kind: string) =>
     kind === 'rate_limit'
       || kind === 'provider_overload'
@@ -379,6 +382,75 @@ describe('WorkflowManager: onJobCompleted phase transitions', () => {
 
     const statuses = vi.mocked(socket.emitWorkflowUpdate).mock.calls.map(c => c[0].status);
     expect(statuses).toContain('blocked');
+  });
+
+  it('codex_cli_crash retries same model instead of blocking', async () => {
+    const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    const { classifyJobFailure } = await import('../server/orchestrator/FailureClassifier.js');
+    const { upsertNote, getWorkflowById, getJobsForWorkflow } = await import('../server/db/queries.js');
+
+    const project = await insertTestProject();
+    const workflow = await insertTestWorkflow({
+      project_id: project.id,
+      status: 'running',
+      current_phase: 'review',
+      current_cycle: 2,
+      reviewer_model: 'codex',
+    });
+    upsertNote(`workflow/${workflow.id}/plan`, '- [x] M1\n- [ ] M2', null);
+
+    const job = await insertTestJob({
+      workflow_id: workflow.id,
+      workflow_cycle: 2,
+      workflow_phase: 'review',
+      status: 'failed',
+      model: 'codex',
+    });
+
+    vi.mocked(classifyJobFailure).mockReturnValue('codex_cli_crash');
+
+    onJobCompleted(job);
+
+    const updated = getWorkflowById(workflow.id)!;
+    expect(updated.status).toBe('running');
+
+    const jobs = getJobsForWorkflow(workflow.id);
+    const retryJob = jobs.find(j => j.id !== job.id);
+    expect(retryJob).toBeDefined();
+    expect(retryJob!.title).not.toContain('(fallback)');
+  });
+
+  it('codex_cli_crash blocks after exhausting same-model retries', async () => {
+    const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    const { classifyJobFailure } = await import('../server/orchestrator/FailureClassifier.js');
+    const { upsertNote, getWorkflowById, getJobsForWorkflow } = await import('../server/db/queries.js');
+
+    const project = await insertTestProject();
+    const workflow = await insertTestWorkflow({
+      project_id: project.id,
+      status: 'running',
+      current_phase: 'review',
+      current_cycle: 2,
+      reviewer_model: 'codex',
+    });
+    upsertNote(`workflow/${workflow.id}/plan`, '- [x] M1\n- [ ] M2', null);
+    upsertNote(`workflow/${workflow.id}/cli-retry/review/cycle-2`, '3', null);
+
+    const job = await insertTestJob({
+      workflow_id: workflow.id,
+      workflow_cycle: 2,
+      workflow_phase: 'review',
+      status: 'failed',
+      model: 'codex',
+    });
+
+    vi.mocked(classifyJobFailure).mockReturnValue('codex_cli_crash');
+
+    onJobCompleted(job);
+
+    const updated = getWorkflowById(workflow.id)!;
+    expect(updated.status).toBe('blocked');
+    expect(getJobsForWorkflow(workflow.id)).toHaveLength(1);
   });
 
   it('max_cycles reached with remaining milestones blocks instead of completing', async () => {
