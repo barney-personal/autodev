@@ -32,6 +32,7 @@ import { orphanedWaits, disconnectedAgents, hasActiveTransport } from '../mcp/Mc
 import { isCodexModel, isAutoExitJob } from '../../shared/types.js';
 import { markModelRateLimited, getFallbackModel, getModelProvider, markProviderRateLimited } from './ModelClassifier.js';
 import { claimRecovery } from './RecoveryLedger.js';
+import { nudgeQueue } from './WorkQueueManager.js';
 
 const WATCHDOG_INTERVAL_MS = 30_000;
 

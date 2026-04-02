@@ -3,6 +3,7 @@ import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
 import type { Job } from '../../shared/types.js';
 import { claimRecovery } from './RecoveryLedger.js';
+import { nudgeQueue } from './WorkQueueManager.js';
 
 // Exponential backoff parameters
 const BASE_DELAY_MS = 30_000;      // 30s base delay
