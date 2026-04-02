@@ -39,8 +39,8 @@ export function WorkflowDetailModal({ workflow, agents, onClose, onWorkflowUpdat
   const fetchDetail = useCallback(async () => {
     try {
       const [detailRes, jobsRes] = await Promise.all([
-        fetch(`/api/workflows/${workflow.id}`),
-        fetch(`/api/workflows/${workflow.id}/jobs`),
+        fetch(`/api/autonomous-agent-runs/${workflow.id}`),
+        fetch(`/api/autonomous-agent-runs/${workflow.id}/jobs`),
       ]);
       if (detailRes.ok) setDetail(await detailRes.json());
       if (jobsRes.ok) setJobs(await jobsRes.json());
@@ -52,10 +52,10 @@ export function WorkflowDetailModal({ workflow, agents, onClose, onWorkflowUpdat
   useEffect(() => { fetchDetail(); }, [fetchDetail]);
 
   const handleCancel = async () => {
-    if (!confirm('Cancel this workflow?')) return;
+    if (!confirm('Cancel this autonomous agent run?')) return;
     setActing(true);
     try {
-      const res = await fetch(`/api/workflows/${workflow.id}/cancel`, { method: 'POST' });
+      const res = await fetch(`/api/autonomous-agent-runs/${workflow.id}/cancel`, { method: 'POST' });
       if (res.ok) {
         const updated = await res.json();
         onWorkflowUpdate(updated);
@@ -67,7 +67,7 @@ export function WorkflowDetailModal({ workflow, agents, onClose, onWorkflowUpdat
   const handleResume = async () => {
     setActing(true);
     try {
-      const res = await fetch(`/api/workflows/${workflow.id}/resume`, { method: 'POST' });
+      const res = await fetch(`/api/autonomous-agent-runs/${workflow.id}/resume`, { method: 'POST' });
       if (res.ok) {
         const data = await res.json();
         onWorkflowUpdate(data.workflow);
@@ -103,12 +103,12 @@ export function WorkflowDetailModal({ workflow, agents, onClose, onWorkflowUpdat
             )}
             {workflow.status === 'blocked' && (
               <button className="btn btn-primary" onClick={handleResume} disabled={acting}>
-                Resume
+                Resume Run
               </button>
             )}
             {(workflow.status === 'running' || workflow.status === 'blocked') && (
               <button className="btn btn-secondary" onClick={handleCancel} disabled={acting}>
-                Cancel
+                Cancel Run
               </button>
             )}
             <button className="btn-icon" onClick={onClose}>&#x2715;</button>

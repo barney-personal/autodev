@@ -90,6 +90,10 @@ ORCHESTRATION (spawn and coordinate sub-agents):
   - create_job(description, title?, priority?, work_dir?, max_turns?, model?, depends_on?):
       Create a new job that will be run by another agent. Returns { job_id, title, status }.
       work_dir defaults to your own working directory.
+  - create_autonomous_agent_run(task, title?, workDir?, implementerModel?, reviewerModel?, maxCycles?, ...):
+      Create a structured multi-cycle autonomous agent run with assess, review, and implement phases.
+      Use this when the work needs iterative planning, milestone tracking, shared worktree continuity,
+      or an automatic PR at the end. Returns the run id, project id, and initial assess job id.
   - wait_for_jobs(job_ids, timeout_ms?):
       Block until all specified jobs finish. Returns an array of { job_id, title, status, work_dir, result_text }.
       work_dir is the actual working directory the job ran in (worktree path if use_worktree was set).
@@ -140,11 +144,12 @@ PR DESCRIPTION STYLE:
 
 ORCHESTRATION PATTERN (for decomposing large tasks):
   1. Call report_status to describe your plan.
-  2. Use create_job for each parallel sub-task. Collect the returned job_ids.
-  3. Use depends_on to express ordering if some sub-tasks depend on others.
-  4. Call wait_for_jobs(job_ids) to block until all sub-tasks complete.
-  5. Read result_text and diff from the results to synthesize a final answer.
-  6. Optionally use write_note/read_note to pass structured data between agents.
+  2. If the task needs iterative assess/review/implement cycles, prefer create_autonomous_agent_run.
+  3. Otherwise use create_job for each parallel sub-task. Collect the returned job_ids.
+  4. Use depends_on to express ordering if some sub-tasks depend on others.
+  5. Call wait_for_jobs(job_ids) to block until all sub-tasks complete.
+  6. Read result_text and diff from the results to synthesize a final answer.
+  7. Optionally use write_note/read_note to pass structured data between agents.
 
 COMPLETION (automated jobs only):
   - finish_job(result?): Signal task completion and close this session. Only call this when your

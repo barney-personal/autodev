@@ -133,7 +133,7 @@ export function Header({ onNewJob, onTemplates, onBatchTemplates, onUsage, onSea
           <button className="header-btn" onClick={onWorkflow} style={{ borderRadius: onWorkflows && onWorkflows.length > 0 ? '6px 0 0 6px' : '6px' }}>Autonomous Agents</button>
           {onWorkflows && onWorkflows.length > 0 && (
             <div ref={workflowMenuRef} style={{ position: 'relative' }}>
-              <button className="header-btn" style={{ padding: '5px 6px', borderRadius: '0 6px 6px 0' }} onClick={() => setWorkflowMenuOpen(v => !v)} title="View workflows">&#x25be;</button>
+              <button className="header-btn" style={{ padding: '5px 6px', borderRadius: '0 6px 6px 0' }} onClick={() => setWorkflowMenuOpen(v => !v)} title="View autonomous agent runs">&#x25be;</button>
               {workflowMenuOpen && (
                 <div style={{ position: 'absolute', top: '100%', right: 0, zIndex: 200, marginTop: 4, background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 8, boxShadow: '0 8px 24px rgba(0,0,0,0.4)', minWidth: 280, maxWidth: 400, maxHeight: 360, overflowY: 'auto' }}>
                   <div style={{ padding: '8px 12px', fontSize: 11, fontWeight: 600, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid var(--border)' }}>Autonomous Agents</div>

@@ -514,6 +514,11 @@ export interface CreateWorkflowResponse {
   jobs: Job[];
 }
 
+export type CreateAutonomousAgentRunRequest = CreateWorkflowRequest;
+export interface CreateAutonomousAgentRunResponse extends CreateWorkflowResponse {
+  autonomous_agent_run?: Workflow;
+}
+
 // ─── Agent Warnings (Feature 6) ──────────────────────────────────────────────
 
 export interface AgentWarning {

@@ -10,6 +10,7 @@ import { releaseFilesHandler, releaseFilesSchema } from './tools/releaseFiles.js
 import { checkFileLocksHandler, checkFileLocksSchema } from './tools/checkFileLocks.js';
 import { reportStatusHandler, reportStatusSchema } from './tools/reportStatus.js';
 import { createJobHandler, createJobSchema } from './tools/createJob.js';
+import { createAutonomousAgentRunHandler, createAutonomousAgentRunSchema } from './tools/createAutonomousAgentRun.js';
 import { waitForJobsHandler, waitForJobsSchema, activeWaits, abortAgentWait } from './tools/waitForJobs.js';
 import { writeNoteHandler, writeNoteSchema, readNoteHandler, readNoteSchema, listNotesHandler, listNotesSchema } from './tools/notes.js';
 import { watchNotesHandler, watchNotesSchema } from './tools/watchNotes.js';
@@ -248,11 +249,13 @@ export function createMcpApp(): express.Application {
  * returns a structured error response instead of crashing the MCP session.
  * This prevents one buggy tool call from killing an agent's entire session.
  */
+type ToolTextResponse = { content: Array<{ type: 'text'; text: string }> };
+
 function safeTool(
   toolName: string,
   agentId: string,
-  handler: (input: any) => Promise<{ content: Array<{ type: string; text: string }> }>,
-): (input: any) => Promise<{ content: Array<{ type: string; text: string }> }> {
+  handler: (input: any) => Promise<ToolTextResponse>,
+): (input: any) => Promise<ToolTextResponse> {
   return async (input: any) => {
     try {
       return await handler(input);
@@ -261,7 +264,7 @@ function safeTool(
       Sentry.captureException(err, { tags: { component: 'mcp', tool: toolName, agentId } });
       return {
         content: [{
-          type: 'text',
+          type: 'text' as const,
           text: JSON.stringify({ error: `Internal error in ${toolName}: ${err.message ?? 'unknown'}` }),
         }],
       };
@@ -278,7 +281,7 @@ function buildMcpServer(agentId: string): MCP {
     { question: askUserSchema.shape.question, timeout_ms: askUserSchema.shape.timeout_ms },
     safeTool('ask_user', agentId, async (input) => {
       const answer = await askUserHandler(agentId, input as any);
-      return { content: [{ type: 'text', text: answer }] };
+      return { content: [{ type: 'text' as const, text: answer }] };
     })
   );
 
@@ -288,7 +291,7 @@ function buildMcpServer(agentId: string): MCP {
     { files: lockFilesSchema.shape.files, reason: lockFilesSchema.shape.reason, ttl_ms: lockFilesSchema.shape.ttl_ms, timeout_ms: lockFilesSchema.shape.timeout_ms },
     safeTool('lock_files', agentId, async (input) => {
       const result = await lockFilesHandler(agentId, input as any);
-      return { content: [{ type: 'text', text: result }] };
+      return { content: [{ type: 'text' as const, text: result }] };
     })
   );
 
@@ -298,7 +301,7 @@ function buildMcpServer(agentId: string): MCP {
     { files: releaseFilesSchema.shape.files },
     safeTool('release_files', agentId, async (input) => {
       const result = await releaseFilesHandler(agentId, input as any);
-      return { content: [{ type: 'text', text: result }] };
+      return { content: [{ type: 'text' as const, text: result }] };
     })
   );
 
@@ -308,7 +311,7 @@ function buildMcpServer(agentId: string): MCP {
     {},
     safeTool('check_file_locks', agentId, async (input) => {
       const result = await checkFileLocksHandler(agentId, input as any);
-      return { content: [{ type: 'text', text: result }] };
+      return { content: [{ type: 'text' as const, text: result }] };
     })
   );
 
@@ -318,7 +321,7 @@ function buildMcpServer(agentId: string): MCP {
     { message: reportStatusSchema.shape.message },
     safeTool('report_status', agentId, async (input) => {
       const result = await reportStatusHandler(agentId, input as any);
-      return { content: [{ type: 'text', text: result }] };
+      return { content: [{ type: 'text' as const, text: result }] };
     })
   );
 
@@ -336,7 +339,35 @@ function buildMcpServer(agentId: string): MCP {
     },
     safeTool('create_job', agentId, async (input) => {
       const result = await createJobHandler(agentId, input as any);
-      return { content: [{ type: 'text', text: result }] };
+      return { content: [{ type: 'text' as const, text: result }] };
+    })
+  );
+
+  server.tool(
+    'create_autonomous_agent_run',
+    'Create a structured autonomous agent run with assess, review, and implement phases. Use this instead of create_job when the work needs iterative planning, milestone tracking, shared worktree continuity, or automatic PR creation.',
+    {
+      task: createAutonomousAgentRunSchema.shape.task,
+      title: createAutonomousAgentRunSchema.shape.title,
+      workDir: createAutonomousAgentRunSchema.shape.workDir,
+      implementerModel: createAutonomousAgentRunSchema.shape.implementerModel,
+      reviewerModel: createAutonomousAgentRunSchema.shape.reviewerModel,
+      maxCycles: createAutonomousAgentRunSchema.shape.maxCycles,
+      maxTurnsAssess: createAutonomousAgentRunSchema.shape.maxTurnsAssess,
+      maxTurnsReview: createAutonomousAgentRunSchema.shape.maxTurnsReview,
+      maxTurnsImplement: createAutonomousAgentRunSchema.shape.maxTurnsImplement,
+      stopModeAssess: createAutonomousAgentRunSchema.shape.stopModeAssess,
+      stopValueAssess: createAutonomousAgentRunSchema.shape.stopValueAssess,
+      stopModeReview: createAutonomousAgentRunSchema.shape.stopModeReview,
+      stopValueReview: createAutonomousAgentRunSchema.shape.stopValueReview,
+      stopModeImplement: createAutonomousAgentRunSchema.shape.stopModeImplement,
+      stopValueImplement: createAutonomousAgentRunSchema.shape.stopValueImplement,
+      templateId: createAutonomousAgentRunSchema.shape.templateId,
+      useWorktree: createAutonomousAgentRunSchema.shape.useWorktree,
+    },
+    safeTool('create_autonomous_agent_run', agentId, async (input) => {
+      const result = await createAutonomousAgentRunHandler(agentId, input as any);
+      return { content: [{ type: 'text' as const, text: result }] };
     })
   );
 
@@ -349,7 +380,7 @@ function buildMcpServer(agentId: string): MCP {
     },
     safeTool('wait_for_jobs', agentId, async (input) => {
       const result = await waitForJobsHandler(agentId, input as any);
-      return { content: [{ type: 'text', text: result }] };
+      return { content: [{ type: 'text' as const, text: result }] };
     })
   );
 

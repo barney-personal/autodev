@@ -36,6 +36,7 @@ router.use('/batch-templates', batchTemplatesRouter);
 router.use('/settings', settingsRouter);
 router.use('/debates', debatesRouter);
 router.use('/workflows', workflowsRouter);
+router.use('/autonomous-agent-runs', workflowsRouter);
 router.use('/worktrees', worktreesRouter);
 router.use('/stats', statsRouter);
 router.use('/knowledge-base', knowledgeBaseRouter);

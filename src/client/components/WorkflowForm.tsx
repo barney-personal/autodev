@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import type { CreateWorkflowRequest, Template, StopMode } from '@shared/types';
+import type { CreateAutonomousAgentRunRequest, Template, StopMode } from '@shared/types';
 import { useModels } from '../hooks/useModels';
 import { StopModePicker } from './StopModePicker';
 
 interface WorkflowFormProps {
-  onSubmit: (req: CreateWorkflowRequest) => Promise<void>;
+  onSubmit: (req: CreateAutonomousAgentRunRequest) => Promise<void>;
   onClose: () => void;
 }
 
@@ -64,7 +64,7 @@ export function WorkflowForm({ onSubmit, onClose }: WorkflowFormProps) {
       });
       onClose();
     } catch (err: any) {
-      setError(err.message ?? 'Failed to create workflow');
+      setError(err.message ?? 'Failed to create autonomous agent run');
     } finally {
       setLoading(false);
     }
@@ -201,7 +201,7 @@ export function WorkflowForm({ onSubmit, onClose }: WorkflowFormProps) {
           <div className="form-actions">
             <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
             <button type="submit" className="btn btn-primary" disabled={loading || !task.trim()}>
-              {loading ? 'Starting...' : 'Start Workflow'}
+              {loading ? 'Starting...' : 'Start Run'}
             </button>
           </div>
         </form>

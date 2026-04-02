@@ -33,7 +33,7 @@ import { useWorkflows } from './hooks/useWorkflows';
 import { useToasts } from './hooks/useToasts';
 import { ToastFeed } from './components/ToastFeed';
 import socket from './socket';
-import type { AgentWithJob, AgentOutput, CreateJobRequest, CreateDebateRequest, CreateWorkflowRequest, Debate, Workflow, Job, Template, BatchTemplate, Discussion, Proposal } from '@shared/types';
+import type { AgentWithJob, AgentOutput, CreateJobRequest, CreateDebateRequest, CreateAutonomousAgentRunRequest, Debate, Workflow, Job, Template, BatchTemplate, Discussion, Proposal } from '@shared/types';
 
 export default function App() {
   const { agents, setInitial: setInitialAgents, addAgent, updateAgent } = useAgents();
@@ -337,15 +337,15 @@ export default function App() {
     }
   }, [activeProjectId]);
 
-  const handleSubmitWorkflow = useCallback(async (req: CreateWorkflowRequest) => {
-    const res = await fetch('/api/workflows', {
+  const handleSubmitWorkflow = useCallback(async (req: CreateAutonomousAgentRunRequest) => {
+    const res = await fetch('/api/autonomous-agent-runs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(req),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      throw new Error(err.error ?? 'Failed to create workflow');
+      throw new Error(err.error ?? 'Failed to create autonomous agent run');
     }
     const data = await res.json();
     addProject(data.project);

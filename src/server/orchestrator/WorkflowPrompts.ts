@@ -7,9 +7,9 @@ import type { Workflow } from '../../shared/types.js';
 export function buildAssessPrompt(workflow: Workflow): string {
   const planKey = `workflow/${workflow.id}/plan`;
   const contractKey = `workflow/${workflow.id}/contract`;
-  return `# Workflow: Assess Phase (Cycle 0)
+  return `# Autonomous Agent Run: Assess Phase (Cycle 0)
 
-You are the IMPLEMENTER agent in a structured plan/review/implement workflow.
+You are the IMPLEMENTER agent in a structured autonomous agent run with assess/review/implement phases.
 Your task in this phase is to **assess the codebase and propose a plan**.
 
 ## Task
@@ -32,7 +32,7 @@ Write the plan to the shared scratchpad using \`write_note\` with key \`${planKe
 # Plan
 
 ## Goal
-<one-line description of what this workflow aims to achieve>
+<one-line description of what this autonomous agent run aims to achieve>
 
 ## Assessment
 <brief assessment of current state relevant to the task>
@@ -55,7 +55,7 @@ Write the plan to the shared scratchpad using \`write_note\` with key \`${planKe
 Also write the operating contract using \`write_note\` with key \`${contractKey}\`:
 
 \`\`\`markdown
-# Workflow Contract
+# Autonomous Agent Run Contract
 - One agent works at a time (no concurrent edits)
 - Plan milestones use checkbox format: \`- [ ]\` unchecked, \`- [x]\` checked
 - Worklog entries are append-only
@@ -109,9 +109,9 @@ The implementer just completed cycle ${cycle - 1}. You must review the actual co
 These fix milestones will be implemented in the next cycle. Be specific — vague feedback like "improve error handling" is not actionable.
 `;
 
-  return `# Workflow: Review Phase (Cycle ${cycle})
+  return `# Autonomous Agent Run: Review Phase (Cycle ${cycle})
 
-You are the REVIEWER agent in a structured plan/review/implement workflow.
+You are the REVIEWER agent in a structured autonomous agent run with assess/review/implement phases.
 ${isFirstReview
     ? 'This is the first review — no code has been written yet. Your job is to validate and improve the initial plan.'
     : `Your primary job this cycle is to **review the code Claude just wrote** and add fix milestones for any issues. Then update the plan for the next cycle.`}
@@ -157,9 +157,9 @@ export function buildImplementPrompt(workflow: Workflow, cycle: number): string 
   const contractKey = `workflow/${workflow.id}/contract`;
   const worklogKey = `workflow/${workflow.id}/worklog/cycle-${cycle}`;
   const worklogPrefix = `workflow/${workflow.id}/worklog/`;
-  return `# Workflow: Implement Phase (Cycle ${cycle})
+  return `# Autonomous Agent Run: Implement Phase (Cycle ${cycle})
 
-You are the IMPLEMENTER agent in a structured plan/review/implement workflow.
+You are the IMPLEMENTER agent in a structured autonomous agent run with assess/review/implement phases.
 Your task is to **implement the top unchecked milestone** from the plan.
 
 ## Task

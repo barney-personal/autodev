@@ -51,6 +51,20 @@ describe('GET /api/workflows', () => {
   });
 });
 
+describe('GET /api/autonomous-agent-runs', () => {
+  beforeEach(async () => { await setupTestDb(); vi.clearAllMocks(); app = createTestApp(); });
+  afterEach(async () => { await cleanupTestDb(); });
+
+  it('lists autonomous agent runs via the new alias route', async () => {
+    const project = await insertTestProject();
+    await insertTestWorkflow({ project_id: project.id, title: 'Run 1' });
+    const res = await request(app).get('/api/autonomous-agent-runs');
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0].title).toBe('Run 1');
+  });
+});
+
 describe('GET /api/workflows/:id', () => {
   beforeEach(async () => { await setupTestDb(); vi.clearAllMocks(); app = createTestApp(); });
   afterEach(async () => { await cleanupTestDb(); });
@@ -146,6 +160,21 @@ describe('POST /api/workflows', () => {
     const socket = await import('../../server/socket/SocketManager.js');
     await request(app).post('/api/workflows').send({ task: 'test' });
     expect(socket.emitWorkflowNew).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('POST /api/autonomous-agent-runs', () => {
+  beforeEach(async () => { await setupTestDb(); vi.clearAllMocks(); app = createTestApp(); });
+  afterEach(async () => { await cleanupTestDb(); });
+
+  it('creates an autonomous agent run via the new route', async () => {
+    const res = await request(app)
+      .post('/api/autonomous-agent-runs')
+      .send({ task: 'Ship the feature' });
+    expect(res.status).toBe(201);
+    expect(res.body.workflow).toBeTruthy();
+    expect(res.body.workflow.title).toMatch(/^Autonomous Agent Run:/);
+    expect(res.body.jobs).toHaveLength(1);
   });
 });
 
