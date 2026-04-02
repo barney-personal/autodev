@@ -7,7 +7,7 @@ import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
 import type { Job, Workflow, WorkflowPhase, StopMode } from '../../shared/types.js';
 import { effectiveMaxTurns } from '../../shared/types.js';
-import { buildAssessPrompt, buildReviewPrompt, buildImplementPrompt } from './WorkflowPrompts.js';
+import { buildAssessPrompt, buildReviewPrompt, buildImplementPrompt, type InlineWorkflowContext } from './WorkflowPrompts.js';
 import { getFallbackModel, getModelProvider, markModelRateLimited, markProviderRateLimited } from './ModelClassifier.js';
 import { classifyJobFailure } from './FailureClassifier.js';
 import { nudgeQueue } from './WorkQueueManager.js';
@@ -166,6 +166,22 @@ export function parseMilestones(planText: string): { total: number; done: number
 
 // ─── Phase Job Spawning ─────────────────────────────────────────────────────
 
+/**
+ * Pre-read plan, contract, and worklog notes for a workflow so they can be
+ * inlined in review/implement prompts. This eliminates 2-4 MCP tool
+ * round-trips at phase start.
+ */
+function preReadWorkflowContext(workflowId: string): InlineWorkflowContext {
+  const plan = queries.getNote(`workflow/${workflowId}/plan`);
+  const contract = queries.getNote(`workflow/${workflowId}/contract`);
+  const worklogNotes = queries.listNotes(`workflow/${workflowId}/worklog/`);
+  return {
+    plan: plan?.value ?? undefined,
+    contract: contract?.value ?? undefined,
+    worklogs: worklogNotes.map(n => ({ key: n.key, value: n.value })),
+  };
+}
+
 function spawnPhaseJob(workflow: Workflow, phase: WorkflowPhase, cycle: number, modelOverride?: string): void {
   const phaseLabels: Record<string, string> = { assess: 'Assess', review: 'Review', implement: 'Implement' };
   const label = phaseLabels[phase] ?? phase;
@@ -176,6 +192,11 @@ function spawnPhaseJob(workflow: Workflow, phase: WorkflowPhase, cycle: number, 
   let stopMode: StopMode;
   let stopValue: number | null;
   let prompt: string;
+
+  // Pre-read scratchpad notes for review/implement phases to inline in prompts
+  const inlineContext = (phase === 'review' || phase === 'implement')
+    ? preReadWorkflowContext(workflow.id)
+    : undefined;
 
   switch (phase) {
     case 'assess':
@@ -190,14 +211,14 @@ function spawnPhaseJob(workflow: Workflow, phase: WorkflowPhase, cycle: number, 
       maxTurns = workflow.max_turns_review;
       stopMode = workflow.stop_mode_review;
       stopValue = workflow.stop_value_review;
-      prompt = buildReviewPrompt(workflow, cycle);
+      prompt = buildReviewPrompt(workflow, cycle, inlineContext);
       break;
     case 'implement':
       model = workflow.implementer_model;
       maxTurns = workflow.max_turns_implement;
       stopMode = workflow.stop_mode_implement;
       stopValue = workflow.stop_value_implement;
-      prompt = buildImplementPrompt(workflow, cycle);
+      prompt = buildImplementPrompt(workflow, cycle, inlineContext);
       break;
     default:
       throw new Error(`Invalid phase: ${phase}`);
@@ -337,6 +358,11 @@ export function resumeWorkflow(
   let stopValue: number | null;
   let prompt: string;
 
+  // Pre-read scratchpad notes for review/implement phases
+  const inlineContext = (phase === 'review' || phase === 'implement')
+    ? preReadWorkflowContext(updated.id)
+    : undefined;
+
   switch (phase) {
     case 'assess':
       model = updated.implementer_model;
@@ -350,14 +376,14 @@ export function resumeWorkflow(
       maxTurns = updated.max_turns_review;
       stopMode = updated.stop_mode_review;
       stopValue = updated.stop_value_review;
-      prompt = buildReviewPrompt(updated, cycle);
+      prompt = buildReviewPrompt(updated, cycle, inlineContext);
       break;
     case 'implement':
       model = updated.implementer_model;
       maxTurns = updated.max_turns_implement;
       stopMode = updated.stop_mode_implement;
       stopValue = updated.stop_value_implement;
-      prompt = buildImplementPrompt(updated, cycle);
+      prompt = buildImplementPrompt(updated, cycle, inlineContext);
       break;
     default:
       throw new Error(`Cannot resume from phase '${phase}'`);

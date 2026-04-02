@@ -1,5 +1,50 @@
 import type { Workflow } from '../../shared/types.js';
 
+// ─── Inline Context ──────────────────────────────────────────────────────────
+
+/** Pre-read scratchpad context to inline in review/implement prompts. */
+export interface InlineWorkflowContext {
+  plan?: string;
+  contract?: string;
+  worklogs?: Array<{ key: string; value: string }>;
+}
+
+/**
+ * Hard cap (in characters) for the total inline context section.
+ * Keeps prompt growth bounded even for workflows with many cycles.
+ */
+export const INLINE_CONTEXT_MAX_CHARS = 60_000;
+
+/**
+ * Render an inline context section if context is available.
+ * Truncates to INLINE_CONTEXT_MAX_CHARS so prompt size stays bounded.
+ * Returns empty string when no inline context is provided.
+ */
+export function renderInlineContext(ctx: InlineWorkflowContext | undefined, planKey: string, contractKey: string, worklogPrefix: string): string {
+  if (!ctx) return '';
+  const parts: string[] = [];
+
+  if (ctx.plan) {
+    parts.push(`### Plan (snapshot — use \`write_note("${planKey}", ...)\` to update)\n\n${ctx.plan}`);
+  }
+  if (ctx.contract) {
+    parts.push(`### Contract\n\n${ctx.contract}`);
+  }
+  if (ctx.worklogs && ctx.worklogs.length > 0) {
+    const logEntries = ctx.worklogs.map(w => `#### ${w.key}\n\n${w.value}`).join('\n\n');
+    parts.push(`### Worklogs (read-only snapshots)\n\n${logEntries}`);
+  }
+
+  if (parts.length === 0) return '';
+
+  let body = parts.join('\n\n');
+  if (body.length > INLINE_CONTEXT_MAX_CHARS) {
+    body = body.slice(0, INLINE_CONTEXT_MAX_CHARS) + '\n\n... (truncated — use `list_notes("' + worklogPrefix + '")` to read remaining entries)';
+  }
+
+  return `\n\n## Pre-loaded Context\n\nThe following scratchpad context has been pre-read for you. You do NOT need to call \`read_note\` for these unless you need to refresh after an update.\n\n${body}`;
+}
+
 /**
  * Build the assess phase prompt (cycle 0 only).
  * The agent scans the codebase, writes a plan with checkbox milestones, and stores it as a note.
@@ -77,19 +122,20 @@ Also write the operating contract using \`write_note\` with key \`${contractKey}
  * Cycle 1: plan quality review only (no code yet).
  * Cycle 2+: code quality review of the last implementation + plan update.
  */
-export function buildReviewPrompt(workflow: Workflow, cycle: number): string {
+export function buildReviewPrompt(workflow: Workflow, cycle: number, inlineContext?: InlineWorkflowContext): string {
   const planKey = `workflow/${workflow.id}/plan`;
   const contractKey = `workflow/${workflow.id}/contract`;
   const worklogKey = `workflow/${workflow.id}/worklog/cycle-${cycle - 1}`;
   const worklogPrefix = `workflow/${workflow.id}/worklog/`;
   const isFirstReview = cycle === 1;
+  const hasInline = !!inlineContext;
 
   const codeReviewSection = isFirstReview ? '' : `
 ## Step 2: Code Review (MOST IMPORTANT)
 
 The implementer just completed cycle ${cycle - 1}. You must review the actual code changes before touching the plan.
 
-1. Read the worklog for what was changed: \`read_note("${worklogKey}")\`
+1. ${hasInline ? 'Review the worklog in the Pre-loaded Context section below.' : `Read the worklog for what was changed: \`read_note("${worklogKey}")\``}
 2. In the working directory (${workflow.work_dir ?? 'project root'}), inspect the implementation:
    - Run \`git log --oneline -10\` to see recent commits
    - Run \`git diff HEAD~1\` (or \`git diff HEAD~<n>\` to cover all commits from this cycle) to see exact code changes
@@ -109,6 +155,18 @@ The implementer just completed cycle ${cycle - 1}. You must review the actual co
 These fix milestones will be implemented in the next cycle. Be specific — vague feedback like "improve error handling" is not actionable.
 `;
 
+  const readContextSection = hasInline
+    ? `## Step 1: Read Context
+
+The current plan, contract, and worklogs have been pre-loaded below. Review them directly — no \`read_note\` calls needed unless you want to refresh after an update.
+`
+    : `## Step 1: Read Context
+
+1. Read the current plan: \`read_note("${planKey}")\`
+2. Read the operating contract: \`read_note("${contractKey}")\`
+3. Read all worklog entries: \`list_notes("${worklogPrefix}")\` then read each one.
+`;
+
   return `# Autonomous Agent Run: Review Phase (Cycle ${cycle})
 
 You are the REVIEWER agent in a structured autonomous agent run with assess/review/implement phases.
@@ -122,11 +180,7 @@ ${workflow.task}
 ## Working Directory
 ${workflow.work_dir ?? '(not specified)'}
 
-## Step 1: Read Context
-
-1. Read the current plan: \`read_note("${planKey}")\`
-2. Read the operating contract: \`read_note("${contractKey}")\`
-3. Read all worklog entries: \`list_notes("${worklogPrefix}")\` then read each one.
+${readContextSection}
 ${codeReviewSection}
 ## Step ${isFirstReview ? 2 : 3}: Update the Plan
 
@@ -145,18 +199,32 @@ Write the updated plan back: \`write_note("${planKey}", <updated plan>)\`
 - If the implementation was poor quality, add multiple specific fix milestones rather than vague notes.
 - The implementer reads your plan directly — be precise and actionable.${workflow.worktree_branch ? `
 - **You are on branch \`${workflow.worktree_branch}\`. Do NOT switch branches or checkout main.**` : ''}
-- Call \`report_status\` to update your progress.`;
+- Call \`report_status\` to update your progress.${renderInlineContext(inlineContext, planKey, contractKey, worklogPrefix)}`;
 }
 
 /**
  * Build the implement phase prompt.
  * The agent reads the plan, implements the top unchecked milestone, and writes a worklog entry.
  */
-export function buildImplementPrompt(workflow: Workflow, cycle: number): string {
+export function buildImplementPrompt(workflow: Workflow, cycle: number, inlineContext?: InlineWorkflowContext): string {
   const planKey = `workflow/${workflow.id}/plan`;
   const contractKey = `workflow/${workflow.id}/contract`;
   const worklogKey = `workflow/${workflow.id}/worklog/cycle-${cycle}`;
   const worklogPrefix = `workflow/${workflow.id}/worklog/`;
+  const hasInline = !!inlineContext;
+
+  const readSteps = hasInline
+    ? `1. **Review the pre-loaded context** below — the current plan, contract, and prior worklogs are already included.
+2. **Find the first unchecked milestone** (\`- [ ]\`) in the plan.`
+    : `1. **Read the current plan**: \`read_note("${planKey}")\`
+2. **Read the operating contract**: \`read_note("${contractKey}")\`
+3. **Read previous worklog entries**: \`list_notes("${worklogPrefix}")\` then read each one to understand prior work.
+4. **Find the first unchecked milestone** (\`- [ ]\`) in the plan.`;
+
+  const implementStep = hasInline ? 3 : 5;
+  const checkOffStep = hasInline ? 4 : 6;
+  const worklogStep = hasInline ? 5 : 7;
+
   return `# Autonomous Agent Run: Implement Phase (Cycle ${cycle})
 
 You are the IMPLEMENTER agent in a structured autonomous agent run with assess/review/implement phases.
@@ -170,18 +238,15 @@ ${workflow.work_dir ?? '(not specified)'}
 
 ## Instructions
 
-1. **Read the current plan**: \`read_note("${planKey}")\`
-2. **Read the operating contract**: \`read_note("${contractKey}")\`
-3. **Read previous worklog entries**: \`list_notes("${worklogPrefix}")\` then read each one to understand prior work.
-4. **Find the first unchecked milestone** (\`- [ ]\`) in the plan.
-5. **Implement it**:
+${readSteps}
+${implementStep}. **Implement it**:
    - Make the necessary code changes
    - Run tests and fix any issues you introduce
    - Ensure all existing tests still pass
    - Commit with descriptive messages
-6. **Check off the milestone** — update the plan, changing \`- [ ]\` to \`- [x]\` for the completed milestone:
+${checkOffStep}. **Check off the milestone** — update the plan, changing \`- [ ]\` to \`- [x]\` for the completed milestone:
    \`write_note("${planKey}", <updated plan with milestone checked off>)\`
-7. **Write a worklog entry** using \`write_note("${worklogKey}", <worklog entry>)\`
+${worklogStep}. **Write a worklog entry** using \`write_note("${worklogKey}", <worklog entry>)\`
 
 ## Worklog Entry Format
 
@@ -214,5 +279,5 @@ ${workflow.work_dir ?? '(not specified)'}
 - If blocked, explain clearly in the worklog and set the "Next step" to describe what needs to happen.
 - Call \`report_status\` regularly to update your progress.
 - Call \`search_kb\` at the start for relevant prior knowledge.
-- Call \`report_learnings\` near the end with anything useful you discovered.`;
+- Call \`report_learnings\` near the end with anything useful you discovered.${renderInlineContext(inlineContext, planKey, contractKey, worklogPrefix)}`;
 }
