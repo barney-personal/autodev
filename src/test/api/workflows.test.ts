@@ -232,6 +232,22 @@ describe('POST /api/workflows/:id/resume', () => {
     expect(res.body.error).toMatch(/blocked/i);
   });
 
+  it('force=true resumes a running workflow by marking it blocked first', async () => {
+    const project = await insertTestProject();
+    const wf = await insertTestWorkflow({ project_id: project.id, status: 'running' });
+    const res = await request(app)
+      .post(`/api/workflows/${wf.id}/resume`)
+      .send({ force: true });
+    expect(res.status).toBe(200);
+    expect(res.body.workflow).toBeTruthy();
+    expect(res.body.jobs).toHaveLength(1);
+    // resumeWorkflow should have been called with the updated (blocked) workflow object
+    const { resumeWorkflow } = await import('../../server/orchestrator/WorkflowManager.js');
+    expect(resumeWorkflow).toHaveBeenCalledTimes(1);
+    const calledWith = (resumeWorkflow as any).mock.calls[0][0];
+    expect(calledWith.status).toBe('blocked');
+  });
+
   it('returns 404 for unknown workflow', async () => {
     const res = await request(app).post('/api/workflows/nonexistent/resume');
     expect(res.status).toBe(404);
