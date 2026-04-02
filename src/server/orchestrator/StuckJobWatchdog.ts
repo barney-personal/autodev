@@ -265,6 +265,7 @@ function check(): void {
         try {
           const nextJob = queries.scheduleRepeatJob(updatedJob);
           socket.emitJobNew(nextJob);
+          nudgeQueue();
           console.log(`[watchdog] scheduled next repeat for job "${updatedJob.title}" (${updatedJob.id})`);
         } catch (err) { console.error(`[watchdog] scheduleRepeatJob error:`, err); Sentry.captureException(err); }
       }
@@ -556,6 +557,7 @@ function check(): void {
       if (updatedJob) socket.emitJobUpdate(updatedJob);
       const updatedAgent = queries.getAgentWithJob(agentId);
       if (updatedAgent) socket.emitAgentUpdate(updatedAgent);
+      nudgeQueue();
 
       console.log(`[watchdog] re-queued job "${job.title}" with model ${fallbackModel}`);
     }

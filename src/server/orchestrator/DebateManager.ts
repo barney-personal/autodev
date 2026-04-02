@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import { Sentry } from '../instrument.js';
 import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
+import { nudgeQueue } from './WorkQueueManager.js';
 import type { Job, Debate, DebateRole } from '../../shared/types.js';
 
 const MAX_VERIFICATION_ROUNDS = 10;
@@ -330,6 +331,7 @@ export function spawnInitialRoundJobs(debate: Debate): [Job, Job] {
 
   socket.emitJobNew(claudeJob);
   socket.emitJobNew(codexJob);
+  nudgeQueue();
 
   console.log(`[debate ${debate.id}] spawned initial jobs (loop ${debate.current_loop + 1}): claude=${claudeJob.id.slice(0, 8)} codex=${codexJob.id.slice(0, 8)}`);
   return [claudeJob, codexJob];
@@ -383,6 +385,7 @@ function createDiscussionRound(
 
   socket.emitJobNew(claudeJob);
   socket.emitJobNew(codexJob);
+  nudgeQueue();
 
   const updated = queries.getDebateById(debate.id);
   if (updated) socket.emitDebateUpdate(updated);
@@ -546,6 +549,7 @@ function maybeSpawnPostAction(
   });
 
   socket.emitJobNew(job);
+  nudgeQueue();
 
   const updated = queries.updateDebate(debate.id, { post_action_job_id: job.id });
   if (updated) socket.emitDebateUpdate(updated);
@@ -582,6 +586,7 @@ function spawnVerificationReview(debate: Debate, implementationResult: string | 
   });
 
   socket.emitJobNew(job);
+  nudgeQueue();
 
   const updated = queries.updateDebate(debate.id, { verification_review_job_id: job.id });
   if (updated) socket.emitDebateUpdate(updated);
@@ -621,6 +626,7 @@ function spawnVerificationResponse(
   });
 
   socket.emitJobNew(job);
+  nudgeQueue();
 
   const updated = queries.updateDebate(debate.id, { verification_response_job_id: job.id });
   if (updated) socket.emitDebateUpdate(updated);

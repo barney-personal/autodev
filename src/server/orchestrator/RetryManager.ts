@@ -148,6 +148,7 @@ function retryAnalyze(job: Job, agentId: string): boolean {
   });
 
   socket.emitJobNew(analysisJob);
+  nudgeQueue();
   console.log(`[retry] queued analysis job ${analysisJob.id} for failed job ${job.id}`);
   return true;
 }

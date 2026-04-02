@@ -6,6 +6,7 @@ import * as socket from '../socket/SocketManager.js';
 import { runAgent, cancelledAgents } from '../orchestrator/AgentRunner.js';
 import { disconnectAgent, disconnectAll, getPtyBuffer, getSnapshot, attachPty, isTmuxSessionAlive, saveSnapshot, startInteractiveAgent } from '../orchestrator/PtyManager.js';
 import { getFileLockRegistry } from '../orchestrator/FileLockRegistry.js';
+import { nudgeQueue } from '../orchestrator/WorkQueueManager.js';
 
 const router = Router();
 
@@ -147,6 +148,7 @@ router.post('/:id/retry', (req, res) => {
     project_id: originalJob.project_id ?? null,
   });
   socket.emitJobNew(retryJob);
+  nudgeQueue();
   res.status(201).json({ job: retryJob, queued: true });
 });
 
@@ -178,6 +180,7 @@ router.post('/:id/continue', (req, res) => {
     queries.upsertNote(`job-resume:${contJob.id}`, agent.session_id, null);
   }
   socket.emitJobNew(contJob);
+  nudgeQueue();
   res.status(201).json({ job: contJob, queued: true, resumes_session: !!agent.session_id });
 });
 
@@ -271,6 +274,7 @@ router.post('/:id/requeue', (req, res) => {
   socket.emitAgentUpdate(updated);
   const updatedJob = queries.getJobById(agent.job_id);
   if (updatedJob) socket.emitJobUpdate(updatedJob);
+  nudgeQueue();
 
   res.json(updated);
 });

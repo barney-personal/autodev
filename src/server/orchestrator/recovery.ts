@@ -11,6 +11,7 @@ import type { ClaudeStreamEvent } from '../../shared/types.js';
 import { isCodexModel, isAutoExitJob } from '../../shared/types.js';
 import { handleRetry } from './RetryManager.js';
 import { claimRecovery } from './RecoveryLedger.js';
+import { nudgeQueue } from './WorkQueueManager.js';
 
 function isPidAlive(pid: number): boolean {
   try {
@@ -113,6 +114,7 @@ export function runRecovery(): void {
           if (job.repeat_interval_ms) {
             try {
               queries.scheduleRepeatJob(job);
+              nudgeQueue();
               console.log(`[recovery] scheduled next repeat for job "${job.title}" (${job.id})`);
             } catch (err) { console.error(`[recovery] failed to schedule repeat for job ${job.id}:`, err); Sentry.captureException(err); }
           }

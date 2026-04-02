@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
 import { spawnInitialRoundJobs } from '../orchestrator/DebateManager.js';
+import { nudgeQueue } from '../orchestrator/WorkQueueManager.js';
 import type { CreateBatchTemplateRequest, UpdateBatchTemplateRequest, RunBatchTemplateRequest, Debate, Job } from '../../shared/types.js';
 
 const router = Router();
@@ -154,6 +155,7 @@ router.post('/:id/run', (req, res) => {
       socket.emitJobNew(job);
       return job;
     });
+    nudgeQueue();
 
     res.status(201).json({ project, jobs });
   }
