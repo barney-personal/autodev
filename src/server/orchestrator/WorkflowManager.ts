@@ -171,7 +171,7 @@ export function parseMilestones(planText: string): { total: number; done: number
  * inlined in review/implement prompts. This eliminates 2-4 MCP tool
  * round-trips at phase start.
  */
-function preReadWorkflowContext(workflowId: string): InlineWorkflowContext {
+export function preReadWorkflowContext(workflowId: string): InlineWorkflowContext {
   const plan = queries.getNote(`workflow/${workflowId}/plan`);
   const contract = queries.getNote(`workflow/${workflowId}/contract`);
   const worklogNotes = queries.listNotes(`workflow/${workflowId}/worklog/`);
