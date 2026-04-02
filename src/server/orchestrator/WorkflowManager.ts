@@ -267,7 +267,7 @@ function spawnRepairJob(
 ): boolean {
   const attemptsKey = repairAttemptsKey(workflow.id, phase, cycle);
   const existingAttempts = parseInt(queries.getNote(attemptsKey)?.value ?? '0', 10);
-  if (existingAttempts >= 1) return false;
+  if (existingAttempts >= 2) return false;
 
   queries.upsertNote(attemptsKey, String(existingAttempts + 1), null);
   const model = phase === 'review' ? workflow.reviewer_model : workflow.implementer_model;

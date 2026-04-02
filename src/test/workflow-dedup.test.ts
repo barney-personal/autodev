@@ -283,6 +283,54 @@ describe('WorkflowManager: onJobCompleted phase transitions', () => {
     expect(vi.mocked(socket.emitWorkflowUpdate).mock.calls.map(c => c[0].status)).not.toContain('blocked');
   });
 
+  it('repair is attempted twice before blocking (budget=2)', async () => {
+    const socket = await import('../server/socket/SocketManager.js');
+    const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    const { getWorkflowById, getJobsForWorkflow } = await import('../server/db/queries.js');
+
+    const project = await insertTestProject();
+    const workflow = await insertTestWorkflow({
+      project_id: project.id,
+      status: 'running',
+      current_phase: 'assess',
+      current_cycle: 0,
+    });
+
+    const job = await insertTestJob({
+      workflow_id: workflow.id,
+      workflow_cycle: 0,
+      workflow_phase: 'assess',
+      status: 'done',
+    });
+
+    // Assess completes with no notes → repair #1
+    onJobCompleted(job);
+
+    const jobs1 = getJobsForWorkflow(workflow.id);
+    const repair1 = jobs1.find(j => j.id !== job.id);
+    expect(repair1).toBeDefined();
+    expect(repair1!.title).toContain('repair');
+    expect(getWorkflowById(workflow.id)!.status).toBe('running');
+
+    // Repair #1 fails (still no notes) → repair #2
+    vi.clearAllMocks();
+    onJobCompleted({ ...repair1!, status: 'done' } as any);
+
+    const jobs2 = getJobsForWorkflow(workflow.id);
+    const repair2 = jobs2.find(j => j.id !== job.id && j.id !== repair1!.id);
+    expect(repair2).toBeDefined();
+    expect(repair2!.title).toContain('repair');
+    expect(getWorkflowById(workflow.id)!.status).toBe('running');
+
+    // Repair #2 fails → blocks (budget exhausted)
+    vi.clearAllMocks();
+    onJobCompleted({ ...repair2!, status: 'done' } as any);
+
+    const blocked = getWorkflowById(workflow.id)!;
+    expect(blocked.status).toBe('blocked');
+    expect(blocked.blocked_reason).toBeTruthy();
+  });
+
   it('failed phase job auto-retries with fallback model before blocking', async () => {
     const socket = await import('../server/socket/SocketManager.js');
     const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
@@ -642,18 +690,30 @@ describe('WorkflowManager: onJobCompleted phase transitions', () => {
 
     onJobCompleted(job);
 
-    // First call should spawn a repair job (budget=1)
-    const jobs = getJobsForWorkflow(workflow.id);
-    const repairJob = jobs.find(j => j.id !== job.id);
-    expect(repairJob).toBeDefined();
-    expect(repairJob!.title).toContain('repair');
+    // First call should spawn repair job #1 (budget=2)
+    const jobs1 = getJobsForWorkflow(workflow.id);
+    const repairJob1 = jobs1.find(j => j.id !== job.id);
+    expect(repairJob1).toBeDefined();
+    expect(repairJob1!.title).toContain('repair');
 
     const updated = getWorkflowById(workflow.id)!;
     expect(updated.status).toBe('running');
 
-    // Simulate repair also failing to add milestones — second completion should block
+    // Simulate repair #1 also failing to add milestones — should spawn repair job #2
     vi.clearAllMocks();
-    onJobCompleted({ ...repairJob!, status: 'done' } as any);
+    onJobCompleted({ ...repairJob1!, status: 'done' } as any);
+
+    const mid = getWorkflowById(workflow.id)!;
+    expect(mid.status).toBe('running');
+
+    const jobs2 = getJobsForWorkflow(workflow.id);
+    const repairJob2 = jobs2.find(j => j.id !== job.id && j.id !== repairJob1!.id);
+    expect(repairJob2).toBeDefined();
+    expect(repairJob2!.title).toContain('repair');
+
+    // Simulate repair #2 also failing — now should block
+    vi.clearAllMocks();
+    onJobCompleted({ ...repairJob2!, status: 'done' } as any);
 
     const blocked = getWorkflowById(workflow.id)!;
     expect(blocked.status).toBe('blocked');
@@ -793,14 +853,25 @@ describe('WorkflowManager: onJobCompleted phase transitions', () => {
 
     onJobCompleted(job);
 
-    // First call spawns a repair job
-    const jobs = getJobsForWorkflow(workflow.id);
-    const repairJob = jobs.find(j => j.id !== job.id);
-    expect(repairJob).toBeDefined();
+    // First call spawns repair job #1 (budget=2)
+    const jobs1 = getJobsForWorkflow(workflow.id);
+    const repairJob1 = jobs1.find(j => j.id !== job.id);
+    expect(repairJob1).toBeDefined();
 
-    // Simulate repair failing to write the plan — second completion should block with reason
+    // Simulate repair #1 failing to write the plan — should spawn repair #2
     vi.clearAllMocks();
-    onJobCompleted({ ...repairJob!, status: 'done' } as any);
+    onJobCompleted({ ...repairJob1!, status: 'done' } as any);
+
+    const mid = getWorkflowById(workflow.id)!;
+    expect(mid.status).toBe('running');
+
+    const jobs2 = getJobsForWorkflow(workflow.id);
+    const repairJob2 = jobs2.find(j => j.id !== job.id && j.id !== repairJob1!.id);
+    expect(repairJob2).toBeDefined();
+
+    // Simulate repair #2 also failing — now should block
+    vi.clearAllMocks();
+    onJobCompleted({ ...repairJob2!, status: 'done' } as any);
 
     const blocked = getWorkflowById(workflow.id)!;
     expect(blocked.status).toBe('blocked');
