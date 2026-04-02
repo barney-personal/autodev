@@ -15,6 +15,34 @@ export interface InlineWorkflowContext {
  */
 export const INLINE_CONTEXT_MAX_CHARS = 60_000;
 
+/**
+ * Extract a numeric cycle number from a worklog note key.
+ * Keys like "workflow/.../worklog/cycle-3" → 3.
+ * Returns NaN for non-cycle keys so they sort to the end.
+ */
+function extractCycleNumber(key: string): number {
+  const match = key.match(/cycle-(\d+)$/);
+  return match ? Number(match[1]) : NaN;
+}
+
+/**
+ * Sort worklogs by numeric cycle number extracted from the note key.
+ * Non-cycle keys (NaN) are placed at the end in their original relative order.
+ */
+export function sortWorklogsByNumericCycle(worklogs: Array<{ key: string; value: string }>): Array<{ key: string; value: string }> {
+  return [...worklogs].sort((a, b) => {
+    const na = extractCycleNumber(a.key);
+    const nb = extractCycleNumber(b.key);
+    // Both have numeric cycles — sort numerically
+    if (!isNaN(na) && !isNaN(nb)) return na - nb;
+    // Non-cycle keys go after cycle keys
+    if (isNaN(na) && !isNaN(nb)) return 1;
+    if (!isNaN(na) && isNaN(nb)) return -1;
+    // Both non-cycle — preserve original order
+    return 0;
+  });
+}
+
 /** Returns true only when the context object has at least one non-empty field. */
 export function hasInlineContent(ctx: InlineWorkflowContext | undefined): boolean {
   if (!ctx) return false;
@@ -40,7 +68,8 @@ export function renderInlineContext(ctx: InlineWorkflowContext | undefined, plan
     parts.push(`### Contract\n\n${ctx.contract}`);
   }
   if (ctx.worklogs && ctx.worklogs.length > 0) {
-    const logEntries = ctx.worklogs.map(w => `#### ${w.key}\n\n${w.value}`).join('\n\n');
+    const sorted = sortWorklogsByNumericCycle(ctx.worklogs);
+    const logEntries = sorted.map(w => `#### ${w.key}\n\n${w.value}`).join('\n\n');
     parts.push(`### Worklogs (read-only snapshots)\n\n${logEntries}`);
   }
 

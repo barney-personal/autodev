@@ -24,6 +24,7 @@ import {
   buildImplementPrompt,
   renderInlineContext,
   hasInlineContent,
+  sortWorklogsByNumericCycle,
   INLINE_CONTEXT_MAX_CHARS,
   type InlineWorkflowContext,
 } from '../server/orchestrator/WorkflowPrompts.js';
@@ -93,6 +94,82 @@ describe('hasInlineContent', () => {
   });
 });
 
+describe('sortWorklogsByNumericCycle', () => {
+  it('sorts single-digit cycles numerically', () => {
+    const input = [
+      { key: 'workflow/wf/worklog/cycle-3', value: 'c3' },
+      { key: 'workflow/wf/worklog/cycle-1', value: 'c1' },
+      { key: 'workflow/wf/worklog/cycle-2', value: 'c2' },
+    ];
+    const sorted = sortWorklogsByNumericCycle(input);
+    expect(sorted.map(w => w.key)).toEqual([
+      'workflow/wf/worklog/cycle-1',
+      'workflow/wf/worklog/cycle-2',
+      'workflow/wf/worklog/cycle-3',
+    ]);
+  });
+
+  it('sorts multi-digit cycles correctly (cycle-2 before cycle-10)', () => {
+    const input = [
+      { key: 'workflow/wf/worklog/cycle-10', value: 'c10' },
+      { key: 'workflow/wf/worklog/cycle-2', value: 'c2' },
+      { key: 'workflow/wf/worklog/cycle-1', value: 'c1' },
+      { key: 'workflow/wf/worklog/cycle-21', value: 'c21' },
+      { key: 'workflow/wf/worklog/cycle-3', value: 'c3' },
+    ];
+    const sorted = sortWorklogsByNumericCycle(input);
+    expect(sorted.map(w => w.key)).toEqual([
+      'workflow/wf/worklog/cycle-1',
+      'workflow/wf/worklog/cycle-2',
+      'workflow/wf/worklog/cycle-3',
+      'workflow/wf/worklog/cycle-10',
+      'workflow/wf/worklog/cycle-21',
+    ]);
+  });
+
+  it('places non-cycle keys at the end', () => {
+    const input = [
+      { key: 'workflow/wf/worklog/summary', value: 'sum' },
+      { key: 'workflow/wf/worklog/cycle-2', value: 'c2' },
+      { key: 'workflow/wf/worklog/cycle-1', value: 'c1' },
+      { key: 'workflow/wf/worklog/notes', value: 'notes' },
+    ];
+    const sorted = sortWorklogsByNumericCycle(input);
+    expect(sorted.map(w => w.key)).toEqual([
+      'workflow/wf/worklog/cycle-1',
+      'workflow/wf/worklog/cycle-2',
+      'workflow/wf/worklog/summary',
+      'workflow/wf/worklog/notes',
+    ]);
+  });
+
+  it('preserves relative order of non-cycle keys', () => {
+    const input = [
+      { key: 'workflow/wf/worklog/zebra', value: 'z' },
+      { key: 'workflow/wf/worklog/alpha', value: 'a' },
+    ];
+    const sorted = sortWorklogsByNumericCycle(input);
+    expect(sorted.map(w => w.key)).toEqual([
+      'workflow/wf/worklog/zebra',
+      'workflow/wf/worklog/alpha',
+    ]);
+  });
+
+  it('returns empty array for empty input', () => {
+    expect(sortWorklogsByNumericCycle([])).toEqual([]);
+  });
+
+  it('does not mutate the original array', () => {
+    const input = [
+      { key: 'workflow/wf/worklog/cycle-2', value: 'c2' },
+      { key: 'workflow/wf/worklog/cycle-1', value: 'c1' },
+    ];
+    const original = [...input];
+    sortWorklogsByNumericCycle(input);
+    expect(input).toEqual(original);
+  });
+});
+
 describe('renderInlineContext', () => {
   const planKey = 'workflow/wf-test-123/plan';
   const contractKey = 'workflow/wf-test-123/contract';
@@ -113,6 +190,22 @@ describe('renderInlineContext', () => {
     const result = renderInlineContext(ctx, planKey, contractKey, worklogPrefix);
     expect(result).toContain('truncated');
     expect(result).toContain('list_notes');
+  });
+
+  it('renders worklogs in numeric cycle order even when keys are lexicographically misordered', () => {
+    const ctx: InlineWorkflowContext = {
+      worklogs: [
+        { key: 'workflow/wf/worklog/cycle-10', value: 'ten' },
+        { key: 'workflow/wf/worklog/cycle-2', value: 'two' },
+        { key: 'workflow/wf/worklog/cycle-1', value: 'one' },
+      ],
+    };
+    const result = renderInlineContext(ctx, planKey, contractKey, worklogPrefix);
+    const posOne = result.indexOf('#### workflow/wf/worklog/cycle-1');
+    const posTwo = result.indexOf('#### workflow/wf/worklog/cycle-2');
+    const posTen = result.indexOf('#### workflow/wf/worklog/cycle-10');
+    expect(posOne).toBeLessThan(posTwo);
+    expect(posTwo).toBeLessThan(posTen);
   });
 
   it('returns text unchanged when under cap', () => {
