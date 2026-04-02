@@ -84,6 +84,48 @@ export function clearRecoveryState(job: Job): void {
   queries.deleteNote(noteKey(job));
 }
 
+/**
+ * Check if a job family has exhausted its recovery budget.
+ * Useful for deciding whether to block a workflow or keep retrying.
+ */
+export function isRecoveryExhausted(job: Job, options: ClaimOptions = {}): boolean {
+  const maxAttempts = options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
+  const windowMs = options.windowMs ?? DEFAULT_WINDOW_MS;
+  const current = readState(job);
+  if (!current) return false;
+
+  const now = Date.now();
+  // If the window has expired, the budget is reset — not exhausted
+  if (now - current.window_started_at > windowMs) return false;
+
+  return current.attempts >= maxAttempts;
+}
+
+/**
+ * Get a summary of the recovery state for a job family.
+ * Used by the health endpoint and debugging.
+ */
+export function getRecoverySummary(job: Job): {
+  attempts: number;
+  maxAttempts: number;
+  windowStartedAt: number;
+  lockUntil: number;
+  lastReason: string;
+  exhausted: boolean;
+} | null {
+  const current = readState(job);
+  if (!current) return null;
+
+  return {
+    attempts: current.attempts,
+    maxAttempts: DEFAULT_MAX_ATTEMPTS,
+    windowStartedAt: current.window_started_at,
+    lockUntil: current.lock_until,
+    lastReason: current.last_reason,
+    exhausted: isRecoveryExhausted(job),
+  };
+}
+
 export function _resetForTest(): void {
   for (const note of queries.listNotes('recovery:')) {
     queries.deleteNote(note.key);

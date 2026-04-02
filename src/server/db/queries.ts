@@ -722,15 +722,20 @@ function extractSearchText(content: string): string {
 
 export function insertAgentOutput(output: Omit<AgentOutput, 'id'>): void {
   const db = getDb();
+  // INSERT OR IGNORE for idempotency — if recovery replays a log file we may
+  // encounter duplicate (agent_id, seq) pairs. The unique index on
+  // (agent_id, seq) prevents double-inserts without erroring.
   const result = db.prepare(`
-    INSERT INTO agent_output (agent_id, seq, event_type, content, created_at)
+    INSERT OR IGNORE INTO agent_output (agent_id, seq, event_type, content, created_at)
     VALUES (?, ?, ?, ?, ?)
   `).run(output.agent_id, output.seq, output.event_type, output.content, output.created_at);
 
-  // Index in FTS table (skip empty text)
-  const text = extractSearchText(output.content);
-  if (text.trim()) {
-    db.prepare('INSERT INTO output_fts(rowid, text_content, agent_id) VALUES (?, ?, ?)').run(result.lastInsertRowid, text, output.agent_id);
+  // Only index in FTS if a row was actually inserted (changes > 0 means not a duplicate)
+  if (result.changes > 0) {
+    const text = extractSearchText(output.content);
+    if (text.trim()) {
+      db.prepare('INSERT INTO output_fts(rowid, text_content, agent_id) VALUES (?, ?, ?)').run(result.lastInsertRowid, text, output.agent_id);
+    }
   }
 }
 
@@ -1034,6 +1039,49 @@ export function getAgentLastSeq(agentId: string): number {
   return v.last_seq ?? -1;
 }
 
+/**
+ * Prune output rows for agents that have been in a terminal state for a while.
+ * Keeps the last `keepTail` rows per agent and deletes the rest, preventing
+ * unbounded growth of the agent_output table for long-running orchestrator
+ * instances with many completed agents.
+ *
+ * Returns the total number of rows deleted.
+ */
+export function pruneOldAgentOutput(maxAgeMs: number = 24 * 60 * 60 * 1000, keepTail: number = 200): number {
+  const db = getDb();
+  const cutoff = Date.now() - maxAgeMs;
+
+  // Find agents that finished before the cutoff and have output rows beyond keepTail
+  const candidates = db.prepare(`
+    SELECT a.id as agent_id, COUNT(o.id) as output_count
+    FROM agents a
+    JOIN agent_output o ON o.agent_id = a.id
+    WHERE a.status IN ('done', 'failed', 'cancelled')
+      AND a.finished_at IS NOT NULL
+      AND a.finished_at < ?
+    GROUP BY a.id
+    HAVING output_count > ?
+  `).all(cutoff, keepTail) as Array<{ agent_id: string; output_count: number }>;
+
+  let totalDeleted = 0;
+  for (const { agent_id, output_count } of candidates) {
+    const deleteCount = output_count - keepTail;
+    // Delete the oldest rows (lowest seq values) beyond the tail
+    const result = db.prepare(`
+      DELETE FROM agent_output
+      WHERE id IN (
+        SELECT id FROM agent_output
+        WHERE agent_id = ?
+        ORDER BY seq ASC
+        LIMIT ?
+      )
+    `).run(agent_id, deleteCount);
+    totalDeleted += result.changes;
+  }
+
+  return totalDeleted;
+}
+
 // ─── Questions ────────────────────────────────────────────────────────────────
 
 export function insertQuestion(question: Question): void {
@@ -1274,6 +1322,27 @@ export function listNotes(prefix?: string): Note[] {
 export function deleteNote(key: string): void {
   const db = getDb();
   db.prepare('DELETE FROM notes WHERE key = ?').run(key);
+}
+
+/**
+ * Clean up stale scratchpad notes that haven't been updated in a while.
+ * Excludes system notes (setting:*, recovery:*, workflow/*, eye:*) which
+ * are managed by specific subsystems.
+ * Returns number of notes deleted.
+ */
+export function pruneStaleNotes(maxAgeMs: number = 7 * 24 * 60 * 60 * 1000): number {
+  const db = getDb();
+  const cutoff = Date.now() - maxAgeMs;
+  const result = db.prepare(`
+    DELETE FROM notes
+    WHERE updated_at < ?
+      AND key NOT LIKE 'setting:%'
+      AND key NOT LIKE 'recovery:%'
+      AND key NOT LIKE 'workflow/%'
+      AND key NOT LIKE 'eye:%'
+      AND key NOT LIKE 'job-resume:%'
+  `).run(cutoff);
+  return result.changes;
 }
 
 // ─── Projects ─────────────────────────────────────────────────────────────────

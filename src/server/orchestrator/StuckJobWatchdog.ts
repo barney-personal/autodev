@@ -588,6 +588,78 @@ function check(): void {
       socket.emitLockReleased(lock.id, lock.file_path);
     }
   }
+
+  // ── Check 8: Zombie process cleanup ───────────────────────────────────────
+  // Detect and kill OS processes whose parent agent record is in a terminal state.
+  // This catches leaked child processes that survived agent teardown (e.g. detached
+  // subprocesses, orphaned tmux sessions from crashed agents).
+  cleanupZombieProcesses();
+}
+
+/**
+ * Find tmux sessions named orchestrator-* that don't correspond to any running agent,
+ * and kill any OS processes whose agent is in a terminal state.
+ */
+function cleanupZombieProcesses(): void {
+  try {
+    const sessionsRaw = execFileSync('tmux', ['list-sessions', '-F', '#{session_name}'], {
+      encoding: 'utf8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
+
+    if (!sessionsRaw) return;
+
+    for (const session of sessionsRaw.split('\n')) {
+      if (!session.startsWith('orchestrator-')) continue;
+      const agentId = session.replace('orchestrator-', '');
+
+      const agent = queries.getAgentById(agentId);
+      if (!agent) {
+        // No agent record at all — orphaned tmux session
+        console.warn(`[watchdog] zombie tmux session ${session} — no matching agent record, killing`);
+        try { execFileSync('tmux', ['kill-session', '-t', session], { stdio: 'pipe' }); } catch { /* already gone */ }
+        continue;
+      }
+
+      // Agent exists but is in a terminal state — session should have been cleaned up
+      if (['done', 'failed', 'cancelled'].includes(agent.status)) {
+        console.warn(`[watchdog] zombie tmux session ${session} — agent is ${agent.status}, killing`);
+        try { execFileSync('tmux', ['kill-session', '-t', session], { stdio: 'pipe' }); } catch { /* already gone */ }
+      }
+    }
+  } catch (err: any) {
+    if (!err.message?.includes('no server running')) {
+      // tmux not running or not installed — that's fine
+    }
+  }
+
+  // Also check for zombie PIDs: agents in terminal state that still have a live PID
+  try {
+    const allAgents = queries.listAgents();
+    for (const agent of allAgents) {
+      if (!['done', 'failed', 'cancelled'].includes(agent.status)) continue;
+      if (agent.pid == null) continue;
+
+      try {
+        process.kill(agent.pid, 0); // check if alive
+        // Still alive — this is a zombie
+        console.warn(`[watchdog] zombie process PID ${agent.pid} for terminal agent ${agent.id.slice(0, 8)} (${agent.status}) — killing`);
+        try { process.kill(-agent.pid, 'SIGTERM'); } catch { /* not a process group */ }
+        try { process.kill(agent.pid, 'SIGTERM'); } catch { /* already gone */ }
+        // Schedule SIGKILL as fallback
+        setTimeout(() => {
+          try {
+            process.kill(agent.pid!, 0);
+            try { process.kill(-agent.pid!, 'SIGKILL'); } catch { /* ignore */ }
+            try { process.kill(agent.pid!, 'SIGKILL'); } catch { /* ignore */ }
+          } catch { /* already gone */ }
+        }, 5_000).unref();
+      } catch {
+        // Process is already dead — good
+      }
+    }
+  } catch (err) {
+    console.warn('[watchdog] zombie PID scan error:', err);
+  }
 }
 
 export function startWatchdog(): void {

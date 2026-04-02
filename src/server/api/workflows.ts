@@ -133,6 +133,8 @@ router.post('/:id/cancel', (req, res) => {
 });
 
 // POST /api/workflows/:id/resume — resume a blocked workflow
+// Accepts optional body: { phase?: 'assess' | 'review' | 'implement', cycle?: number }
+// to restart from a specific phase instead of the one that failed.
 router.post('/:id/resume', (req, res) => {
   const workflow = queries.getWorkflowById(req.params.id);
   if (!workflow) { res.status(404).json({ error: 'not found' }); return; }
@@ -141,7 +143,15 @@ router.post('/:id/resume', (req, res) => {
     return;
   }
 
-  const job = resumeWorkflow(workflow);
+  const targetPhase = req.body?.phase as string | undefined;
+  const targetCycle = req.body?.cycle as number | undefined;
+
+  if (targetPhase && !['assess', 'review', 'implement'].includes(targetPhase)) {
+    res.status(400).json({ error: `Invalid phase: ${targetPhase}. Must be assess, review, or implement.` });
+    return;
+  }
+
+  const job = resumeWorkflow(workflow, { phase: targetPhase as any, cycle: targetCycle });
   const updated = queries.getWorkflowById(workflow.id);
   res.json({ workflow: updated, jobs: [job] });
 });

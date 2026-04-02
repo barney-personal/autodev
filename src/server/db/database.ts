@@ -463,9 +463,62 @@ export function initDb(dbPath: string): DatabaseSync {
     db.exec('ALTER TABLE workflows ADD COLUMN pr_url TEXT');
   }
 
+  // ── Output deduplication: unique index on (agent_id, seq) ──────────────────
+  // Allows INSERT OR IGNORE to safely de-duplicate replay of log files during
+  // recovery. The old non-unique idx_output_agent index is superseded.
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_output_agent_seq ON agent_output(agent_id, seq)');
+
+  // ── Periodic WAL checkpoint ────────────────────────────────────────────────
+  // In WAL mode, the WAL file can grow unbounded if no checkpoints run.
+  // Run a passive checkpoint on init to truncate any WAL growth from the
+  // previous session, and set auto_checkpoint to a reasonable page count.
+  try {
+    db.exec('PRAGMA wal_checkpoint(PASSIVE)');
+    db.exec('PRAGMA wal_autocheckpoint = 1000'); // checkpoint every 1000 pages (~4MB)
+  } catch { /* WAL checkpoint may fail if DB is freshly created */ }
+
   // ── Performance indexes ────────────────────────────────────────────────────
   db.exec('CREATE INDEX IF NOT EXISTS idx_agents_job_id ON agents(job_id)');
   db.exec("CREATE INDEX IF NOT EXISTS idx_jobs_context_eye ON jobs(status) WHERE json_extract(context, '$.eye') = 1");
+
+  // ── FTS optimization ────────────────────────────────────────────────────────
+  // Run FTS5 optimize on startup to merge internal b-trees. This keeps
+  // full-text search fast after many inserts. Safe to run on every init —
+  // it's a no-op if the index is already optimized.
+  try {
+    db.exec("INSERT INTO output_fts(output_fts) VALUES('optimize')");
+  } catch { /* FTS optimize may fail on empty tables */ }
+  try {
+    db.exec("INSERT INTO kb_fts(kb_fts) VALUES('optimize')");
+  } catch { /* FTS optimize may fail on empty tables */ }
+
+  // ── Database integrity check ──────────────────────────────────────────────
+  // Run a quick integrity check on startup to detect corruption early.
+  // PRAGMA quick_check is fast (doesn't scan all data pages like integrity_check).
+  try {
+    const result = db.prepare('PRAGMA quick_check(1)').get() as any;
+    if (result && result.quick_check !== 'ok') {
+      console.error(`[db] INTEGRITY WARNING: quick_check returned "${result.quick_check}"`);
+    }
+  } catch (err) {
+    console.error('[db] integrity check failed:', err);
+  }
+
+  // Clean up orphaned records: jobs stuck in 'assigned' status from a previous crash
+  // (the agent dispatch was interrupted before it could run or fail).
+  try {
+    const stuck = db.prepare(
+      "SELECT id FROM jobs WHERE status = 'assigned' AND updated_at < ?"
+    ).all(Date.now() - 60_000) as Array<{ id: string }>;
+    if (stuck.length > 0) {
+      for (const row of stuck) {
+        db.prepare("UPDATE jobs SET status = 'queued', updated_at = ? WHERE id = ?").run(Date.now(), row.id);
+      }
+      console.log(`[db] reset ${stuck.length} stale assigned job(s) back to queued`);
+    }
+  } catch (err) {
+    console.error('[db] stale job cleanup error:', err);
+  }
 
   _db = db;
   return db;
@@ -473,6 +526,10 @@ export function initDb(dbPath: string): DatabaseSync {
 
 export function closeDb(): void {
   if (_db) {
+    // Run a final WAL checkpoint before closing to minimize WAL file size
+    try {
+      _db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    } catch { /* ignore — may fail on :memory: DBs */ }
     _db.close();
     _db = null;
   }

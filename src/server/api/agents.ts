@@ -1,9 +1,10 @@
 import { Router } from 'express';
 import { randomUUID } from 'crypto';
+import { execFileSync } from 'child_process';
 import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
 import { runAgent, cancelledAgents } from '../orchestrator/AgentRunner.js';
-import { disconnectAgent, disconnectAll, getPtyBuffer, getSnapshot, attachPty, isTmuxSessionAlive, startInteractiveAgent } from '../orchestrator/PtyManager.js';
+import { disconnectAgent, disconnectAll, getPtyBuffer, getSnapshot, attachPty, isTmuxSessionAlive, saveSnapshot, startInteractiveAgent } from '../orchestrator/PtyManager.js';
 import { getFileLockRegistry } from '../orchestrator/FileLockRegistry.js';
 
 const router = Router();
@@ -192,6 +193,11 @@ router.post('/:id/cancel', (req, res) => {
   // Mark cancelled before killing so handleAgentExit won't overwrite the status
   cancelledAgents.add(agent.id);
 
+  // Save tmux snapshot before killing so we have the last terminal state
+  if (isTmuxSessionAlive(agent.id)) {
+    try { saveSnapshot(agent.id); } catch { /* non-fatal */ }
+  }
+
   if (agent.pid) {
     try {
       process.kill(-agent.pid, 'SIGTERM');
@@ -203,6 +209,11 @@ router.post('/:id/cancel', (req, res) => {
       // ESRCH = process already gone — still mark as cancelled
     }
   }
+
+  // Also kill the tmux session to ensure full cleanup
+  try {
+    execFileSync('tmux', ['kill-session', '-t', `orchestrator-${agent.id}`], { stdio: 'pipe' });
+  } catch { /* session doesn't exist or already gone */ }
 
   // Update DB immediately so the UI reflects the change right away
   queries.updateAgent(agent.id, { status: 'cancelled', finished_at: Date.now() });
@@ -229,6 +240,11 @@ router.post('/:id/requeue', (req, res) => {
   // Mark cancelled before killing so handleAgentExit won't overwrite the status
   cancelledAgents.add(agent.id);
 
+  // Save tmux snapshot before killing
+  if (isTmuxSessionAlive(agent.id)) {
+    try { saveSnapshot(agent.id); } catch { /* non-fatal */ }
+  }
+
   if (agent.pid) {
     try {
       process.kill(-agent.pid, 'SIGTERM');
@@ -240,6 +256,11 @@ router.post('/:id/requeue', (req, res) => {
       // ESRCH = process already gone — still requeue
     }
   }
+
+  // Also kill the tmux session to ensure full cleanup
+  try {
+    execFileSync('tmux', ['kill-session', '-t', `orchestrator-${agent.id}`], { stdio: 'pipe' });
+  } catch { /* session doesn't exist or already gone */ }
 
   // Mark agent cancelled, but set job back to queued so WorkQueueManager re-dispatches it
   queries.updateAgent(agent.id, { status: 'cancelled', finished_at: Date.now() });

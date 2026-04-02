@@ -18,6 +18,7 @@ import { startKBConsolidator, stopKBConsolidator } from './orchestrator/KBConsol
 import { startGitHubPoller, stopGitHubPoller } from './integrations/GitHubPoller.js';
 import { runRecovery, startWorkflowGapDetector, stopWorkflowGapDetector } from './orchestrator/recovery.js';
 import { startResourceMonitor, stopResourceMonitor, setQueueControls } from './orchestrator/ResourceMonitor.js';
+import { startDbBackup, stopDbBackup, runBackupNow } from './orchestrator/DbBackup.js';
 import { writeInput, resizePty, resizeAndSnapshot, saveSnapshot, isTmuxSessionAlive } from './orchestrator/PtyManager.js';
 import * as queries from './db/queries.js';
 
@@ -149,6 +150,7 @@ async function main() {
   startKBConsolidator();
   startGitHubPoller();
   startResourceMonitor();
+  startDbBackup(DB_PATH);
   setQueueControls(stopWorkQueue, startWorkQueue);
 
   // Restore persisted settings
@@ -160,23 +162,50 @@ async function main() {
     console.log(`[server] Orchestrator listening on :${PORT}`);
   });
 
-  // 8. Graceful shutdown
+  // 8. Graceful shutdown with connection draining
   let shuttingDown = false;
+
+  /** Exposed for health checks — true once shutdown begins */
+  function isShuttingDown(): boolean { return shuttingDown; }
 
   async function shutdown(signal: string) {
     if (shuttingDown) return;
     shuttingDown = true;
     console.log(`\n[server] ${signal} received — shutting down gracefully`);
 
-    // Hard-exit watchdog: if shutdown takes >10s, force it
+    // Hard-exit watchdog: if shutdown takes >30s, force it
+    // (increased from 10s to allow running agents time to reach a checkpoint)
     const watchdog = setTimeout(() => {
       console.error('[server] Shutdown timed out — forcing exit');
       process.exit(1);
-    }, 10_000);
+    }, 30_000);
     watchdog.unref(); // don't let this alone keep the process alive
 
-    // Stop dispatching new jobs and all periodic monitors
+    // Phase 1: Stop dispatching new jobs but keep monitors running briefly
+    // so in-flight agents can still report status and release locks.
     stopWorkQueue();
+    console.log('[server] stopped work queue — no new jobs will be dispatched');
+
+    // Phase 2: Notify all running agents to finish gracefully.
+    // Send SIGTERM to give them a chance to commit work-in-progress.
+    try {
+      const runningAgents = queries.listAllRunningAgents();
+      if (runningAgents.length > 0) {
+        console.log(`[server] sending SIGTERM to ${runningAgents.length} running agent(s)`);
+        for (const agent of runningAgents) {
+          if (agent.pid != null) {
+            try { process.kill(agent.pid, 'SIGTERM'); } catch { /* already gone */ }
+          }
+        }
+        // Give agents a brief window to wrap up (e.g. finish current tool call)
+        const DRAIN_TIMEOUT_MS = 5_000;
+        await new Promise(resolve => setTimeout(resolve, DRAIN_TIMEOUT_MS));
+      }
+    } catch (err) {
+      console.error('[server] error during agent drain:', err);
+    }
+
+    // Phase 3: Stop all periodic monitors
     stopWatchdog();
     stopHealthMonitor();
     stopWorktreeCleanup();
@@ -184,10 +213,13 @@ async function main() {
     stopKBConsolidator();
     stopGitHubPoller();
     stopResourceMonitor();
+    stopDbBackup();
 
-    // Save tmux snapshots for all running agents so recovery on restart has
-    // the latest terminal state. Also persist pending_wait_ids so the recovery
-    // module can re-register orphaned waits without re-scanning output.
+    // Run a final backup before closing the database
+    runBackupNow();
+
+    // Phase 4: Save tmux snapshots for all running agents so recovery on restart
+    // has the latest terminal state.
     try {
       const runningAgents = queries.listAllRunningAgents();
       let snapshotCount = 0;
@@ -204,7 +236,7 @@ async function main() {
       console.error('[server] error saving agent snapshots:', err);
     }
 
-    // Stop accepting new HTTP connections; wait for in-flight requests to drain
+    // Phase 5: Stop accepting new HTTP connections; wait for in-flight requests to drain
     await new Promise<void>((resolve) => httpServer.close(() => resolve()));
 
     // Close all active MCP sessions so clients get a clean disconnect

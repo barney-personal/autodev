@@ -243,6 +243,32 @@ export function createMcpApp(): express.Application {
   return app;
 }
 
+/**
+ * Wrap an MCP tool handler with an error boundary. If the handler throws,
+ * returns a structured error response instead of crashing the MCP session.
+ * This prevents one buggy tool call from killing an agent's entire session.
+ */
+function safeTool(
+  toolName: string,
+  agentId: string,
+  handler: (input: any) => Promise<{ content: Array<{ type: string; text: string }> }>,
+): (input: any) => Promise<{ content: Array<{ type: string; text: string }> }> {
+  return async (input: any) => {
+    try {
+      return await handler(input);
+    } catch (err: any) {
+      console.error(`[mcp] tool ${toolName} error (agent ${agentId}):`, err);
+      Sentry.captureException(err, { tags: { component: 'mcp', tool: toolName, agentId } });
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({ error: `Internal error in ${toolName}: ${err.message ?? 'unknown'}` }),
+        }],
+      };
+    }
+  };
+}
+
 function buildMcpServer(agentId: string): MCP {
   const server = new MCP({ name: 'orchestrator', version: '1.0.0' });
 
@@ -250,50 +276,50 @@ function buildMcpServer(agentId: string): MCP {
     'ask_user',
     'Ask the human a question and wait for their answer before continuing.',
     { question: askUserSchema.shape.question, timeout_ms: askUserSchema.shape.timeout_ms },
-    async (input) => {
+    safeTool('ask_user', agentId, async (input) => {
       const answer = await askUserHandler(agentId, input as any);
       return { content: [{ type: 'text', text: answer }] };
-    }
+    })
   );
 
   server.tool(
     'lock_files',
     'Acquire exclusive locks on files before editing them. BLOCKS until locks are available or timeout_ms elapses. On timeout, returns success=false with timed_out=true — release your own locks then IMMEDIATELY call lock_files again (do not pause to reason first). If a deadlock cycle is detected (success=false, deadlock_detected=true), release ALL your currently held locks with release_files, then retry lock_files for all files you need in a single call. The default timeout (660s) exceeds the default TTL (600s), so with defaults you will always eventually get the lock without timing out.',
     { files: lockFilesSchema.shape.files, reason: lockFilesSchema.shape.reason, ttl_ms: lockFilesSchema.shape.ttl_ms, timeout_ms: lockFilesSchema.shape.timeout_ms },
-    async (input) => {
+    safeTool('lock_files', agentId, async (input) => {
       const result = await lockFilesHandler(agentId, input as any);
       return { content: [{ type: 'text', text: result }] };
-    }
+    })
   );
 
   server.tool(
     'release_files',
     'Release file locks when done editing.',
     { files: releaseFilesSchema.shape.files },
-    async (input) => {
+    safeTool('release_files', agentId, async (input) => {
       const result = await releaseFilesHandler(agentId, input as any);
       return { content: [{ type: 'text', text: result }] };
-    }
+    })
   );
 
   server.tool(
     'check_file_locks',
     'See what files other agents currently have locked.',
     {},
-    async (input) => {
+    safeTool('check_file_locks', agentId, async (input) => {
       const result = await checkFileLocksHandler(agentId, input as any);
       return { content: [{ type: 'text', text: result }] };
-    }
+    })
   );
 
   server.tool(
     'report_status',
     'Update your status message displayed in the orchestrator dashboard.',
     { message: reportStatusSchema.shape.message },
-    async (input) => {
+    safeTool('report_status', agentId, async (input) => {
       const result = await reportStatusHandler(agentId, input as any);
       return { content: [{ type: 'text', text: result }] };
-    }
+    })
   );
 
   server.tool(
@@ -308,10 +334,10 @@ function buildMcpServer(agentId: string): MCP {
       model: createJobSchema.shape.model,
       depends_on: createJobSchema.shape.depends_on,
     },
-    async (input) => {
+    safeTool('create_job', agentId, async (input) => {
       const result = await createJobHandler(agentId, input as any);
       return { content: [{ type: 'text', text: result }] };
-    }
+    })
   );
 
   server.tool(
@@ -321,10 +347,10 @@ function buildMcpServer(agentId: string): MCP {
       job_ids: waitForJobsSchema.shape.job_ids,
       timeout_ms: waitForJobsSchema.shape.timeout_ms,
     },
-    async (input) => {
+    safeTool('wait_for_jobs', agentId, async (input) => {
       const result = await waitForJobsHandler(agentId, input as any);
       return { content: [{ type: 'text', text: result }] };
-    }
+    })
   );
 
   server.tool(
@@ -406,10 +432,10 @@ function buildMcpServer(agentId: string): MCP {
     {
       result: finishJobSchema.shape.result,
     },
-    async (input) => {
+    safeTool('finish_job', agentId, async (input) => {
       const result = await finishJobHandler(agentId, input as any);
       return { content: [{ type: 'text', text: result }] };
-    }
+    })
   );
 
   // ─── Eye Tools ──────────────────────────────────────────────────────────────

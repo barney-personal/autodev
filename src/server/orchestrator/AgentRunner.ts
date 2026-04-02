@@ -479,9 +479,15 @@ export async function handleJobCompletion(
   job: Job,
   status: 'done' | 'failed',
 ): Promise<void> {
+  // Clean up git checkpoint tag created before dispatch
+  const workDir = (job as any).work_dir ?? process.cwd();
+  try {
+    const tagName = `orchestrator/checkpoint/${agentId.slice(0, 8)}`;
+    execSync(`git tag -d ${tagName} 2>/dev/null || true`, { cwd: workDir, stdio: 'pipe', timeout: 5000 });
+  } catch { /* non-fatal */ }
+
   // Capture git diff between base_sha and current HEAD (committed + staged changes)
   const agentRec = queries.getAgentById(agentId);
-  const workDir = (job as any).work_dir ?? process.cwd();
   if (agentRec?.base_sha) {
     try {
       const committed = execSync(
