@@ -10,7 +10,6 @@ import { effectiveMaxTurns } from '../../shared/types.js';
 import { buildAssessPrompt, buildReviewPrompt, buildImplementPrompt, buildWorkflowRepairPrompt } from './WorkflowPrompts.js';
 import { getFallbackModel, getModelProvider, markModelRateLimited, markProviderRateLimited } from './ModelClassifier.js';
 import { classifyJobFailure, isFallbackEligibleFailure, shouldMarkProviderUnavailable } from './FailureClassifier.js';
-import { nudgeQueue } from './WorkQueueManager.js';
 
 // Track jobs we've already processed to prevent double-exit race from triggering
 // duplicate spawns. Same pattern as DebateManager.
@@ -221,7 +220,6 @@ function spawnRepairJob(
   });
 
   socket.emitJobNew(job);
-  nudgeQueue();
   updateAndEmit(workflow.id, { current_phase: phase, current_cycle: cycle, status: 'running' });
   console.log(`[workflow ${workflow.id}] spawned ${phase} repair job ${job.id.slice(0, 8)} for missing ${missingArtifacts.join(', ')}`);
   return true;
@@ -289,7 +287,6 @@ function spawnPhaseJob(workflow: Workflow, phase: WorkflowPhase, cycle: number, 
   });
 
   socket.emitJobNew(job);
-  nudgeQueue();
 
   // Update workflow state
   updateAndEmit(workflow.id, {
@@ -357,7 +354,6 @@ export function startWorkflow(workflow: Workflow): Job {
   });
 
   socket.emitJobNew(job);
-  nudgeQueue();
   updateAndEmit(activeWorkflow.id, { current_phase: 'assess' as WorkflowPhase, current_cycle: 0 });
   console.log(`[workflow ${activeWorkflow.id}] started — assess job ${job.id.slice(0, 8)}`);
   return job;
@@ -444,7 +440,6 @@ export function resumeWorkflow(
   });
 
   socket.emitJobNew(job);
-  nudgeQueue();
   console.log(`[workflow ${workflow.id}] resumed — ${phase} job ${job.id.slice(0, 8)} (cycle ${cycle})`);
   return job;
 }
