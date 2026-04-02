@@ -109,9 +109,13 @@ router.post('/:id/resume', (req, res) => {
     return;
   }
 
-  const job = resumeWorkflow(workflow, { phase: targetPhase as any, cycle: targetCycle });
-  const updated = queries.getWorkflowById(workflow.id);
-  res.json({ workflow: updated, jobs: [job] });
+  try {
+    const job = resumeWorkflow(workflow, { phase: targetPhase as any, cycle: targetCycle });
+    const updated = queries.getWorkflowById(workflow.id);
+    res.json({ workflow: updated, jobs: [job] });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message ?? 'Failed to resume workflow' });
+  }
 });
 
 export default router;

@@ -248,6 +248,18 @@ describe('POST /api/workflows/:id/resume', () => {
     expect(calledWith.status).toBe('blocked');
   });
 
+  it('returns 500 JSON when resumeWorkflow throws', async () => {
+    const { resumeWorkflow } = await import('../../server/orchestrator/WorkflowManager.js');
+    (resumeWorkflow as any).mockImplementationOnce(() => {
+      throw new Error('Worktree branch verification failed: expected branch xyz');
+    });
+    const project = await insertTestProject();
+    const wf = await insertTestWorkflow({ project_id: project.id, status: 'blocked' });
+    const res = await request(app).post(`/api/workflows/${wf.id}/resume`);
+    expect(res.status).toBe(500);
+    expect(res.body.error).toMatch(/Worktree branch verification failed/);
+  });
+
   it('returns 404 for unknown workflow', async () => {
     const res = await request(app).post('/api/workflows/nonexistent/resume');
     expect(res.status).toBe(404);
