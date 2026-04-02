@@ -380,6 +380,146 @@ describe('AgentRunner: Codex prompt file delivery', () => {
     expect(closeCalls).toContain(errFd);
   });
 
+  it('logFd open failure leaks no fds (Codex)', async () => {
+    const fs = await import('fs');
+    const { runAgent } = await import('../server/orchestrator/AgentRunner.js');
+
+    const job = await insertTestJob({
+      id: 'codex-log-open-fail',
+      title: 'Log Open Fail Codex',
+      description: 'test',
+      model: 'codex',
+      status: 'queued',
+    });
+
+    const queries = await import('../server/db/queries.js');
+    const agent = queries.insertAgent({ id: 'codex-agent-log-fail', job_id: job.id, status: 'starting' });
+
+    // First openSync call (logFd) throws immediately
+    vi.mocked(fs.openSync).mockImplementationOnce(() => {
+      throw new Error('EMFILE: too many open files');
+    });
+
+    expect(() => runAgent({ agentId: agent.id, job })).toThrow('EMFILE');
+
+    // spawn was NOT called
+    expect(spawnCalls).toHaveLength(0);
+
+    // No fds were opened successfully, so closeSync should not be called
+    // to close any agent fds (no logFd, errFd, or promptFd to clean up)
+    expect(vi.mocked(fs.closeSync).mock.calls).toHaveLength(0);
+  });
+
+  it('errFd open failure closes logFd (Codex)', async () => {
+    const fs = await import('fs');
+    const { runAgent } = await import('../server/orchestrator/AgentRunner.js');
+
+    const job = await insertTestJob({
+      id: 'codex-err-open-fail',
+      title: 'Err Open Fail Codex',
+      description: 'test',
+      model: 'codex',
+      status: 'queued',
+    });
+
+    const queries = await import('../server/db/queries.js');
+    const agent = queries.insertAgent({ id: 'codex-agent-err-fail', job_id: job.id, status: 'starting' });
+
+    // First openSync (logFd) succeeds, second (errFd) throws
+    let openCount = 0;
+    vi.mocked(fs.openSync).mockImplementation((filePath: any, mode: any) => {
+      openCount++;
+      if (openCount === 2) {
+        throw new Error('EMFILE: too many open files');
+      }
+      const fd = nextFd++;
+      openedFds.set(filePath, fd);
+      return fd;
+    });
+
+    expect(() => runAgent({ agentId: agent.id, job })).toThrow('EMFILE');
+
+    // spawn was NOT called
+    expect(spawnCalls).toHaveLength(0);
+
+    // Only logFd was opened — it should be closed in the catch handler
+    expect(openedFds.size).toBe(1);
+    const [logFd] = [...openedFds.values()];
+    const closeCalls = vi.mocked(fs.closeSync).mock.calls.map(c => c[0]);
+    expect(closeCalls).toContain(logFd);
+    // Only one fd should have been closed (the logFd)
+    expect(closeCalls).toHaveLength(1);
+  });
+
+  it('logFd open failure leaks no fds (Claude)', async () => {
+    const fs = await import('fs');
+    const { runAgent } = await import('../server/orchestrator/AgentRunner.js');
+
+    const job = await insertTestJob({
+      id: 'claude-log-open-fail',
+      title: 'Log Open Fail Claude',
+      description: 'test',
+      model: 'claude-sonnet-4-6',
+      status: 'queued',
+    });
+
+    const queries = await import('../server/db/queries.js');
+    const agent = queries.insertAgent({ id: 'claude-agent-log-fail', job_id: job.id, status: 'starting' });
+
+    // First openSync call (logFd) throws immediately
+    vi.mocked(fs.openSync).mockImplementationOnce(() => {
+      throw new Error('EMFILE: too many open files');
+    });
+
+    expect(() => runAgent({ agentId: agent.id, job })).toThrow('EMFILE');
+
+    // spawn was NOT called
+    expect(spawnCalls).toHaveLength(0);
+
+    // No fds were opened, so nothing to close
+    expect(vi.mocked(fs.closeSync).mock.calls).toHaveLength(0);
+  });
+
+  it('errFd open failure closes logFd (Claude)', async () => {
+    const fs = await import('fs');
+    const { runAgent } = await import('../server/orchestrator/AgentRunner.js');
+
+    const job = await insertTestJob({
+      id: 'claude-err-open-fail',
+      title: 'Err Open Fail Claude',
+      description: 'test',
+      model: 'claude-sonnet-4-6',
+      status: 'queued',
+    });
+
+    const queries = await import('../server/db/queries.js');
+    const agent = queries.insertAgent({ id: 'claude-agent-err-fail', job_id: job.id, status: 'starting' });
+
+    // First openSync (logFd) succeeds, second (errFd) throws
+    let openCount = 0;
+    vi.mocked(fs.openSync).mockImplementation((filePath: any, mode: any) => {
+      openCount++;
+      if (openCount === 2) {
+        throw new Error('EMFILE: too many open files');
+      }
+      const fd = nextFd++;
+      openedFds.set(filePath, fd);
+      return fd;
+    });
+
+    expect(() => runAgent({ agentId: agent.id, job })).toThrow('EMFILE');
+
+    // spawn was NOT called
+    expect(spawnCalls).toHaveLength(0);
+
+    // Only logFd was opened — it should be closed in the catch handler
+    expect(openedFds.size).toBe(1);
+    const [logFd] = [...openedFds.values()];
+    const closeCalls = vi.mocked(fs.closeSync).mock.calls.map(c => c[0]);
+    expect(closeCalls).toContain(logFd);
+    expect(closeCalls).toHaveLength(1);
+  });
+
   it('spawn failure closes all fds including promptFd', async () => {
     const fs = await import('fs');
     const { spawn } = await import('child_process');

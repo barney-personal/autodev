@@ -192,10 +192,6 @@ export function runAgent(options: RunOptions): void {
   const logPath = getLogPath(agentId);
   const errPath = getStderrPath(agentId);
 
-  // Open file descriptors for the child to write into directly
-  const logFd = fs.openSync(logPath, 'w');
-  const errFd = fs.openSync(errPath, 'w');
-
   const workDir = (job as any).work_dir ?? process.cwd();
   const stopMode = (job as any).stop_mode ?? 'turns';
   const stopValue = (job as any).stop_value ?? null;
@@ -254,17 +250,17 @@ export function runAgent(options: RunOptions): void {
 
   console.log(`[agent ${agentId}] spawning ${useCodex ? 'codex' : 'claude'} for job "${job.title}"${model ? ` (model: ${model})` : ''}`);
 
-  // For Codex: write the prompt to a file and use the file descriptor as stdin.
-  // This avoids E2BIG when workflow prompts grow large (plan + contract + worklogs),
-  // and avoids the pipe-based stdin hang that Codex exhibits with piped input.
-  // File-backed stdin provides a clean EOF after all bytes are read.
-  //
-  // writeFileSync / openSync can throw synchronously (disk full, permission denied).
-  // If they do, we must close logFd/errFd/promptFd so we don't leak fds, then
-  // rethrow so the caller (WorkQueueManager) can mark both the job AND agent as failed.
+  // All file descriptor acquisition (logFd, errFd, and the Codex promptFd)
+  // happens inside this try block so that any failure at any point closes
+  // only the fds that were actually opened, preventing fd leaks.
+  let logFd: number | null = null;
+  let errFd: number | null = null;
   let promptFd: number | null = null;
   let child: ReturnType<typeof spawn>;
   try {
+    logFd = fs.openSync(logPath, 'w');
+    errFd = fs.openSync(errPath, 'w');
+
     if (useCodex) {
       const promptPath = getPromptPath(agentId);
       fs.writeFileSync(promptPath, buildPrompt(job));
@@ -302,9 +298,9 @@ export function runAgent(options: RunOptions): void {
       })(),
     });
   } catch (err) {
-    // Pre-spawn failure: close all fds we already opened so they don't leak.
-    try { fs.closeSync(logFd); } catch { /* best effort */ }
-    try { fs.closeSync(errFd); } catch { /* best effort */ }
+    // Pre-spawn failure: close only the fds we actually opened.
+    if (logFd !== null) { try { fs.closeSync(logFd); } catch { /* best effort */ } }
+    if (errFd !== null) { try { fs.closeSync(errFd); } catch { /* best effort */ } }
     if (promptFd !== null) { try { fs.closeSync(promptFd); } catch { /* best effort */ } }
     throw err;
   }
