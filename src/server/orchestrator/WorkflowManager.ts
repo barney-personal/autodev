@@ -578,6 +578,17 @@ export function resumeWorkflow(
     throw new Error(`Cannot resume workflow in status '${workflow.status}'`);
   }
 
+  // Re-fetch to get current worktree fields (caller's object may be stale)
+  const current = queries.getWorkflowById(workflow.id)!;
+
+  // Verify worktree branch BEFORE changing status — if this fails, workflow stays 'blocked'
+  if (current.worktree_path && current.worktree_branch) {
+    const branchCheck = ensureWorktreeBranch(current.worktree_path, current.worktree_branch);
+    if (!branchCheck.ok) {
+      throw new Error(`Worktree branch verification failed before resuming: ${branchCheck.error}`);
+    }
+  }
+
   updateAndEmit(workflow.id, { status: 'running', blocked_reason: null });
   // Reset zero-progress counter so resumed workflows get a fresh budget
   queries.upsertNote(`workflow/${workflow.id}/zero-progress-count`, '0', null);
@@ -633,14 +644,6 @@ export function resumeWorkflow(
   }
 
   model = getWorkflowFallbackModel(updated, phase as WorkflowPhase, model) ?? model;
-
-  // Verify worktree branch hasn't drifted while workflow was blocked
-  if (updated.worktree_path && updated.worktree_branch) {
-    const branchCheck = ensureWorktreeBranch(updated.worktree_path, updated.worktree_branch);
-    if (!branchCheck.ok) {
-      throw new Error(`Worktree branch verification failed before resuming ${phase}: ${branchCheck.error}`);
-    }
-  }
 
   const job = queries.insertJob({
     id: randomUUID(),

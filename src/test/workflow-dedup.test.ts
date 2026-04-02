@@ -1430,6 +1430,10 @@ describe('WorkflowManager: worktree branch verification (M5)', () => {
     expect(thrown).toBeDefined();
     expect(thrown!.message).toContain('Worktree branch verification failed');
     expect(thrown!.message).toContain('checkout conflict');
-    expect(thrown!.message).toContain('review');
+
+    // Fix-17: workflow must stay 'blocked' — not orphaned in 'running'
+    const { getWorkflowById } = await import('../server/db/queries.js');
+    const after = getWorkflowById(workflow.id);
+    expect(after!.status).toBe('blocked');
   });
 });
