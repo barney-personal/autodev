@@ -1,3 +1,5 @@
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
 import type { Job } from '../../shared/types.js';
@@ -27,6 +29,7 @@ const MODEL_FALLBACK_CHAIN: string[] = [
 const DEFAULT_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
 
 const _rateLimitCooldowns = new Map<string, number>();
+let _codexAuthAvailable: boolean | null = null;
 
 export type ModelProvider = 'anthropic' | 'openai' | 'unknown';
 
@@ -103,16 +106,32 @@ export function isModelRateLimited(model: string): boolean {
   return false;
 }
 
+function hasCodexAuth(): boolean {
+  if (_codexAuthAvailable != null) return _codexAuthAvailable;
+  try {
+    const auth = JSON.parse(readFileSync(join(process.env.HOME ?? '~', '.codex', 'auth.json'), 'utf8'));
+    _codexAuthAvailable = !!(auth.OPENAI_API_KEY ?? auth.api_key);
+  } catch {
+    _codexAuthAvailable = false;
+  }
+  return _codexAuthAvailable;
+}
+
 /**
  * Given a preferred model, return the best available model that isn't
  * currently rate-limited. Falls through MODEL_FALLBACK_CHAIN in order.
  * If no model is available, returns null.
  */
 export function getAvailableModel(preferredModel: string): string | null {
-  if (!isModelRateLimited(preferredModel)) return preferredModel;
+  if (isCodexModel(preferredModel) && !hasCodexAuth()) {
+    console.log(`[classifier] ${preferredModel} unavailable — no codex API key found`);
+  } else if (!isModelRateLimited(preferredModel)) {
+    return preferredModel;
+  }
   const idx = MODEL_FALLBACK_CHAIN.indexOf(preferredModel);
   if (idx < 0) return null;
   for (let i = idx + 1; i < MODEL_FALLBACK_CHAIN.length; i++) {
+    if (isCodexModel(MODEL_FALLBACK_CHAIN[i]) && !hasCodexAuth()) continue;
     if (!isModelRateLimited(MODEL_FALLBACK_CHAIN[i])) {
       console.log(`[classifier] ${preferredModel} rate-limited → falling back to ${MODEL_FALLBACK_CHAIN[i]}`);
       return MODEL_FALLBACK_CHAIN[i];
@@ -237,6 +256,9 @@ export async function resolveModel(job: Job): Promise<string | null> {
 
 export function _resetForTest(): void {
   _rateLimitCooldowns.clear();
+  // Treat codex as auth-available in tests — avoids a disk read for ~/.codex/auth.json
+  // that always returns false in CI/dev and breaks tests for codex fallback paths.
+  _codexAuthAvailable = true;
 }
 
 function buildClassifierPrompt(job: Job): string {
