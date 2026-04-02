@@ -465,6 +465,16 @@ function check(): void {
 
     const updatedAgent = queries.getAgentWithJob(agent.id);
     if (updatedAgent) socket.emitAgentUpdate(updatedAgent);
+
+    // Trigger workflow/debate state machines so the workflow doesn't get orphaned.
+    // Without this, a job that failed (and was cleaned up here) would leave its
+    // parent workflow stuck in 'running' with no active job forever.
+    try { socket.emitJobUpdate(job); } catch (err) { console.error(`[watchdog] Check 4 emitJobUpdate error:`, err); Sentry.captureException(err); }
+    try { debateOnJobCompleted(job); } catch (err) { console.error(`[watchdog] Check 4 debateOnJobCompleted error:`, err); Sentry.captureException(err); }
+    try { workflowOnJobCompleted(job); } catch (err) { console.error(`[watchdog] Check 4 workflowOnJobCompleted error:`, err); Sentry.captureException(err); }
+    if (job.status === 'failed') {
+      try { handleRetry(job, agent.id); } catch (err) { console.error(`[watchdog] Check 4 handleRetry error:`, err); Sentry.captureException(err); }
+    }
   }
 
   // ── Check 6: Debates stuck in 'running' with no active jobs ─────────────────
