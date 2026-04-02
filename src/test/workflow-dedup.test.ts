@@ -465,4 +465,84 @@ describe('WorkflowManager: onJobCompleted phase transitions', () => {
     expect(vi.mocked(socket.emitWorkflowUpdate).mock.calls.length).toBe(0);
     expect(vi.mocked(socket.emitJobNew).mock.calls.length).toBe(0);
   });
+
+  it('assess completion with 0-milestone plan triggers repair then blocks with descriptive reason', async () => {
+    const socket = await import('../server/socket/SocketManager.js');
+    const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    const { upsertNote, getWorkflowById, getJobsForWorkflow } = await import('../server/db/queries.js');
+
+    const project = await insertTestProject();
+    const workflow = await insertTestWorkflow({
+      project_id: project.id,
+      status: 'running',
+      current_phase: 'assess',
+      current_cycle: 0,
+    });
+    // Plan exists but has no checkbox milestones
+    upsertNote(`workflow/${workflow.id}/plan`, '# Plan\n\nSome text without checkboxes', null);
+    upsertNote(`workflow/${workflow.id}/contract`, '# contract', null);
+
+    const job = await insertTestJob({
+      workflow_id: workflow.id,
+      workflow_cycle: 0,
+      workflow_phase: 'assess',
+      status: 'done',
+    });
+
+    onJobCompleted(job);
+
+    // First call should spawn a repair job (budget=1)
+    const jobs = getJobsForWorkflow(workflow.id);
+    const repairJob = jobs.find(j => j.id !== job.id);
+    expect(repairJob).toBeDefined();
+    expect(repairJob!.title).toContain('repair');
+
+    const updated = getWorkflowById(workflow.id)!;
+    expect(updated.status).toBe('running');
+
+    // Simulate repair also failing to add milestones — second completion should block
+    vi.clearAllMocks();
+    onJobCompleted({ ...repairJob!, status: 'done' } as any);
+
+    const blocked = getWorkflowById(workflow.id)!;
+    expect(blocked.status).toBe('blocked');
+    expect(blocked.blocked_reason).toContain('no milestones');
+  });
+
+  it('review phase missing plan blocks with blocked_reason', async () => {
+    const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    const { getWorkflowById, getJobsForWorkflow } = await import('../server/db/queries.js');
+
+    const project = await insertTestProject();
+    const workflow = await insertTestWorkflow({
+      project_id: project.id,
+      status: 'running',
+      current_phase: 'review',
+      current_cycle: 1,
+    });
+    // No plan note at all
+
+    const job = await insertTestJob({
+      workflow_id: workflow.id,
+      workflow_cycle: 1,
+      workflow_phase: 'review',
+      status: 'done',
+    });
+
+    onJobCompleted(job);
+
+    // First call spawns a repair job
+    const jobs = getJobsForWorkflow(workflow.id);
+    const repairJob = jobs.find(j => j.id !== job.id);
+    expect(repairJob).toBeDefined();
+
+    // Simulate repair failing to write the plan — second completion should block with reason
+    vi.clearAllMocks();
+    onJobCompleted({ ...repairJob!, status: 'done' } as any);
+
+    const blocked = getWorkflowById(workflow.id)!;
+    expect(blocked.status).toBe('blocked');
+    expect(blocked.blocked_reason).toBeTruthy();
+    expect(blocked.blocked_reason).toContain('plan');
+  });
 });

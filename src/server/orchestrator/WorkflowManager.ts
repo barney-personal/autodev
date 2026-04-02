@@ -108,6 +108,19 @@ function _onJobCompleted(job: Job): void {
         });
         return;
       }
+      // Plan and contract exist, but check that the plan has actual milestones.
+      // A 0-milestone plan causes wasted review→implement cycles until max_cycles.
+      if (milestones.total === 0) {
+        if (spawnRepairJob(workflow, 'assess', job.workflow_cycle ?? 0, ['plan'])) return;
+        const zeroReason = 'Assess phase produced a plan with no milestones';
+        console.log(`[workflow ${workflow.id}] ${zeroReason} — marking blocked`);
+        updateAndEmit(workflow.id, {
+          status: 'blocked',
+          current_phase: 'assess' as WorkflowPhase,
+          blocked_reason: zeroReason,
+        });
+        return;
+      }
       updateAndEmit(workflow.id, {
         milestones_total: milestones.total,
         milestones_done: milestones.done,
@@ -120,8 +133,9 @@ function _onJobCompleted(job: Job): void {
     case 'review': {
       if (!planNote?.value) {
         if (spawnRepairJob(workflow, 'review', job.workflow_cycle ?? workflow.current_cycle, ['plan'])) return;
-        console.log(`[workflow ${workflow.id}] review phase completed but no plan note found — marking blocked`);
-        updateAndEmit(workflow.id, { status: 'blocked', current_phase: 'review' as WorkflowPhase });
+        const reviewReason = 'Review phase completed but plan note was deleted or empty';
+        console.log(`[workflow ${workflow.id}] ${reviewReason} — marking blocked`);
+        updateAndEmit(workflow.id, { status: 'blocked', current_phase: 'review' as WorkflowPhase, blocked_reason: reviewReason });
         return;
       }
       // After review: update milestones (reviewer may have added/removed), then implement
