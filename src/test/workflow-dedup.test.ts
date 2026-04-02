@@ -510,6 +510,10 @@ describe('WorkflowManager: onJobCompleted phase transitions', () => {
     expect(updated.status).toBe('blocked');
     expect(updated.milestones_done).toBe(1);
     expect(updated.milestones_total).toBe(9);
+    // Fix-9: blocked_reason must be set with actionable context
+    expect(updated.blocked_reason).toBeTruthy();
+    expect(updated.blocked_reason).toContain('max cycles');
+    expect(updated.blocked_reason).toContain('1/9');
 
     // Should NOT have emitted 'complete'
     const statuses = vi.mocked(socket.emitWorkflowUpdate).mock.calls.map(c => c[0].status).filter(Boolean);
