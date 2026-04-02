@@ -32,6 +32,10 @@ vi.mock('../server/orchestrator/WorkflowPrompts.js', () => ({
 
 // Mock ModelClassifier for rate limit fallback tests
 vi.mock('../server/orchestrator/ModelClassifier.js', () => ({
+  getAvailableModel: vi.fn((model: string) => {
+    if (model === 'codex') return null;
+    return model;
+  }),
   getFallbackModel: vi.fn((model: string) => {
     // Simulate fallback: sonnet → haiku
     if (model === 'claude-sonnet-4-6') return 'claude-haiku-4-5-20251001';
@@ -48,7 +52,9 @@ vi.mock('../server/orchestrator/ModelClassifier.js', () => ({
 vi.mock('../server/orchestrator/FailureClassifier.js', () => ({
   classifyJobFailure: vi.fn(() => 'unknown'),
   isFallbackEligibleFailure: vi.fn((kind: string) =>
-    kind === 'rate_limit'
+    kind === 'launch_environment'
+      || kind === 'auth_failure'
+      || kind === 'rate_limit'
       || kind === 'provider_overload'
       || kind === 'provider_capability'
       || kind === 'provider_billing'
@@ -57,6 +63,7 @@ vi.mock('../server/orchestrator/FailureClassifier.js', () => ({
     kind === 'rate_limit'
       || kind === 'provider_overload'
       || kind === 'provider_billing'
+      || kind === 'auth_failure'
   ),
 }));
 

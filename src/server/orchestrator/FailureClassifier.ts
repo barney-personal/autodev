@@ -5,6 +5,7 @@ export type FailureKind =
   | 'provider_overload'
   | 'provider_capability'
   | 'provider_billing'
+  | 'launch_environment'
   | 'mcp_disconnect'
   | 'timeout'
   | 'out_of_memory'
@@ -45,6 +46,15 @@ const PROVIDER_BILLING_PATTERNS = [
   /\bbilling\b/i,
   /\bpayment required\b/i,
   /\bcredit balance\b/i,
+];
+
+const LAUNCH_ENVIRONMENT_PATTERNS = [
+  /\bagent launch failed\b/i,
+  /\bspawn\s+\S+\s+ENOENT\b/i,
+  /\bspawn nice ENOENT\b/i,
+  /\bposix_spawnp failed\b/i,
+  /\bcommand not found\b/i,
+  /\bno such file or directory\b/i,
 ];
 
 const MCP_DISCONNECT_PATTERNS = [
@@ -98,6 +108,7 @@ export function classifyFailureText(text: string | null | undefined): FailureKin
   if (!text) return 'unknown';
 
   // Check patterns in order of specificity / priority
+  if (LAUNCH_ENVIRONMENT_PATTERNS.some(pattern => pattern.test(text))) return 'launch_environment';
   if (RATE_LIMIT_PATTERNS.some(pattern => pattern.test(text))) return 'rate_limit';
   if (PROVIDER_OVERLOAD_PATTERNS.some(pattern => pattern.test(text))) return 'provider_overload';
   if (PROVIDER_CAPABILITY_PATTERNS.some(pattern => pattern.test(text))) return 'provider_capability';
@@ -124,14 +135,17 @@ export function classifyJobFailure(jobId: string): FailureKind {
 }
 
 export function isFallbackEligibleFailure(kind: FailureKind): boolean {
-  return kind === 'rate_limit'
+  return kind === 'launch_environment'
+    || kind === 'rate_limit'
     || kind === 'provider_overload'
     || kind === 'provider_capability'
-    || kind === 'provider_billing';
+    || kind === 'provider_billing'
+    || kind === 'auth_failure';
 }
 
 export function shouldMarkProviderUnavailable(kind: FailureKind): boolean {
   return kind === 'rate_limit'
     || kind === 'provider_overload'
-    || kind === 'provider_billing';
+    || kind === 'provider_billing'
+    || kind === 'auth_failure';
 }
