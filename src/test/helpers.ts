@@ -44,11 +44,13 @@ export async function resetManagerState() {
   const { _resetForTest: resetModelClassifier } = await import('../server/orchestrator/ModelClassifier.js');
   const { _resetForTest: resetRecoveryLedger } = await import('../server/orchestrator/RecoveryLedger.js');
   const { _resetForTest: resetQueue } = await import('../server/orchestrator/WorkQueueManager.js');
+  const { _resetForTest: resetPriority } = await import('../server/orchestrator/ProcessPriority.js');
   resetWorkflow();
   resetDebate();
   resetModelClassifier();
   resetRecoveryLedger();
   resetQueue();
+  resetPriority();
 }
 
 // ─── Socket Mock ──────────────────────────────────────────────────────────────

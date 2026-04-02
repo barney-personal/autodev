@@ -9,6 +9,7 @@ import * as socket from '../socket/SocketManager.js';
 import { SYSTEM_PROMPT, HOOK_SETTINGS, handleJobCompletion, cancelledAgents, startTailing, stopTailing, readClaudeMd, buildMemorySection } from './AgentRunner.js';
 import type { Job } from '../../shared/types.js';
 import { isCodexModel, codexModelName, isAutoExitJob } from '../../shared/types.js';
+import { wrapExecLineWithNice } from './ProcessPriority.js';
 
 const CLAUDE = process.env.CLAUDE_BIN ?? 'claude';
 const CODEX = process.env.CODEX_BIN ?? 'codex';
@@ -276,12 +277,8 @@ export function startInteractiveAgent({ agentId, job, cols = 100, rows = 50, res
     }
   }
 
-  // Wrap the exec line with `nice -n 10` so agent processes run at lower scheduling
-  // priority than the orchestrator server/UI. setPriority() doesn't work here because
-  // tmux spawns a grandchild process that doesn't inherit the nice value.
-  const nicedExecLine = execLine.startsWith('exec ')
-    ? `exec nice -n 10 ${execLine.slice(5)}`
-    : `nice -n 10 ${execLine}`;
+  // Lower priority when available, but do not fail the launch if `nice` is missing.
+  const nicedExecLine = wrapExecLineWithNice(execLine);
 
   // Determine the expected branch for this job (if any) to enforce branch discipline.
   // Agents must commit to their task branch, never main.

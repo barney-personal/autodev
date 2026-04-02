@@ -17,6 +17,7 @@ import type { Job, ClaudeStreamEvent, CodexStreamEvent } from '../../shared/type
 import { isCodexModel, codexModelName, effectiveMaxTurns } from '../../shared/types.js';
 import { buildEyePrompt, isEyeJob } from './EyeConfig.js';
 import { ensureCodexTrusted } from './PtyManager.js';
+import { buildNiceSpawn, isNiceAvailable } from './ProcessPriority.js';
 
 // ─── Adaptive Eye Interval ──────────────────────────────────────────────────
 const EYE_MIN_INTERVAL_MS = 120_000;   // 2 minutes
@@ -247,9 +248,13 @@ export function runAgent(options: RunOptions): void {
 
   console.log(`[agent ${agentId}] spawning ${useCodex ? 'codex' : 'claude'} for job "${job.title}"${model ? ` (model: ${model})` : ''}`);
 
-  // Spawn via `nice -n 10` so agent processes run at lower scheduling priority
-  // than the orchestrator server/UI. This keeps the dashboard responsive under load.
-  const child = spawn('nice', ['-n', '10', binary, ...args], {
+  const launch = buildNiceSpawn(binary, args);
+  if (!isNiceAvailable()) {
+    console.warn(`[agent ${agentId}] 'nice' not available — launching ${launch.command} directly`);
+  }
+  // Spawn via `nice -n 10` when available so agent processes run at lower
+  // scheduling priority than the orchestrator server/UI.
+  const child = spawn(launch.command, launch.args, {
     cwd: workDir,
     detached: true,            // becomes process group leader — survives server restart
     stdio: ['pipe', logFd, errFd],  // stdout/stderr go to files, not pipes
@@ -415,7 +420,7 @@ export function startTailing(
         console.error(`[agent ${agentId}] spawn error:`, err);
         Sentry.captureException(err);
         stopTailing(agentId);
-        queries.updateAgent(agentId, { status: 'failed', error_message: err.message, finished_at: Date.now() });
+        queries.updateAgent(agentId, { status: 'failed', error_message: `Agent launch failed: ${err.message}`, finished_at: Date.now() });
         queries.updateJobStatus(job.id, 'failed');
         const updated = queries.getAgentWithJob(agentId);
         if (updated) socket.emitAgentUpdate(updated);

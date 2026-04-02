@@ -985,3 +985,28 @@ describe('Question timeout enforcement', () => {
     expect(q).toBeNull();
   });
 });
+
+describe('ProcessPriority', () => {
+  afterEach(() => {
+    vi.resetModules();
+    vi.doUnmock('child_process');
+  });
+
+  it('falls back to direct execution when nice is unavailable', async () => {
+    vi.resetModules();
+    vi.doMock('child_process', async () => {
+      const actual = await vi.importActual<typeof import('child_process')>('child_process');
+      return {
+        ...actual,
+        execFileSync: vi.fn(() => {
+          throw new Error('spawn nice ENOENT');
+        }),
+      };
+    });
+
+    const priority = await import('../server/orchestrator/ProcessPriority.js');
+    expect(priority.isNiceAvailable()).toBe(false);
+    expect(priority.buildNiceSpawn('codex', ['exec'])).toEqual({ command: 'codex', args: ['exec'] });
+    expect(priority.wrapExecLineWithNice('exec codex exec')).toBe('exec codex exec');
+  });
+});
