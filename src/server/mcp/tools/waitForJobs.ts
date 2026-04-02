@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import * as queries from '../../db/queries.js';
 import * as socket from '../../socket/SocketManager.js';
+import { onAnyTerminal } from '../../orchestrator/JobCompletionNotifier.js';
 import type { JobStatus } from '../../../shared/types.js';
 
 export const waitForJobsSchema = z.object({
@@ -13,7 +14,7 @@ const TERMINAL: JobStatus[] = ['done', 'failed', 'cancelled'];
 // calls. Cap each wait_for_jobs call to 90s so we always return before that
 // limit fires. Codex agents are expected to retry for still-pending jobs.
 const MAX_SINGLE_WAIT_MS = 90_000;
-const POLL_SEQUENCE_MS = [2000, 3000, 5000, 8000, 13000, 15000] as const;
+const POLL_SEQUENCE_MS = [500, 1000, 2000, 3000, 5000] as const;
 
 /**
  * In-memory registry of active wait_for_jobs calls: agentId → job_ids[].
@@ -118,9 +119,18 @@ export async function waitForJobsHandler(
         lastReportedPending = pending.length;
       }
 
+      // Race the fallback poll sleep against an event-driven wakeup so we
+      // observe terminal transitions within milliseconds instead of waiting
+      // for the next poll interval.
+      const pendingIds = pending.map(j => j!.id);
+      const wakeup = onAnyTerminal(pendingIds);
       const waitMs = nextWaitPollMs(iteration++);
-      const jitterMs = Math.floor(Math.random() * 750);
-      await new Promise(resolve => setTimeout(resolve, waitMs + jitterMs));
+      const jitterMs = Math.floor(Math.random() * 500);
+      await Promise.race([
+        new Promise(resolve => setTimeout(resolve, waitMs + jitterMs)),
+        wakeup.promise,
+      ]);
+      wakeup.cancel(); // clean up listeners if the sleep won the race
     }
 
     // Aborted (MCP connection closed) — exit silently; McpServer will track for recovery

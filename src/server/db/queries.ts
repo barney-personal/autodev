@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { getDb } from './database.js';
+import { notifyJobTerminal } from '../orchestrator/JobCompletionNotifier.js';
 import type { Job, Agent, AgentWithJob, ChildAgentSummary, Question, FileLock, AgentOutput, AgentOutputSegment, Template, Note, Project, BatchTemplate, Debate, DebateStatus, DebateRole, RetryPolicy, JobStatus, AgentStatus, SearchResult, AgentWarning, Worktree, Nudge, KBEntry, Review, TemplateModelStat, ReviewStatus, Discussion, DiscussionMessage, DiscussionStatus, DiscussionCategory, DiscussionPriority, Proposal, ProposalMessage, ProposalStatus, ProposalCategory, ProposalComplexity, Workflow, WorkflowStatus, WorkflowPhase, StopMode } from '../../shared/types.js';
 
 // node:sqlite returns null-prototype objects; shallow-copy to a regular object.
@@ -241,6 +242,7 @@ export function archiveJob(id: string): void {
 export function updateJobStatus(id: string, status: JobStatus): void {
   const db = getDb();
   db.prepare('UPDATE jobs SET status = ?, updated_at = ? WHERE id = ?').run(status, Date.now(), id);
+  notifyJobTerminal(id, status);
 }
 
 export function clearJobRepeat(id: string): void {
