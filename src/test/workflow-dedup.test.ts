@@ -38,6 +38,12 @@ vi.mock('../server/orchestrator/ModelClassifier.js', () => ({
     if (model === 'claude-sonnet-4-6[1m]') return 'claude-haiku-4-5-20251001';
     return model; // no fallback
   }),
+  getAlternateProviderModel: vi.fn((model: string) => {
+    // Simulate cross-provider fallback: codex → claude, claude → codex
+    if (model === 'codex' || model.startsWith('codex-')) return 'claude-sonnet-4-6';
+    if (model.startsWith('claude-')) return 'codex';
+    return null;
+  }),
   markModelRateLimited: vi.fn(),
   markProviderRateLimited: vi.fn(),
   getModelProvider: vi.fn((model: string) => model.startsWith('codex') ? 'openai' : 'anthropic'),
@@ -413,7 +419,8 @@ describe('WorkflowManager: onJobCompleted phase transitions', () => {
     expect(retryJob!.title).not.toContain('(fallback)');
   });
 
-  it('codex_cli_crash blocks after exhausting same-model retries', async () => {
+  it('codex_cli_crash falls back to alternate provider after exhausting same-model retries', async () => {
+    const socket = await import('../server/socket/SocketManager.js');
     const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
     const { classifyJobFailure } = await import('../server/orchestrator/FailureClassifier.js');
     const { upsertNote, getWorkflowById, getJobsForWorkflow } = await import('../server/db/queries.js');
@@ -427,6 +434,7 @@ describe('WorkflowManager: onJobCompleted phase transitions', () => {
       reviewer_model: 'codex',
     });
     upsertNote(`workflow/${workflow.id}/plan`, '- [x] M1\n- [ ] M2', null);
+    // Simulate 3 prior retries exhausted
     upsertNote(`workflow/${workflow.id}/cli-retry/review/cycle-2`, '3', null);
 
     const job = await insertTestJob({
@@ -442,8 +450,14 @@ describe('WorkflowManager: onJobCompleted phase transitions', () => {
     onJobCompleted(job);
 
     const updated = getWorkflowById(workflow.id)!;
-    expect(updated.status).toBe('blocked');
-    expect(getJobsForWorkflow(workflow.id)).toHaveLength(1);
+    // Should NOT block — should fall back to alternate provider (codex → claude-sonnet)
+    expect(updated.status).toBe('running');
+
+    const jobs = getJobsForWorkflow(workflow.id);
+    const fallbackJob = jobs.find(j => j.id !== job.id);
+    expect(fallbackJob).toBeDefined();
+    expect(fallbackJob!.model).toBe('claude-sonnet-4-6');
+    expect(fallbackJob!.title).toContain('(fallback)');
   });
 
   it('max_cycles reached with remaining milestones blocks instead of completing', async () => {

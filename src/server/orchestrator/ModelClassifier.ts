@@ -130,6 +130,22 @@ export function getFallbackModel(preferredModel: string): string {
   return getAvailableModel(preferredModel) ?? preferredModel;
 }
 
+/**
+ * Get a model from a different provider than the given model.
+ * Used when a model keeps crashing (not rate-limited, just broken) and we
+ * want to try a completely different provider.
+ * e.g. codex keeps failing → try claude-sonnet; claude keeps failing → try codex.
+ */
+export function getAlternateProviderModel(failingModel: string): string | null {
+  const failingProvider = getModelProvider(failingModel);
+  for (const candidate of MODEL_FALLBACK_CHAIN) {
+    if (getModelProvider(candidate) !== failingProvider && !isModelRateLimited(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
 export function getRateLimitStatus(): Array<{ model: string; rateLimited: boolean; expiresAt: number | null }> {
   return MODEL_FALLBACK_CHAIN.map(model => {
     const memExpiry = _rateLimitCooldowns.get(model);

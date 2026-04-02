@@ -8,7 +8,7 @@ import * as socket from '../socket/SocketManager.js';
 import type { Job, Workflow, WorkflowPhase, StopMode } from '../../shared/types.js';
 import { effectiveMaxTurns } from '../../shared/types.js';
 import { buildAssessPrompt, buildReviewPrompt, buildImplementPrompt, buildWorkflowRepairPrompt } from './WorkflowPrompts.js';
-import { getFallbackModel, getModelProvider, markModelRateLimited, markProviderRateLimited } from './ModelClassifier.js';
+import { getFallbackModel, getAlternateProviderModel, getModelProvider, markModelRateLimited, markProviderRateLimited } from './ModelClassifier.js';
 import { classifyJobFailure, isFallbackEligibleFailure, isSameModelRetryEligible, shouldMarkProviderUnavailable } from './FailureClassifier.js';
 
 // Track jobs we've already processed to prevent double-exit race from triggering
@@ -91,7 +91,15 @@ function _onJobCompleted(job: Job): void {
         spawnPhaseJob(workflow, phase, cycle);
         return;
       }
-      console.log(`[workflow ${workflow.id}] phase '${phase}' hit ${failureKind} on ${currentModel} — exhausted ${MAX_CLI_RETRIES} retries`);
+      // Same-model retries exhausted — try a different provider before blocking.
+      // e.g. Codex keeps crashing → fall back to Claude for the review phase.
+      const altModel = getAlternateProviderModel(currentModel);
+      if (altModel) {
+        console.log(`[workflow ${workflow.id}] phase '${phase}' exhausted ${MAX_CLI_RETRIES} retries on ${currentModel} (${failureKind}) → switching provider to ${altModel}`);
+        spawnPhaseJob(workflow, phase, cycle, altModel);
+        return;
+      }
+      console.log(`[workflow ${workflow.id}] phase '${phase}' hit ${failureKind} on ${currentModel} — exhausted ${MAX_CLI_RETRIES} retries, no alternate provider available`);
     }
 
     const failReason = `Phase '${job.workflow_phase}' job ${job.id.slice(0, 8)} failed (${failureKind})`;
