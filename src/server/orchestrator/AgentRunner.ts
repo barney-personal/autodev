@@ -179,6 +179,10 @@ export function getStderrPath(agentId: string): string {
   return path.join(LOGS_DIR, `${agentId}.stderr`);
 }
 
+export function getPromptPath(agentId: string): string {
+  return path.join(LOGS_DIR, `${agentId}.prompt`);
+}
+
 export function runAgent(options: RunOptions): void {
   const { agentId, job } = options;
   const mcpPort = options.mcpPort ?? Number(MCP_PORT);
@@ -217,9 +221,9 @@ export function runAgent(options: RunOptions): void {
       '--skip-git-repo-check',
       '-c', `mcp_servers.orchestrator.url="${mcpUrl}"`,
       ...(codexSubModel ? ['-m', codexSubModel] : []),
-      // Pass prompt as positional arg so Codex exits after processing it.
-      // Piping via stdin causes Codex to loop and hang on "Reading prompt from stdin..."
-      buildPrompt(job),
+      // Prompt is delivered via file-backed stdin (see below), not as a
+      // positional arg, to avoid E2BIG / spawn failure when workflow
+      // prompts grow large with inlined plan/contract/worklog context.
     ];
     binary = CODEX;
     args = codexArgs;
@@ -250,12 +254,23 @@ export function runAgent(options: RunOptions): void {
 
   console.log(`[agent ${agentId}] spawning ${useCodex ? 'codex' : 'claude'} for job "${job.title}"${model ? ` (model: ${model})` : ''}`);
 
+  // For Codex: write the prompt to a file and use the file descriptor as stdin.
+  // This avoids E2BIG when workflow prompts grow large (plan + contract + worklogs),
+  // and avoids the pipe-based stdin hang that Codex exhibits with piped input.
+  // File-backed stdin provides a clean EOF after all bytes are read.
+  let promptFd: number | null = null;
+  if (useCodex) {
+    const promptPath = getPromptPath(agentId);
+    fs.writeFileSync(promptPath, buildPrompt(job));
+    promptFd = fs.openSync(promptPath, 'r');
+  }
+
   // Spawn via `nice -n 10` so agent processes run at lower scheduling priority
   // than the orchestrator server/UI. This keeps the dashboard responsive under load.
   const child = spawn('nice', ['-n', '10', binary, ...args], {
     cwd: workDir,
     detached: true,            // becomes process group leader — survives server restart
-    stdio: ['pipe', logFd, errFd],  // stdout/stderr go to files, not pipes
+    stdio: [promptFd !== null ? promptFd : 'pipe', logFd, errFd],
     env: (() => {
       const env = { ...process.env };
       delete env['CLAUDECODE'];
@@ -284,14 +299,14 @@ export function runAgent(options: RunOptions): void {
   // Parent releases its copies of the file descriptors — child keeps its own
   fs.closeSync(logFd);
   fs.closeSync(errFd);
+  if (promptFd !== null) fs.closeSync(promptFd);
 
-  // Write prompt to stdin then close (child reads it all before doing anything else).
-  // Codex gets the prompt as a positional arg instead — piping via stdin causes it to
-  // hang on "Reading prompt from stdin..." after finishing the first prompt.
+  // Write prompt to stdin for Claude (pipe mode). Codex reads from
+  // file-backed stdin instead — no pipe write needed.
   if (!useCodex) {
     child.stdin!.write(buildPrompt(job));
+    child.stdin!.end();
   }
-  child.stdin!.end();
 
   // Capture the current git HEAD SHA so we can diff after the agent finishes
   try {
