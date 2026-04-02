@@ -7,6 +7,8 @@ export interface InlineWorkflowContext {
   plan?: string;
   contract?: string;
   worklogs?: Array<{ key: string; value: string }>;
+  /** Diff from the last completed implement-phase agent (review prompts only). */
+  recentDiff?: string;
 }
 
 /**
@@ -81,6 +83,29 @@ export function renderInlineContext(ctx: InlineWorkflowContext | undefined, plan
   }
 
   return `\n\n## Pre-loaded Context\n\nThe following scratchpad context has been pre-read for you. You do NOT need to call \`read_note\` for these unless you need to refresh after an update.\n\n${body}`;
+}
+
+/**
+ * Hard cap (in characters) for the recent-change diff section in review prompts.
+ * Large enough to be useful but bounded so prompt size stays safe.
+ */
+export const RECENT_DIFF_MAX_CHARS = 30_000;
+
+/**
+ * Render a "Recent Changes" section from the last implement-phase diff.
+ * Only used in review prompts (cycle 2+). Returns empty string when no diff is available.
+ */
+export function renderRecentChanges(diff: string | undefined): string {
+  if (!diff || !diff.trim()) return '';
+
+  let body = diff;
+  let truncated = false;
+  if (body.length > RECENT_DIFF_MAX_CHARS) {
+    body = body.slice(0, RECENT_DIFF_MAX_CHARS);
+    truncated = true;
+  }
+
+  return `\n\n## Recent Changes\n\nThe following diff was captured from the last implement phase. Use this to start your code review — run \`git diff\` or \`git log\` for the complete picture.\n\n\`\`\`diff\n${body}\n\`\`\`${truncated ? '\n\n_(diff truncated at ' + RECENT_DIFF_MAX_CHARS + ' chars — run `git log --patch` for full changes)_' : ''}`;
 }
 
 /**
@@ -237,7 +262,7 @@ Write the updated plan back: \`write_note("${planKey}", <updated plan>)\`
 - If the implementation was poor quality, add multiple specific fix milestones rather than vague notes.
 - The implementer reads your plan directly — be precise and actionable.${workflow.worktree_branch ? `
 - **You are on branch \`${workflow.worktree_branch}\`. Do NOT switch branches or checkout main.**` : ''}
-- Call \`report_status\` to update your progress.${renderInlineContext(inlineContext, planKey, contractKey, worklogPrefix)}`;
+- Call \`report_status\` to update your progress.${renderInlineContext(inlineContext, planKey, contractKey, worklogPrefix)}${!isFirstReview ? renderRecentChanges(inlineContext?.recentDiff) : ''}`;
 }
 
 /**

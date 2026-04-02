@@ -2236,6 +2236,22 @@ export function getJobsForWorkflow(workflowId: string): Job[] {
   return rows.map((r: any) => cast<Job>(r));
 }
 
+/**
+ * Get the diff from the most recent completed implement-phase agent for a workflow.
+ * Used to inject recent-change context into review prompts.
+ */
+export function getLastImplementDiff(workflowId: string): string | null {
+  const db = getDb();
+  const row = db.prepare(`
+    SELECT a.diff FROM agents a
+    JOIN jobs j ON a.job_id = j.id
+    WHERE j.workflow_id = ? AND j.workflow_phase = 'implement' AND j.status = 'done' AND a.diff IS NOT NULL
+    ORDER BY j.workflow_cycle DESC, a.finished_at DESC
+    LIMIT 1
+  `).get(workflowId) as { diff: string } | undefined;
+  return row?.diff ?? null;
+}
+
 /** Check if any non-terminal job has work_dir set to the given path. */
 export function isWorkDirInUse(dirPath: string): boolean {
   const db = getDb();

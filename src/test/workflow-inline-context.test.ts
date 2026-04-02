@@ -1,5 +1,5 @@
 /**
- * Tests for M10: Inline workflow scratchpad context in phase prompts.
+ * Tests for M10/M14: Inline workflow scratchpad context in phase prompts.
  *
  * Proves:
  * 1. buildReviewPrompt() includes inline plan, contract, and worklogs when InlineWorkflowContext is provided
@@ -8,6 +8,9 @@
  * 4. renderInlineContext() truncates oversized content at INLINE_CONTEXT_MAX_CHARS
  * 5. Total inline context is capped at INLINE_CONTEXT_MAX_CHARS (60K)
  * 6. spawnPhaseJob and resumeWorkflow fetch and pass inline context to prompt builders
+ * 7. (M14) buildReviewPrompt() includes a Recent Changes section from the last implement-phase diff
+ * 8. (M14) renderRecentChanges() truncates oversized diffs at RECENT_DIFF_MAX_CHARS
+ * 9. (M14) preReadWorkflowContext() fetches the last implement diff
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
@@ -23,9 +26,11 @@ import {
   buildReviewPrompt,
   buildImplementPrompt,
   renderInlineContext,
+  renderRecentChanges,
   hasInlineContent,
   sortWorklogsByNumericCycle,
   INLINE_CONTEXT_MAX_CHARS,
+  RECENT_DIFF_MAX_CHARS,
   type InlineWorkflowContext,
 } from '../server/orchestrator/WorkflowPrompts.js';
 import type { Workflow } from '../shared/types.js';
@@ -366,6 +371,119 @@ describe('inline context size capping', () => {
   });
 });
 
+// ─── M14: renderRecentChanges unit tests ────────────────────────────────────
+
+describe('renderRecentChanges', () => {
+  it('returns empty string when diff is undefined', () => {
+    expect(renderRecentChanges(undefined)).toBe('');
+  });
+
+  it('returns empty string when diff is empty string', () => {
+    expect(renderRecentChanges('')).toBe('');
+  });
+
+  it('returns empty string when diff is whitespace only', () => {
+    expect(renderRecentChanges('   \n\n  ')).toBe('');
+  });
+
+  it('renders diff in a code block with Recent Changes heading', () => {
+    const diff = 'diff --git a/foo.ts b/foo.ts\n--- a/foo.ts\n+++ b/foo.ts\n@@ -1 +1 @@\n-old\n+new';
+    const result = renderRecentChanges(diff);
+    expect(result).toContain('## Recent Changes');
+    expect(result).toContain('```diff');
+    expect(result).toContain('diff --git a/foo.ts b/foo.ts');
+    expect(result).toContain('-old');
+    expect(result).toContain('+new');
+    expect(result).not.toContain('diff truncated at');
+  });
+
+  it('truncates diffs exceeding RECENT_DIFF_MAX_CHARS', () => {
+    const largeDiff = 'x'.repeat(RECENT_DIFF_MAX_CHARS + 5000);
+    const result = renderRecentChanges(largeDiff);
+    expect(result).toContain('## Recent Changes');
+    expect(result).toContain('diff truncated at');
+    expect(result).toContain('git log --patch');
+    // The rendered output should be smaller than the input
+    expect(result.length).toBeLessThan(largeDiff.length + 1000);
+  });
+
+  it('does not truncate diffs under the cap', () => {
+    const smallDiff = 'diff line\n'.repeat(100);
+    const result = renderRecentChanges(smallDiff);
+    expect(result).toContain('## Recent Changes');
+    expect(result).not.toContain('diff truncated at');
+  });
+});
+
+describe('buildReviewPrompt with recent diff context', () => {
+  const wf = makeWorkflow();
+
+  it('includes Recent Changes section for cycle 2+ when recentDiff is provided', () => {
+    const ctx: InlineWorkflowContext = {
+      plan: '# Plan\n- [x] M1\n- [ ] M2',
+      contract: '# Contract',
+      worklogs: [],
+      recentDiff: 'diff --git a/file.ts b/file.ts\n-old\n+new',
+    };
+    const prompt = buildReviewPrompt(wf, 2, ctx);
+    expect(prompt).toContain('## Recent Changes');
+    expect(prompt).toContain('```diff');
+    expect(prompt).toContain('-old');
+    expect(prompt).toContain('+new');
+  });
+
+  it('does not include Recent Changes for cycle 1 (first review, no code yet)', () => {
+    const ctx: InlineWorkflowContext = {
+      plan: '# Plan\n- [ ] M1',
+      contract: '# Contract',
+      worklogs: [],
+      recentDiff: 'diff --git a/file.ts b/file.ts\n-old\n+new',
+    };
+    const prompt = buildReviewPrompt(wf, 1, ctx);
+    expect(prompt).not.toContain('## Recent Changes');
+    expect(prompt).not.toContain('```diff');
+  });
+
+  it('does not include Recent Changes when recentDiff is undefined', () => {
+    const ctx: InlineWorkflowContext = {
+      plan: '# Plan\n- [x] M1\n- [ ] M2',
+      contract: '# Contract',
+      worklogs: [],
+    };
+    const prompt = buildReviewPrompt(wf, 2, ctx);
+    expect(prompt).not.toContain('## Recent Changes');
+  });
+
+  it('does not include Recent Changes when no inline context at all', () => {
+    const prompt = buildReviewPrompt(wf, 2);
+    expect(prompt).not.toContain('## Recent Changes');
+  });
+
+  it('truncates oversized diff in review prompt', () => {
+    const ctx: InlineWorkflowContext = {
+      plan: '# Plan',
+      contract: '# Contract',
+      worklogs: [],
+      recentDiff: 'z'.repeat(RECENT_DIFF_MAX_CHARS + 5000),
+    };
+    const prompt = buildReviewPrompt(wf, 3, ctx);
+    expect(prompt).toContain('## Recent Changes');
+    expect(prompt).toContain('diff truncated at');
+  });
+
+  it('does not include Recent Changes in implement prompts (recentDiff is ignored)', () => {
+    const implWf = makeWorkflow({ current_phase: 'implement' as any });
+    const ctx: InlineWorkflowContext = {
+      plan: '# Plan\n- [ ] M2',
+      contract: '# Contract',
+      worklogs: [],
+      recentDiff: 'diff --git a/file.ts b/file.ts\n-old\n+new',
+    };
+    const prompt = buildImplementPrompt(implWf, 2, ctx);
+    expect(prompt).not.toContain('## Recent Changes');
+  });
+});
+
 // ─── Integration tests: WorkflowManager fetches inline context ──────────────
 
 // Mock SocketManager before any module that imports it
@@ -428,6 +546,58 @@ describe('preReadWorkflowContext', () => {
     expect(ctx.contract).toBeUndefined();
     expect(ctx.worklogs).toEqual([]);
   });
+
+  it('returns recentDiff from the last completed implement-phase agent', async () => {
+    const queries = await import('../server/db/queries.js');
+    const { randomUUID } = await import('crypto');
+    const project = await insertTestProject();
+    const wf = await insertTestWorkflow({
+      project_id: project.id,
+      status: 'running',
+      current_phase: 'implement',
+      current_cycle: 2,
+    });
+
+    // Create a completed implement-phase job with an agent that has a diff
+    const implJob = await insertTestJob({
+      workflow_id: wf.id,
+      workflow_phase: 'implement',
+      workflow_cycle: 1,
+      status: 'done',
+    });
+    const agentId = randomUUID();
+    queries.insertAgent({ id: agentId, job_id: implJob.id });
+    queries.updateAgent(agentId, { status: 'done', diff: 'diff --git a/foo.ts\n-old\n+new' });
+
+    const { preReadWorkflowContext } = await import('../server/orchestrator/WorkflowManager.js');
+    const ctx = preReadWorkflowContext(wf.id);
+
+    expect(ctx.recentDiff).toBe('diff --git a/foo.ts\n-old\n+new');
+  });
+
+  it('returns undefined recentDiff when no implement-phase agents have diffs', async () => {
+    const queries = await import('../server/db/queries.js');
+    const project = await insertTestProject();
+    const wf = await insertTestWorkflow({
+      project_id: project.id,
+      status: 'running',
+      current_phase: 'review',
+      current_cycle: 1,
+    });
+
+    // Create an assess job (no implement phase yet)
+    await insertTestJob({
+      workflow_id: wf.id,
+      workflow_phase: 'assess',
+      workflow_cycle: 0,
+      status: 'done',
+    });
+
+    const { preReadWorkflowContext } = await import('../server/orchestrator/WorkflowManager.js');
+    const ctx = preReadWorkflowContext(wf.id);
+
+    expect(ctx.recentDiff).toBeUndefined();
+  });
 });
 
 describe('spawnPhaseJob passes inline context to prompt builders', () => {
@@ -473,6 +643,46 @@ describe('spawnPhaseJob passes inline context to prompt builders', () => {
     expect(reviewJob!.description).toContain('M1: Do stuff');
     expect(reviewJob!.description).toContain('# Contract');
     expect(reviewJob!.description).toContain('Cycle 1');
+  });
+
+  it('review phase job (cycle 2+) includes Recent Changes from implement diff', async () => {
+    const queries = await import('../server/db/queries.js');
+    const { randomUUID } = await import('crypto');
+    const project = await insertTestProject();
+    const wf = await insertTestWorkflow({
+      project_id: project.id,
+      status: 'running',
+      current_phase: 'implement',
+      current_cycle: 1,
+    });
+
+    // Store plan note
+    queries.upsertNote(`workflow/${wf.id}/plan`, '# Plan\n- [x] M1\n- [ ] M2', null);
+    queries.upsertNote(`workflow/${wf.id}/contract`, '# Contract\n- rule', null);
+
+    // Create a completed implement-phase job with a diff-bearing agent
+    const implJob = await insertTestJob({
+      workflow_id: wf.id,
+      workflow_phase: 'implement',
+      workflow_cycle: 1,
+      status: 'done',
+    });
+    const agentId = randomUUID();
+    queries.insertAgent({ id: agentId, job_id: implJob.id });
+    queries.updateAgent(agentId, { status: 'done', diff: 'diff --git a/bar.ts\n-removed\n+added' });
+
+    // Trigger a review phase via onJobCompleted from the implement job
+    const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    onJobCompleted(implJob);
+
+    // Find the review job that was spawned (cycle 2)
+    const jobs = queries.listJobs();
+    const reviewJob = jobs.find(j => j.workflow_phase === 'review' && j.workflow_cycle === 2);
+    expect(reviewJob).toBeDefined();
+    expect(reviewJob!.description).toContain('## Recent Changes');
+    expect(reviewJob!.description).toContain('```diff');
+    expect(reviewJob!.description).toContain('-removed');
+    expect(reviewJob!.description).toContain('+added');
   });
 
   it('implement phase job description contains inline plan and contract', async () => {

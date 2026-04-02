@@ -175,10 +175,12 @@ export function preReadWorkflowContext(workflowId: string): InlineWorkflowContex
   const plan = queries.getNote(`workflow/${workflowId}/plan`);
   const contract = queries.getNote(`workflow/${workflowId}/contract`);
   const worklogNotes = queries.listNotes(`workflow/${workflowId}/worklog/`);
+  const recentDiff = queries.getLastImplementDiff(workflowId);
   return {
     plan: plan?.value ?? undefined,
     contract: contract?.value ?? undefined,
     worklogs: worklogNotes.map(n => ({ key: n.key, value: n.value })),
+    recentDiff: recentDiff ?? undefined,
   };
 }
 
