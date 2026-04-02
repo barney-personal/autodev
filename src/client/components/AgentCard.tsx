@@ -10,6 +10,37 @@ interface AgentCardProps {
   templateName?: string;
   isSelected?: boolean;
   isPtyIdle?: boolean;
+  now?: number;
+}
+
+// Client-side cost estimation (mirrors CostEstimator.ts pricing)
+const MODEL_PRICING: Record<string, [number, number]> = {
+  'claude-opus-4-6':         [15, 75],
+  'claude-opus-4-6[1m]':     [15, 75],
+  'claude-sonnet-4-6':       [3, 15],
+  'claude-sonnet-4-6[1m]':   [3, 15],
+  'claude-haiku-4-5-20251001': [0.80, 4],
+};
+
+function estimateCost(model: string | null, inputTokens: number, outputTokens: number): number {
+  const [inp, out] = (model && MODEL_PRICING[model]) || [3, 15];
+  return (inputTokens / 1_000_000) * inp + (outputTokens / 1_000_000) * out;
+}
+
+function formatElapsed(ms: number): string {
+  if (ms < 0) return '0s';
+  const totalSeconds = Math.floor(ms / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
+}
+
+function formatCost(cost: number, approximate: boolean): string {
+  if (cost < 0.01) return approximate ? `~$${cost.toFixed(4)}` : `$${cost.toFixed(4)}`;
+  return approximate ? `~$${cost.toFixed(2)}` : `$${cost.toFixed(4)}`;
 }
 
 function ArchiveIcon() {
@@ -65,7 +96,7 @@ function getStatusLabel(agent: AgentWithJob, isPtyIdle?: boolean): React.ReactNo
   }
 }
 
-export function AgentCard({ agent, onClick, onSelectParent, onArchiveJob, onInteractiveChange, templateName, isSelected, isPtyIdle }: AgentCardProps) {
+function AgentCardInner({ agent, onClick, onSelectParent, onArchiveJob, onInteractiveChange, templateName, isSelected, isPtyIdle, now }: AgentCardProps) {
   const borderColor = getBorderColor(agent, isPtyIdle);
   const isWaiting = agent.status === 'waiting_user';
 
@@ -217,6 +248,49 @@ export function AgentCard({ agent, onClick, onSelectParent, onArchiveJob, onInte
           {agent.pending_question.question.length > 80 ? '...' : ''}
         </div>
       )}
+
+      {/* Timing + Cost footer */}
+      {(() => {
+        const isRunning = agent.status === 'running' || agent.status === 'starting';
+        const isFinished = agent.status === 'done' || agent.status === 'failed' || agent.status === 'cancelled';
+        if (!isRunning && !isFinished) return null;
+
+        const elapsedMs = isRunning
+          ? (now ?? Date.now()) - agent.started_at
+          : (agent.duration_ms ?? (agent.finished_at ? agent.finished_at - agent.started_at : 0));
+
+        const cost = isFinished && agent.cost_usd != null
+          ? agent.cost_usd
+          : (agent.estimated_input_tokens || agent.estimated_output_tokens)
+            ? estimateCost(agent.job?.model ?? null, agent.estimated_input_tokens ?? 0, agent.estimated_output_tokens ?? 0)
+            : null;
+
+        const isApproxCost = !(isFinished && agent.cost_usd != null);
+
+        return (
+          <div className="agent-card-footer">
+            <span className={`agent-card-elapsed ${isRunning ? 'agent-card-elapsed-live' : ''}`}>
+              {formatElapsed(elapsedMs)}
+            </span>
+            {cost != null && cost > 0 && (
+              <span className="agent-card-cost">
+                {formatCost(cost, isApproxCost)}
+              </span>
+            )}
+          </div>
+        );
+      })()}
     </div>
   );
 }
+
+export const AgentCard = React.memo(AgentCardInner, (prev, next) => {
+  // Always re-render if agent data changed
+  if (prev.agent !== next.agent || prev.isSelected !== next.isSelected || prev.isPtyIdle !== next.isPtyIdle || prev.templateName !== next.templateName) return false;
+  // Only re-render on tick if agent is actively running
+  const isRunning = prev.agent.status === 'running' || prev.agent.status === 'starting';
+  if (isRunning && prev.now !== next.now) return false;
+  // Skip re-render for tick on non-running agents
+  if (prev.now !== next.now) return true;
+  return true;
+});

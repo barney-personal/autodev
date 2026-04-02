@@ -1,6 +1,16 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import type { Workflow, Job, AgentWithJob } from '@shared/types';
 
+function useNowTick(enabled: boolean): number {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!enabled) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [enabled]);
+  return now;
+}
+
 interface WorkflowDetail extends Workflow {
   plan: string | null;
   contract: string | null;
@@ -46,6 +56,7 @@ export function WorkflowDetailModal({ workflow, agents, onClose, onWorkflowUpdat
   );
   const [loading, setLoading] = useState(true);
   const [acting, setActing] = useState(false);
+  const now = useNowTick(workflow.status === 'running');
 
   const fetchDetail = useCallback(async () => {
     try {
@@ -207,6 +218,64 @@ export function WorkflowDetailModal({ workflow, agents, onClose, onWorkflowUpdat
                     <SummaryCard label="Total Runtime" value={formatDuration(totalDurationMs)} />
                   </div>
 
+                  {/* Per-cycle cost/duration rollup */}
+                  {relevantJobs.length > 0 && (() => {
+                    const cycles = new Map<number, { phase: string; cost: number; durationMs: number; status: string }[]>();
+                    for (const job of relevantJobs) {
+                      const cycle = job.workflow_cycle ?? 0;
+                      if (!cycles.has(cycle)) cycles.set(cycle, []);
+                      const agent = agents.find(a => a.job_id === job.id);
+                      const isRunning = job.status === 'running' || job.status === 'assigned';
+                      const dMs = agent
+                        ? (isRunning ? now - agent.started_at : (agent.duration_ms ?? (agent.finished_at ? agent.finished_at - agent.started_at : 0)))
+                        : 0;
+                      cycles.get(cycle)!.push({
+                        phase: job.workflow_phase ?? '?',
+                        cost: agent?.cost_usd ?? 0,
+                        durationMs: dMs,
+                        status: job.status,
+                      });
+                    }
+                    const sortedCycles = [...cycles.entries()].sort((a, b) => a[0] - b[0]);
+                    return (
+                      <div style={{ background: '#171717', border: '1px solid #2e2e2e', borderRadius: 8, padding: 16 }}>
+                        <div style={{ fontSize: 12, color: '#888', marginBottom: 10 }}>Cycle Breakdown</div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                          {sortedCycles.map(([cycleNum, phases]) => {
+                            const cycleCost = phases.reduce((s, p) => s + p.cost, 0);
+                            return (
+                              <div key={cycleNum} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+                                <span style={{ color: '#aaa', fontWeight: 600, minWidth: 55 }}>Cycle {cycleNum}</span>
+                                <div style={{ display: 'flex', gap: 4, flex: 1, flexWrap: 'wrap' }}>
+                                  {phases.map((p, i) => {
+                                    const isRunning = p.status === 'running' || p.status === 'assigned';
+                                    return (
+                                      <span key={i} style={{
+                                        display: 'inline-flex', alignItems: 'center', gap: 4,
+                                        padding: '2px 8px', borderRadius: 4, fontSize: 11,
+                                        background: isRunning ? 'rgba(59,130,246,0.15)' : '#222',
+                                        border: `1px solid ${isRunning ? '#3b82f6' : '#333'}`,
+                                        color: isRunning ? '#60a5fa' : '#ccc',
+                                      }}>
+                                        <span style={{ textTransform: 'capitalize' }}>{p.phase}</span>
+                                        <span style={{ color: '#888', fontFamily: 'var(--font-mono)' }}>{formatDuration(p.durationMs)}</span>
+                                        {p.cost > 0 && <span style={{ color: '#888', fontFamily: 'var(--font-mono)' }}>(${p.cost.toFixed(2)})</span>}
+                                        {isRunning && <span style={{ fontSize: 9 }}>LIVE</span>}
+                                      </span>
+                                    );
+                                  })}
+                                </div>
+                                {cycleCost > 0 && (
+                                  <span style={{ color: '#888', fontFamily: 'var(--font-mono)', fontSize: 11 }}>${cycleCost.toFixed(2)}</span>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })()}
+
                   {parsedLatestWorklog && (
                     <div style={{ background: '#171717', border: '1px solid #2e2e2e', borderRadius: 8, padding: 16 }}>
                       <div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>Latest Worklog</div>
@@ -261,12 +330,22 @@ export function WorkflowDetailModal({ workflow, agents, onClose, onWorkflowUpdat
                     {jobs.map(job => {
                       const agent = agents.find(a => a.job_id === job.id);
                       const statusDot: Record<string, string> = { done: '#22c55e', failed: '#ef4444', running: '#3b82f6', queued: '#6b7280', assigned: '#f59e0b', cancelled: '#6b7280' };
+                      const isRunning = job.status === 'running' || job.status === 'assigned';
+                      const jobDurationMs = agent
+                        ? (isRunning ? now - agent.started_at : (agent.duration_ms ?? (agent.finished_at ? agent.finished_at - agent.started_at : 0)))
+                        : 0;
                       return (
                         <div key={job.id} style={{ display: 'flex', gap: 12, alignItems: 'center', padding: '6px 10px', background: '#1a1a1a', border: '1px solid #2a2a2a', borderRadius: 4, fontSize: 12 }}>
                           <span style={{ width: 8, height: 8, borderRadius: '50%', background: statusDot[job.status] ?? '#6b7280', flexShrink: 0 }} />
                           <span style={{ fontWeight: 600, minWidth: 180 }}>{job.title}</span>
-                          <span style={{ color: '#888' }}>{job.status}</span>
-                          {agent?.cost_usd != null && <span style={{ color: '#888', marginLeft: 'auto' }}>${agent.cost_usd.toFixed(4)}</span>}
+                          <span style={{ color: '#888', minWidth: 50 }}>{job.status}</span>
+                          <span style={{ color: '#666', minWidth: 80 }}>{job.model ?? 'auto'}</span>
+                          <span style={{ color: isRunning ? '#3b82f6' : '#888', minWidth: 70, fontFamily: 'var(--font-mono)' }}>
+                            {jobDurationMs > 0 ? formatDuration(jobDurationMs) : '--'}
+                          </span>
+                          <span style={{ color: '#888', marginLeft: 'auto', fontFamily: 'var(--font-mono)' }}>
+                            {agent?.cost_usd != null ? `$${agent.cost_usd.toFixed(4)}` : '--'}
+                          </span>
                         </div>
                       );
                     })}
@@ -320,12 +399,18 @@ export function WorkflowDetailModal({ workflow, agents, onClose, onWorkflowUpdat
                         <th style={{ padding: '4px 8px' }}>Cycle</th>
                         <th style={{ padding: '4px 8px' }}>Status</th>
                         <th style={{ padding: '4px 8px' }}>Model</th>
+                        <th style={{ padding: '4px 8px' }}>Duration</th>
                         <th style={{ padding: '4px 8px' }}>Cost</th>
+                        <th style={{ padding: '4px 8px' }}>Started</th>
                       </tr>
                     </thead>
                     <tbody>
                       {jobs.map(job => {
                         const agent = agents.find(a => a.job_id === job.id);
+                        const isRunning = job.status === 'running' || job.status === 'assigned';
+                        const jobDurationMs = agent
+                          ? (isRunning ? now - agent.started_at : (agent.duration_ms ?? (agent.finished_at ? agent.finished_at - agent.started_at : 0)))
+                          : 0;
                         return (
                           <tr key={job.id} style={{ borderTop: '1px solid #2a2a2a' }}>
                             <td style={{ padding: '6px 8px' }}>{job.title}</td>
@@ -333,12 +418,14 @@ export function WorkflowDetailModal({ workflow, agents, onClose, onWorkflowUpdat
                             <td style={{ padding: '6px 8px', color: '#aaa' }}>{job.workflow_cycle ?? '-'}</td>
                             <td style={{ padding: '6px 8px', color: STATUS_COLORS[job.status] ?? '#aaa' }}>{job.status}</td>
                             <td style={{ padding: '6px 8px', color: '#888' }}>{job.model ?? 'auto'}</td>
-                            <td style={{ padding: '6px 8px', color: '#888' }}>{agent?.cost_usd != null ? `$${agent.cost_usd.toFixed(4)}` : '-'}</td>
+                            <td style={{ padding: '6px 8px', color: isRunning ? '#3b82f6' : '#888', fontFamily: 'var(--font-mono)' }}>{jobDurationMs > 0 ? formatDuration(jobDurationMs) : '-'}</td>
+                            <td style={{ padding: '6px 8px', color: '#888', fontFamily: 'var(--font-mono)' }}>{agent?.cost_usd != null ? `$${agent.cost_usd.toFixed(4)}` : '-'}</td>
+                            <td style={{ padding: '6px 8px', color: '#666', fontSize: 11 }}>{agent ? new Date(agent.started_at).toLocaleTimeString() : '-'}</td>
                           </tr>
                         );
                       })}
                       {jobs.length === 0 && (
-                        <tr><td colSpan={6} style={{ padding: 20, color: '#888', textAlign: 'center' }}>No jobs yet</td></tr>
+                        <tr><td colSpan={8} style={{ padding: 20, color: '#888', textAlign: 'center' }}>No jobs yet</td></tr>
                       )}
                     </tbody>
                   </table>

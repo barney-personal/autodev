@@ -7,6 +7,7 @@ import { FileLockMap } from './components/FileLockMap';
 import { JobLineagePanel } from './components/JobLineagePanel';
 import { RunningJobsPanel } from './components/RunningJobsPanel';
 import { EyePanel } from './components/EyePanel';
+import { AutonomousRunDashboard } from './components/AutonomousRunDashboard';
 
 // Lazy-loaded modal components (only rendered when toggled open)
 const JobForm = lazy(() => import('./components/JobForm').then(m => ({ default: m.JobForm })));
@@ -75,6 +76,7 @@ export default function App() {
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [showEye, setShowEye] = useState(false);
   const [eyeEnabled, setEyeEnabled] = useState(false);
+  const [dashboardNow, setDashboardNow] = useState(Date.now());
   const fetchingCost = useRef(false);
 
   // Track when PTY data was last received per agent (for idle detection)
@@ -88,6 +90,13 @@ export default function App() {
     socket.on('pty:data', handlePtyData);
     return () => { socket.off('pty:data', handlePtyData); };
   }, []);
+
+  useEffect(() => {
+    const hasLiveWorkflows = workflows.some(workflow => workflow.status === 'running');
+    if (!hasLiveWorkflows) return;
+    const id = setInterval(() => setDashboardNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [workflows]);
 
   // Poll every second to compute which interactive running agents are idle (no pty output for 3s)
   useEffect(() => {
@@ -248,7 +257,8 @@ export default function App() {
     if (activeProjectId === '__archived__') return archivedJobs.filter(j => !isEyeJob(j));
     const activeJobs = jobs.filter(j => !j.archived_at && !isEyeJob(j));
     if (activeProjectId) return activeJobs.filter(j => j.project_id === activeProjectId);
-    return activeJobs.filter(j => !j.project_id);
+    // No active project means the global home view, not "only unscoped jobs".
+    return activeJobs;
   }, [jobs, activeProjectId, archivedJobs, isEyeJob]);
 
   const filteredJobIds = useMemo(() => new Set(filteredJobs.map(j => j.id)), [filteredJobs]);
@@ -266,6 +276,23 @@ export default function App() {
     }
     return [...latestByJob.values()];
   }, [agents, filteredJobIds, activeProjectId, archivedAgents, isEyeJob]);
+
+  const filteredWorkflows = useMemo(() => {
+    if (activeProjectId === '__archived__') return [] as Workflow[];
+    if (activeProjectId) return workflows.filter(workflow => workflow.project_id === activeProjectId);
+    // Autonomous runs are project-backed by design, so the global view should show all of them.
+    return workflows;
+  }, [workflows, activeProjectId]);
+
+  const singleRunAgents = useMemo(
+    () => filteredAgents.filter(agent => !agent.job.workflow_id),
+    [filteredAgents],
+  );
+
+  const queuedSingleJobs = useMemo(
+    () => filteredJobs.filter(job => job.status === 'queued' && !job.workflow_id),
+    [filteredJobs],
+  );
 
   const activeProjectName = useMemo(() => {
     if (!activeProjectId) return null;
@@ -439,7 +466,33 @@ export default function App() {
         </div>
 
         <main className={`agent-main ${selectedAgent ? 'agent-main-split' : ''}`}>
-          <AgentGrid agents={filteredAgents} queuedJobs={filteredJobs.filter(j => j.status === 'queued')} onSelectAgent={handleSelectAgent} onArchiveJob={handleArchiveJob} onArchiveAll={handleArchiveAll} templates={templates} selectedAgentId={selectedAgent?.id ?? null} ptyIdleAgentIds={ptyIdleAgents} isArchived={activeProjectId === '__archived__'} />
+          {activeProjectId !== '__archived__' && (
+            <section className="dashboard-home-section">
+              <div className="dashboard-home-section-header">
+                <div>
+                  <h2 className="dashboard-home-section-title">Autonomous Runs</h2>
+                  <p className="dashboard-home-section-subtitle">Long-running assess, review, and implement runs with project-level status.</p>
+                </div>
+              </div>
+              <AutonomousRunDashboard
+                workflows={filteredWorkflows}
+                jobs={filteredJobs}
+                agents={agents}
+                now={dashboardNow}
+                onSelectWorkflow={setSelectedWorkflow}
+              />
+            </section>
+          )}
+
+          <section className="dashboard-home-section">
+            <div className="dashboard-home-section-header">
+              <div>
+                <h2 className="dashboard-home-section-title">Single Jobs</h2>
+                <p className="dashboard-home-section-subtitle">Standalone jobs and interactive sessions that are not part of an autonomous run.</p>
+              </div>
+            </div>
+            <AgentGrid agents={singleRunAgents} queuedJobs={queuedSingleJobs} onSelectAgent={handleSelectAgent} onArchiveJob={handleArchiveJob} onArchiveAll={handleArchiveAll} templates={templates} selectedAgentId={selectedAgent?.id ?? null} ptyIdleAgentIds={ptyIdleAgents} isArchived={activeProjectId === '__archived__'} />
+          </section>
           {activeProjectId === '__archived__' && archivedJobs.length < archivedTotal && (
             <div style={{ textAlign: 'center', padding: '12px' }}>
               <button className="btn btn-secondary" onClick={loadMoreArchived} disabled={archivedLoading}>

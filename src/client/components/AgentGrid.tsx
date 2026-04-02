@@ -1,6 +1,17 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { AgentCard } from './AgentCard';
-import type { AgentWithJob, AgentStatus, Job } from '@shared/types';
+import { WorkflowSummaryCard } from './WorkflowSummaryCard';
+import type { AgentWithJob, AgentStatus, Job, Workflow } from '@shared/types';
+
+function useNowTick(enabled: boolean): number {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!enabled) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [enabled]);
+  return now;
+}
 
 interface AgentGridProps {
   agents: AgentWithJob[];
@@ -12,6 +23,8 @@ interface AgentGridProps {
   selectedAgentId?: string | null;
   ptyIdleAgentIds?: Set<string>;
   isArchived?: boolean;
+  workflows?: Workflow[];
+  onSelectWorkflow?: (workflow: Workflow) => void;
 }
 
 const ALL_STATUSES: AgentStatus[] = ['starting', 'running', 'waiting_user', 'done', 'failed', 'cancelled'];
@@ -33,7 +46,9 @@ function tilePriority(agent: AgentWithJob): number {
   return 4;
 }
 
-export function AgentGrid({ agents, queuedJobs = [], onSelectAgent, onArchiveJob, onArchiveAll, selectedAgentId, ptyIdleAgentIds, isArchived }: AgentGridProps) {
+export function AgentGrid({ agents, queuedJobs = [], onSelectAgent, onArchiveJob, onArchiveAll, selectedAgentId, ptyIdleAgentIds, isArchived, workflows, onSelectWorkflow }: AgentGridProps) {
+  const hasRunning = agents.some(a => a.status === 'running' || a.status === 'starting');
+  const now = useNowTick(hasRunning);
   const [activeFilters, setActiveFilters] = useState<Set<AgentStatus>>(new Set());
   const [showFlaggedOnly, setShowFlaggedOnly] = useState(false);
   const [customOrder, setCustomOrder] = useState<string[]>([]);
@@ -225,35 +240,63 @@ export function AgentGrid({ agents, queuedJobs = [], onSelectAgent, onArchiveJob
         </div>
       ) : (
         <div className="agent-grid">
-          {visibleAgents.map(agent => (
-            <div
-              key={agent.id}
-              draggable
-              onDragStart={() => handleDragStart(agent.id)}
-              onDragOver={e => handleDragOver(e, agent.id)}
-              onDragLeave={e => handleDragLeave(e, agent.id)}
-              onDrop={() => handleDrop(agent.id)}
-              onDragEnd={handleDragEnd}
-              className={[
-                'agent-drag-wrapper',
-                draggingId === agent.id ? 'agent-drag-source' : '',
-                dragOverId === agent.id ? 'agent-drag-over' : '',
-              ].join(' ')}
-            >
-              <AgentCard
-                agent={agent}
-                onClick={onSelectAgent}
-                onSelectParent={(parentId) => {
-                  const parent = agents.find(a => a.id === parentId);
-                  if (parent) onSelectAgent(parent);
-                }}
-                onArchiveJob={onArchiveJob ? () => onArchiveJob(agent.job) : undefined}
-                templateName={agent.template_name ?? undefined}
-                isSelected={selectedAgentId === agent.id}
-                isPtyIdle={ptyIdleAgentIds?.has(agent.id)}
-              />
-            </div>
-          ))}
+          {(() => {
+            // Group agents by workflow_id and build interleaved render list
+            const workflowMap = workflows ? new Map(workflows.map(w => [w.id, w])) : new Map<string, Workflow>();
+            const seenWorkflows = new Set<string>();
+            const items: React.ReactNode[] = [];
+
+            for (const agent of visibleAgents) {
+              const wfId = agent.job?.workflow_id;
+              if (wfId && workflowMap.has(wfId) && !seenWorkflows.has(wfId)) {
+                seenWorkflows.add(wfId);
+                const wf = workflowMap.get(wfId)!;
+                const wfAgents = visibleAgents.filter(a => a.job?.workflow_id === wfId);
+                items.push(
+                  <div key={`wf-${wfId}`} className="workflow-summary-wrapper">
+                    <WorkflowSummaryCard
+                      workflow={wf}
+                      workflowAgents={wfAgents}
+                      now={now}
+                      onClick={() => onSelectWorkflow?.(wf)}
+                    />
+                  </div>
+                );
+              }
+
+              items.push(
+                <div
+                  key={agent.id}
+                  draggable
+                  onDragStart={() => handleDragStart(agent.id)}
+                  onDragOver={e => handleDragOver(e, agent.id)}
+                  onDragLeave={e => handleDragLeave(e, agent.id)}
+                  onDrop={() => handleDrop(agent.id)}
+                  onDragEnd={handleDragEnd}
+                  className={[
+                    'agent-drag-wrapper',
+                    draggingId === agent.id ? 'agent-drag-source' : '',
+                    dragOverId === agent.id ? 'agent-drag-over' : '',
+                  ].join(' ')}
+                >
+                  <AgentCard
+                    agent={agent}
+                    onClick={onSelectAgent}
+                    onSelectParent={(parentId) => {
+                      const parent = agents.find(a => a.id === parentId);
+                      if (parent) onSelectAgent(parent);
+                    }}
+                    onArchiveJob={onArchiveJob ? () => onArchiveJob(agent.job) : undefined}
+                    templateName={agent.template_name ?? undefined}
+                    isSelected={selectedAgentId === agent.id}
+                    isPtyIdle={ptyIdleAgentIds?.has(agent.id)}
+                    now={now}
+                  />
+                </div>
+              );
+            }
+            return items;
+          })()}
           {queuedJobs.map(job => (
             <div key={job.id} className="agent-drag-wrapper">
               <div className="agent-card agent-card-queued">
