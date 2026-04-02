@@ -147,6 +147,8 @@ async function tick(): Promise<void> {
     socket.emitJobUpdate(queries.getJobById(job.id)!);
     _classifying.add(job.id);
 
+    // Hoist agentId so the catch block can clean up the agent row on failure
+    let agentId: string | null = null;
     try {
       // Classify & resolve model (no-op if user already picked one)
       const model = await resolveModel(job);
@@ -161,7 +163,7 @@ async function tick(): Promise<void> {
       // Re-fetch so the agent sees the now-resolved model field
       const readyJob = queries.getJobById(job.id)!;
 
-      const agentId = randomUUID();
+      agentId = randomUUID();
       queries.insertAgent({ id: agentId, job_id: job.id, status: 'starting', parent_agent_id: (readyJob as any).created_by_agent_id ?? undefined });
       socket.emitAgentNew(queries.getAgentWithJob(agentId)!);
 
@@ -206,6 +208,13 @@ async function tick(): Promise<void> {
       console.error(`[queue] dispatch failed for job ${job.id}:`, err);
       Sentry.captureException(err);
       queries.updateJobStatus(job.id, 'failed');
+      // If an agent row was already inserted, mark it as failed so it doesn't
+      // consume a concurrency slot or mislead workflow state.
+      if (agentId) {
+        queries.updateAgent(agentId, { status: 'failed', error_message: String(err?.message ?? err), finished_at: Date.now() });
+        const failedAgent = queries.getAgentWithJob(agentId);
+        if (failedAgent) socket.emitAgentUpdate(failedAgent);
+      }
       socket.emitJobUpdate(queries.getJobById(job.id)!);
     } finally {
       _classifying.delete(job.id);

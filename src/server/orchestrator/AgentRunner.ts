@@ -258,43 +258,56 @@ export function runAgent(options: RunOptions): void {
   // This avoids E2BIG when workflow prompts grow large (plan + contract + worklogs),
   // and avoids the pipe-based stdin hang that Codex exhibits with piped input.
   // File-backed stdin provides a clean EOF after all bytes are read.
+  //
+  // writeFileSync / openSync can throw synchronously (disk full, permission denied).
+  // If they do, we must close logFd/errFd/promptFd so we don't leak fds, then
+  // rethrow so the caller (WorkQueueManager) can mark both the job AND agent as failed.
   let promptFd: number | null = null;
-  if (useCodex) {
-    const promptPath = getPromptPath(agentId);
-    fs.writeFileSync(promptPath, buildPrompt(job));
-    promptFd = fs.openSync(promptPath, 'r');
-  }
+  let child: ReturnType<typeof spawn>;
+  try {
+    if (useCodex) {
+      const promptPath = getPromptPath(agentId);
+      fs.writeFileSync(promptPath, buildPrompt(job));
+      promptFd = fs.openSync(promptPath, 'r');
+    }
 
-  // Spawn via `nice -n 10` so agent processes run at lower scheduling priority
-  // than the orchestrator server/UI. This keeps the dashboard responsive under load.
-  const child = spawn('nice', ['-n', '10', binary, ...args], {
-    cwd: workDir,
-    detached: true,            // becomes process group leader — survives server restart
-    stdio: [promptFd !== null ? promptFd : 'pipe', logFd, errFd],
-    env: (() => {
-      const env = { ...process.env };
-      delete env['CLAUDECODE'];
-      // Strip Sentry vars so agent subprocesses don't report test-suite
-      // exceptions to the orchestrator's Sentry project. Repos with their
-      // own Sentry load their DSN from their own .env files.
-      delete env['SENTRY_DSN'];
-      delete env['SENTRY_RELEASE'];
-      delete env['SENTRY_ENVIRONMENT'];
-      env['ORCHESTRATOR_AGENT_ID'] = agentId;
-      env['ORCHESTRATOR_API_URL'] = `http://localhost:${process.env.PORT ?? 3456}`;
-      // Auto-activate Python virtual environment if present in the working directory,
-      // so tools like pytest are on PATH when the agent runs shell commands.
-      for (const venvName of ['venv', '.venv', 'env', '.env']) {
-        const venvBin = path.join(workDir, venvName, 'bin');
-        if (fs.existsSync(path.join(venvBin, 'activate'))) {
-          env['VIRTUAL_ENV'] = path.join(workDir, venvName);
-          env['PATH'] = `${venvBin}:${env['PATH'] ?? ''}`;
-          break;
+    // Spawn via `nice -n 10` so agent processes run at lower scheduling priority
+    // than the orchestrator server/UI. This keeps the dashboard responsive under load.
+    child = spawn('nice', ['-n', '10', binary, ...args], {
+      cwd: workDir,
+      detached: true,            // becomes process group leader — survives server restart
+      stdio: [promptFd !== null ? promptFd : 'pipe', logFd, errFd],
+      env: (() => {
+        const env = { ...process.env };
+        delete env['CLAUDECODE'];
+        // Strip Sentry vars so agent subprocesses don't report test-suite
+        // exceptions to the orchestrator's Sentry project. Repos with their
+        // own Sentry load their DSN from their own .env files.
+        delete env['SENTRY_DSN'];
+        delete env['SENTRY_RELEASE'];
+        delete env['SENTRY_ENVIRONMENT'];
+        env['ORCHESTRATOR_AGENT_ID'] = agentId;
+        env['ORCHESTRATOR_API_URL'] = `http://localhost:${process.env.PORT ?? 3456}`;
+        // Auto-activate Python virtual environment if present in the working directory,
+        // so tools like pytest are on PATH when the agent runs shell commands.
+        for (const venvName of ['venv', '.venv', 'env', '.env']) {
+          const venvBin = path.join(workDir, venvName, 'bin');
+          if (fs.existsSync(path.join(venvBin, 'activate'))) {
+            env['VIRTUAL_ENV'] = path.join(workDir, venvName);
+            env['PATH'] = `${venvBin}:${env['PATH'] ?? ''}`;
+            break;
+          }
         }
-      }
-      return env;
-    })(),
-  });
+        return env;
+      })(),
+    });
+  } catch (err) {
+    // Pre-spawn failure: close all fds we already opened so they don't leak.
+    try { fs.closeSync(logFd); } catch { /* best effort */ }
+    try { fs.closeSync(errFd); } catch { /* best effort */ }
+    if (promptFd !== null) { try { fs.closeSync(promptFd); } catch { /* best effort */ } }
+    throw err;
+  }
 
   // Parent releases its copies of the file descriptors — child keeps its own
   fs.closeSync(logFd);

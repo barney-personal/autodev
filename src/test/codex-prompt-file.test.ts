@@ -302,4 +302,119 @@ describe('AgentRunner: Codex prompt file delivery', () => {
     const closeCalls = vi.mocked(fs.closeSync).mock.calls.map(c => c[0]);
     expect(closeCalls).toContain(promptFd);
   });
+
+  it('writeFileSync failure closes logFd and errFd and does not spawn', async () => {
+    const fs = await import('fs');
+    const { runAgent } = await import('../server/orchestrator/AgentRunner.js');
+
+    const job = await insertTestJob({
+      id: 'codex-write-fail-job',
+      title: 'Write Fail Test',
+      description: 'test',
+      model: 'codex',
+      status: 'queued',
+    });
+
+    const queries = await import('../server/db/queries.js');
+    const agent = queries.insertAgent({ id: 'codex-agent-write-fail', job_id: job.id, status: 'starting' });
+
+    // Make writeFileSync throw on the prompt file write (third call — after mkdirSync)
+    vi.mocked(fs.writeFileSync).mockImplementationOnce(() => {
+      throw new Error('ENOSPC: no space left on device');
+    });
+
+    expect(() => runAgent({ agentId: agent.id, job })).toThrow('ENOSPC');
+
+    // spawn was NOT called
+    expect(spawnCalls).toHaveLength(0);
+
+    // logFd and errFd (the first two openSync calls) were closed
+    const closeCalls = vi.mocked(fs.closeSync).mock.calls.map(c => c[0]);
+    // openSync was called twice — once for logFd, once for errFd
+    expect(openedFds.size).toBe(2);
+    const [logFd, errFd] = [...openedFds.values()];
+    expect(closeCalls).toContain(logFd);
+    expect(closeCalls).toContain(errFd);
+  });
+
+  it('openSync failure on prompt file closes logFd and errFd and does not spawn', async () => {
+    const fs = await import('fs');
+    const { runAgent } = await import('../server/orchestrator/AgentRunner.js');
+
+    const job = await insertTestJob({
+      id: 'codex-open-fail-job',
+      title: 'Open Fail Test',
+      description: 'test',
+      model: 'codex',
+      status: 'queued',
+    });
+
+    const queries = await import('../server/db/queries.js');
+    const agent = queries.insertAgent({ id: 'codex-agent-open-fail', job_id: job.id, status: 'starting' });
+
+    // openSync is called 3 times for Codex: logFd('w'), errFd('w'), promptFd('r').
+    // Let the first two succeed, then throw on the third.
+    let openCount = 0;
+    vi.mocked(fs.openSync).mockImplementation((filePath: any, mode: any) => {
+      openCount++;
+      if (openCount === 3) {
+        throw new Error('EMFILE: too many open files');
+      }
+      const fd = nextFd++;
+      openedFds.set(filePath, fd);
+      return fd;
+    });
+
+    expect(() => runAgent({ agentId: agent.id, job })).toThrow('EMFILE');
+
+    // spawn was NOT called
+    expect(spawnCalls).toHaveLength(0);
+
+    // The prompt file was written (writeFileSync succeeded before openSync failed)
+    expect(writtenFiles.size).toBe(1);
+
+    // logFd and errFd were closed in the catch handler
+    const closeCalls = vi.mocked(fs.closeSync).mock.calls.map(c => c[0]);
+    const [logFd, errFd] = [...openedFds.values()];
+    expect(closeCalls).toContain(logFd);
+    expect(closeCalls).toContain(errFd);
+  });
+
+  it('spawn failure closes all fds including promptFd', async () => {
+    const fs = await import('fs');
+    const { spawn } = await import('child_process');
+    const { runAgent, getPromptPath } = await import('../server/orchestrator/AgentRunner.js');
+
+    const job = await insertTestJob({
+      id: 'codex-spawn-fail-job',
+      title: 'Spawn Fail Test',
+      description: 'test',
+      model: 'codex',
+      status: 'queued',
+    });
+
+    const queries = await import('../server/db/queries.js');
+    const agent = queries.insertAgent({ id: 'codex-agent-spawn-fail', job_id: job.id, status: 'starting' });
+
+    // Make spawn throw
+    vi.mocked(spawn).mockImplementationOnce(() => {
+      throw new Error('spawn ENOENT');
+    });
+
+    expect(() => runAgent({ agentId: agent.id, job })).toThrow('spawn ENOENT');
+
+    // All three fds (logFd, errFd, promptFd) were closed in the catch handler
+    const closeCalls = vi.mocked(fs.closeSync).mock.calls.map(c => c[0]);
+    const promptPath = getPromptPath(agent.id);
+    const promptFd = openedFds.get(promptPath)!;
+    expect(promptFd).toBeDefined();
+    expect(closeCalls).toContain(promptFd);
+
+    // logFd and errFd also closed
+    const allFds = [...openedFds.values()];
+    expect(allFds.length).toBe(3);
+    for (const fd of allFds) {
+      expect(closeCalls).toContain(fd);
+    }
+  });
 });

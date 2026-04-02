@@ -220,6 +220,103 @@ describe('WorkQueueManager: nudgeQueue', () => {
   });
 });
 
+describe('WorkQueueManager: dispatch failure cleans up agent', () => {
+  beforeEach(async () => {
+    await setupTestDb();
+    await resetManagerState();
+    vi.clearAllMocks();
+  });
+
+  afterEach(async () => {
+    await cleanupTestDb();
+  });
+
+  it('marks agent as failed when runAgent throws', async () => {
+    const { _tickForTest, setMaxConcurrent } = await import('../server/orchestrator/WorkQueueManager.js');
+    const { runAgent } = await import('../server/orchestrator/AgentRunner.js');
+    const { listAgents, listJobs } = await import('../server/db/queries.js');
+    const socket = await import('../server/socket/SocketManager.js');
+
+    setMaxConcurrent(10);
+
+    // Insert a Codex job that will use runAgent (not startInteractiveAgent)
+    await insertTestJob({ title: 'Failing Codex Job', model: 'codex', work_dir: '/tmp/nonexistent' });
+
+    // Make runAgent throw (simulating writeFileSync/openSync failure)
+    vi.mocked(runAgent).mockImplementationOnce(() => {
+      throw new Error('ENOSPC: no space left on device');
+    });
+
+    await _tickForTest();
+
+    // The job should be marked as failed
+    const jobs = listJobs();
+    const failedJob = jobs.find((j: any) => j.title === 'Failing Codex Job');
+    expect(failedJob?.status).toBe('failed');
+
+    // The agent should also be marked as failed (not left in 'starting')
+    const agents = listAgents();
+    const agent = agents.find((a: any) => a.job_id === failedJob?.id);
+    expect(agent).toBeDefined();
+    expect(agent!.status).toBe('failed');
+    expect(agent!.error_message).toContain('ENOSPC');
+    expect(agent!.finished_at).not.toBeNull();
+
+    // emitAgentUpdate should have been called with the failed agent
+    const agentUpdateCalls = vi.mocked(socket.emitAgentUpdate).mock.calls;
+    expect(agentUpdateCalls.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('marks agent as failed when startInteractiveAgent throws', async () => {
+    const { _tickForTest, setMaxConcurrent } = await import('../server/orchestrator/WorkQueueManager.js');
+    const { startInteractiveAgent } = await import('../server/orchestrator/PtyManager.js');
+    const { listAgents } = await import('../server/db/queries.js');
+
+    setMaxConcurrent(10);
+
+    // Insert a Claude job that will use startInteractiveAgent
+    await insertTestJob({ title: 'Failing Claude Job', model: 'claude-sonnet-4-6', work_dir: '/tmp/nonexistent' });
+
+    // Make startInteractiveAgent throw
+    vi.mocked(startInteractiveAgent).mockImplementationOnce(() => {
+      throw new Error('tmux session creation failed');
+    });
+
+    await _tickForTest();
+
+    // The agent should be marked as failed
+    const agents = listAgents();
+    const agent = agents.find((a: any) => a.status === 'failed' && a.error_message?.includes('tmux'));
+    expect(agent).toBeDefined();
+    expect(agent!.finished_at).not.toBeNull();
+  });
+
+  it('handles dispatch failure before agent row is created', async () => {
+    const { _tickForTest, setMaxConcurrent } = await import('../server/orchestrator/WorkQueueManager.js');
+    const { resolveModel } = await import('../server/orchestrator/ModelClassifier.js');
+    const { listAgents, getJobById } = await import('../server/db/queries.js');
+
+    setMaxConcurrent(10);
+
+    const job = await insertTestJob({ title: 'Pre-Agent Fail', model: 'claude-sonnet-4-6', work_dir: '/tmp/nonexistent' });
+
+    // Make resolveModel throw (failure before agent row is created)
+    vi.mocked(resolveModel).mockImplementationOnce(async () => {
+      throw new Error('classification API down');
+    });
+
+    await _tickForTest();
+
+    // Job should be failed
+    const updatedJob = getJobById(job.id);
+    expect(updatedJob!.status).toBe('failed');
+
+    // No orphaned starting agents
+    const startingAgents = listAgents('starting' as any);
+    expect(startingAgents).toHaveLength(0);
+  });
+});
+
 describe('WorkQueueManager: tick() reentrancy guard', () => {
   beforeEach(async () => {
     await setupTestDb();
