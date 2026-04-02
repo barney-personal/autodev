@@ -466,6 +466,9 @@ export function initDb(dbPath: string): DatabaseSync {
   if (!workflowCols.includes('pr_url')) {
     db.exec('ALTER TABLE workflows ADD COLUMN pr_url TEXT');
   }
+  if (!workflowCols.includes('blocked_reason')) {
+    db.exec('ALTER TABLE workflows ADD COLUMN blocked_reason TEXT');
+  }
 
   // ── jobs.pr_url migration ──────────────────────────────────────────────────
   if (!jobCols.includes('pr_url')) {

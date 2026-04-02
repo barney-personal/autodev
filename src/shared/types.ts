@@ -110,6 +110,7 @@ export interface Workflow {
   use_worktree: number;
   worktree_path: string | null;
   worktree_branch: string | null;
+  blocked_reason: string | null;
   pr_url: string | null;
   created_at: number;
   updated_at: number;

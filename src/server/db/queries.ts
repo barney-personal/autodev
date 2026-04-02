@@ -2184,8 +2184,8 @@ export function getPrReviewsWithNewUserReplies(): any[] {
 export function insertWorkflow(workflow: Workflow): Workflow {
   const db = getDb();
   db.prepare(`
-    INSERT INTO workflows (id, title, task, work_dir, implementer_model, reviewer_model, max_cycles, current_cycle, current_phase, status, milestones_total, milestones_done, project_id, max_turns_assess, max_turns_review, max_turns_implement, stop_mode_assess, stop_value_assess, stop_mode_review, stop_value_review, stop_mode_implement, stop_value_implement, template_id, use_worktree, worktree_path, worktree_branch, pr_url, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO workflows (id, title, task, work_dir, implementer_model, reviewer_model, max_cycles, current_cycle, current_phase, status, milestones_total, milestones_done, project_id, max_turns_assess, max_turns_review, max_turns_implement, stop_mode_assess, stop_value_assess, stop_mode_review, stop_value_review, stop_mode_implement, stop_value_implement, template_id, use_worktree, worktree_path, worktree_branch, blocked_reason, pr_url, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     workflow.id, workflow.title, workflow.task, workflow.work_dir,
     workflow.implementer_model, workflow.reviewer_model,
@@ -2197,7 +2197,8 @@ export function insertWorkflow(workflow: Workflow): Workflow {
     workflow.stop_mode_review, workflow.stop_value_review ?? null,
     workflow.stop_mode_implement, workflow.stop_value_implement ?? null,
     workflow.template_id, workflow.use_worktree,
-    workflow.worktree_path ?? null, workflow.worktree_branch ?? null, workflow.pr_url ?? null,
+    workflow.worktree_path ?? null, workflow.worktree_branch ?? null,
+    workflow.blocked_reason ?? null, workflow.pr_url ?? null,
     workflow.created_at, workflow.updated_at
   );
   return getWorkflowById(workflow.id)!;
@@ -2215,7 +2216,7 @@ export function listWorkflows(): Workflow[] {
   return rows.map((r: any) => cast<Workflow>(r));
 }
 
-export function updateWorkflow(id: string, fields: Partial<Pick<Workflow, 'current_cycle' | 'current_phase' | 'status' | 'milestones_total' | 'milestones_done' | 'worktree_path' | 'worktree_branch' | 'pr_url' | 'stop_mode_assess' | 'stop_value_assess' | 'stop_mode_review' | 'stop_value_review' | 'stop_mode_implement' | 'stop_value_implement'>>): Workflow | null {
+export function updateWorkflow(id: string, fields: Partial<Pick<Workflow, 'current_cycle' | 'current_phase' | 'status' | 'milestones_total' | 'milestones_done' | 'worktree_path' | 'worktree_branch' | 'blocked_reason' | 'pr_url' | 'stop_mode_assess' | 'stop_value_assess' | 'stop_mode_review' | 'stop_value_review' | 'stop_mode_implement' | 'stop_value_implement'>>): Workflow | null {
   const db = getDb();
   const sets: string[] = ['updated_at = ?'];
   const values: unknown[] = [Date.now()];

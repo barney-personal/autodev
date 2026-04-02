@@ -48,8 +48,9 @@ function _onJobCompleted(job: Job): void {
 
   // If the phase job was cancelled, mark workflow as blocked (user action — don't auto-retry)
   if (job.status === 'cancelled') {
-    console.log(`[workflow ${workflow.id}] phase '${job.workflow_phase}' job ${job.id} cancelled — marking workflow blocked`);
-    updateAndEmit(workflow.id, { status: 'blocked', current_phase: job.workflow_phase ?? 'idle' });
+    const reason = `Phase '${job.workflow_phase}' job ${job.id.slice(0, 8)} was cancelled`;
+    console.log(`[workflow ${workflow.id}] ${reason} — marking workflow blocked`);
+    updateAndEmit(workflow.id, { status: 'blocked', current_phase: job.workflow_phase ?? 'idle', blocked_reason: reason });
     return;
   }
 
@@ -70,12 +71,14 @@ function _onJobCompleted(job: Job): void {
         spawnPhaseJob(workflow, phase, cycle, fallbackModel);
         return;
       }
-      console.log(`[workflow ${workflow.id}] phase '${job.workflow_phase}' failed with ${failureKind}, but no fallback model is available — marking workflow blocked`);
-      updateAndEmit(workflow.id, { status: 'blocked', current_phase: job.workflow_phase ?? 'idle' });
+      const noFallbackReason = `Phase '${job.workflow_phase}' failed on ${currentModel} (${failureKind}) — no fallback model available`;
+      console.log(`[workflow ${workflow.id}] ${noFallbackReason}`);
+      updateAndEmit(workflow.id, { status: 'blocked', current_phase: job.workflow_phase ?? 'idle', blocked_reason: noFallbackReason });
       return;
     }
-    console.log(`[workflow ${workflow.id}] phase '${job.workflow_phase}' job ${job.id} failed (${failureKind}) — marking workflow blocked`);
-    updateAndEmit(workflow.id, { status: 'blocked', current_phase: job.workflow_phase ?? 'idle' });
+    const failReason = `Phase '${job.workflow_phase}' job ${job.id.slice(0, 8)} failed (${failureKind})`;
+    console.log(`[workflow ${workflow.id}] ${failReason} — marking workflow blocked`);
+    updateAndEmit(workflow.id, { status: 'blocked', current_phase: job.workflow_phase ?? 'idle', blocked_reason: failReason });
     return;
   }
 
@@ -88,8 +91,9 @@ function _onJobCompleted(job: Job): void {
     case 'assess': {
       // After assess: validate plan was written, then move to review
       if (!planNote?.value) {
-        console.log(`[workflow ${workflow.id}] assess phase completed but no plan note found — marking blocked`);
-        updateAndEmit(workflow.id, { status: 'blocked', current_phase: 'assess' as WorkflowPhase });
+        const assessReason = 'Assess phase completed but plan note is missing';
+        console.log(`[workflow ${workflow.id}] ${assessReason} — marking blocked`);
+        updateAndEmit(workflow.id, { status: 'blocked', current_phase: 'assess' as WorkflowPhase, blocked_reason: assessReason });
         return;
       }
       updateAndEmit(workflow.id, {
@@ -312,7 +316,7 @@ export function resumeWorkflow(
     throw new Error(`Cannot resume workflow in status '${workflow.status}'`);
   }
 
-  updateAndEmit(workflow.id, { status: 'running' });
+  updateAndEmit(workflow.id, { status: 'running', blocked_reason: null });
   const updated = queries.getWorkflowById(workflow.id)!;
 
   // Use target phase/cycle if provided, otherwise resume the blocked phase

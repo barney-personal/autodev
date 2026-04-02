@@ -54,6 +54,7 @@ export function createAutonomousAgentRun(
     use_worktree: body.useWorktree === false ? 0 : 1,
     worktree_path: null,
     worktree_branch: null,
+    blocked_reason: null,
     pr_url: null,
     created_at: now,
     updated_at: now,
