@@ -19,6 +19,19 @@ import {
   insertTestJob,
 } from './helpers.js';
 
+// Mock child_process.execSync for branch verification tests (ensureWorktreeBranch).
+// Default: return the expected branch so existing tests that trigger spawnPhaseJob on
+// workflows with worktree_path set don't break.
+vi.mock('child_process', () => ({
+  execSync: vi.fn((cmd: string) => {
+    if (typeof cmd === 'string' && cmd.includes('rev-parse --abbrev-ref HEAD')) {
+      // Default: return a dummy branch — tests that need a specific value override this
+      return Buffer.from('expected-branch\n');
+    }
+    return Buffer.from('');
+  }),
+}));
+
 // Mock SocketManager before any module that imports it
 vi.mock('../server/socket/SocketManager.js', () => createSocketMock());
 
@@ -1200,5 +1213,148 @@ describe('WorkflowManager: reconcileRunningWorkflows', () => {
     const updated = getWorkflowById(workflow.id)!;
     expect(updated.status).toBe('blocked');
     // No change
+  });
+});
+
+// ─── M5: Worktree Branch Verification ──────────────────────────────────────
+
+describe('WorkflowManager: worktree branch verification (M5)', () => {
+  beforeEach(async () => {
+    await setupTestDb();
+    await resetManagerState();
+    vi.clearAllMocks();
+  });
+
+  afterEach(async () => {
+    await cleanupTestDb();
+  });
+
+  it('ensureWorktreeBranch detects drift and corrects it', async () => {
+    const { ensureWorktreeBranch } = await import('../server/orchestrator/WorkflowManager.js');
+    const { execSync } = await import('child_process');
+
+    // First call: rev-parse returns wrong branch; second call: checkout succeeds
+    vi.mocked(execSync)
+      .mockReturnValueOnce(Buffer.from('main\n'))        // rev-parse → wrong branch
+      .mockReturnValueOnce(Buffer.from(''));              // checkout → ok
+
+    const result = ensureWorktreeBranch('/tmp/wt', 'feature-branch');
+    expect(result.ok).toBe(true);
+
+    // Should have called rev-parse then checkout
+    expect(execSync).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(execSync).mock.calls[0][0]).toContain('rev-parse --abbrev-ref HEAD');
+    expect(vi.mocked(execSync).mock.calls[1][0]).toContain('git checkout');
+    expect(vi.mocked(execSync).mock.calls[1][0]).toContain('feature-branch');
+  });
+
+  it('ensureWorktreeBranch returns ok when already on correct branch', async () => {
+    const { ensureWorktreeBranch } = await import('../server/orchestrator/WorkflowManager.js');
+    const { execSync } = await import('child_process');
+
+    vi.mocked(execSync).mockReturnValueOnce(Buffer.from('feature-branch\n'));
+
+    const result = ensureWorktreeBranch('/tmp/wt', 'feature-branch');
+    expect(result.ok).toBe(true);
+    expect(execSync).toHaveBeenCalledTimes(1); // only rev-parse, no checkout
+  });
+
+  it('ensureWorktreeBranch returns error when checkout fails', async () => {
+    const { ensureWorktreeBranch } = await import('../server/orchestrator/WorkflowManager.js');
+    const { execSync } = await import('child_process');
+
+    vi.mocked(execSync)
+      .mockReturnValueOnce(Buffer.from('main\n'))        // rev-parse → wrong branch
+      .mockImplementationOnce(() => { throw new Error('checkout conflict'); }); // checkout fails
+
+    const result = ensureWorktreeBranch('/tmp/wt', 'feature-branch');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain('checkout conflict');
+    }
+  });
+
+  it('branch drift detected and corrected before spawning phase job', async () => {
+    const socket = await import('../server/socket/SocketManager.js');
+    const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    const { upsertNote, getWorkflowById, updateWorkflow } = await import('../server/db/queries.js');
+    const { execSync } = await import('child_process');
+
+    const project = await insertTestProject();
+    const workflow = await insertTestWorkflow({
+      project_id: project.id,
+      status: 'running',
+      current_phase: 'assess',
+      current_cycle: 0,
+    });
+    // Set worktree fields so branch verification triggers
+    updateWorkflow(workflow.id, {
+      worktree_path: '/tmp/test-wt',
+      worktree_branch: 'workflow/test-branch',
+    } as any);
+    upsertNote(`workflow/${workflow.id}/plan`, '- [ ] M1\n- [ ] M2', null);
+    upsertNote(`workflow/${workflow.id}/contract`, '# contract', null);
+
+    // Mock: rev-parse returns wrong branch, checkout succeeds
+    vi.mocked(execSync)
+      .mockReturnValueOnce(Buffer.from('main\n'))   // rev-parse → drifted
+      .mockReturnValueOnce(Buffer.from(''));         // checkout → ok
+
+    // Trigger assess→review transition (which calls spawnPhaseJob for review)
+    const assessJob = await insertTestJob({
+      workflow_id: workflow.id,
+      workflow_cycle: 0,
+      workflow_phase: 'assess',
+      status: 'done',
+    });
+    onJobCompleted(assessJob);
+
+    // Branch was corrected, so a review job should have been spawned
+    const emitJobNewCalls = vi.mocked(socket.emitJobNew).mock.calls;
+    expect(emitJobNewCalls.length).toBe(1);
+    expect(emitJobNewCalls[0][0].workflow_phase).toBe('review');
+
+    const updated = getWorkflowById(workflow.id)!;
+    expect(updated.status).toBe('running');
+    expect(updated.current_phase).toBe('review');
+  });
+
+  it('checkout failure blocks workflow with descriptive reason', async () => {
+    const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    const { upsertNote, getWorkflowById, updateWorkflow } = await import('../server/db/queries.js');
+    const { execSync } = await import('child_process');
+
+    const project = await insertTestProject();
+    const workflow = await insertTestWorkflow({
+      project_id: project.id,
+      status: 'running',
+      current_phase: 'assess',
+      current_cycle: 0,
+    });
+    updateWorkflow(workflow.id, {
+      worktree_path: '/tmp/test-wt',
+      worktree_branch: 'workflow/test-branch',
+    } as any);
+    upsertNote(`workflow/${workflow.id}/plan`, '- [ ] M1\n- [ ] M2', null);
+    upsertNote(`workflow/${workflow.id}/contract`, '# contract', null);
+
+    // Mock: rev-parse returns wrong branch, checkout throws
+    vi.mocked(execSync)
+      .mockReturnValueOnce(Buffer.from('main\n'))
+      .mockImplementationOnce(() => { throw new Error('cannot checkout: uncommitted changes'); });
+
+    const assessJob = await insertTestJob({
+      workflow_id: workflow.id,
+      workflow_cycle: 0,
+      workflow_phase: 'assess',
+      status: 'done',
+    });
+    onJobCompleted(assessJob);
+
+    const updated = getWorkflowById(workflow.id)!;
+    expect(updated.status).toBe('blocked');
+    expect(updated.blocked_reason).toContain('Worktree branch verification failed');
+    expect(updated.blocked_reason).toContain('review');
+    expect(updated.blocked_reason).toContain('cannot checkout');
   });
 });

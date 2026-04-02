@@ -253,6 +253,32 @@ export function parseMilestones(planText: string): { total: number; done: number
   return { total: done + unchecked, done };
 }
 
+// ─── Worktree Branch Verification ──────────────────────────────────────────
+
+/**
+ * Verify a worktree HEAD is on the expected branch. If drifted, attempt checkout.
+ * Returns { ok: true } on success, or { ok: false, error } if checkout fails.
+ */
+export function ensureWorktreeBranch(
+  worktreePath: string,
+  expectedBranch: string,
+): { ok: true } | { ok: false; error: string } {
+  try {
+    const currentBranch = execSync('git rev-parse --abbrev-ref HEAD', {
+      cwd: worktreePath, stdio: 'pipe', timeout: 5000,
+    }).toString().trim();
+    if (currentBranch !== expectedBranch) {
+      console.warn(`[worktree] on '${currentBranch}' instead of '${expectedBranch}' — switching`);
+      execSync(`git checkout ${JSON.stringify(expectedBranch)}`, {
+        cwd: worktreePath, stdio: 'pipe', timeout: 10000,
+      });
+    }
+    return { ok: true };
+  } catch (err: any) {
+    return { ok: false, error: err.message ?? String(err) };
+  }
+}
+
 // ─── Phase Job Spawning ─────────────────────────────────────────────────────
 
 function repairAttemptsKey(workflowId: string, phase: 'assess' | 'review', cycle: number): string {
@@ -343,6 +369,17 @@ function spawnPhaseJob(workflow: Workflow, phase: WorkflowPhase, cycle: number, 
   // Apply model override (used for auto-retry with fallback model on rate limits)
   if (modelOverride) model = modelOverride;
   model = getWorkflowFallbackModel(workflow, phase, model) ?? model;
+
+  // Verify worktree branch hasn't drifted before spawning
+  if (workflow.worktree_path && workflow.worktree_branch) {
+    const branchCheck = ensureWorktreeBranch(workflow.worktree_path, workflow.worktree_branch);
+    if (!branchCheck.ok) {
+      const reason = `Worktree branch verification failed before ${phase}: ${branchCheck.error}`;
+      console.log(`[workflow ${workflow.id}] ${reason} — marking blocked`);
+      updateAndEmit(workflow.id, { status: 'blocked', current_phase: phase, blocked_reason: reason });
+      return;
+    }
+  }
 
   // Before spawning an implement job, snapshot current milestones_done so we can
   // detect zero-progress cycles when the implement job completes.
@@ -634,18 +671,9 @@ export function finalizeWorkflow(workflow: Workflow): void {
   // Ensure the worktree is on the correct branch before pushing.
   // Agents may have drifted to main — switch back and cherry-pick if needed.
   if (worktree_branch) {
-    try {
-      const currentBranch = execSync('git rev-parse --abbrev-ref HEAD', {
-        cwd: worktree_path, stdio: 'pipe', timeout: 5000,
-      }).toString().trim();
-      if (currentBranch !== worktree_branch) {
-        console.warn(`[workflow ${workflow.id}] worktree on '${currentBranch}' instead of '${worktree_branch}' — switching`);
-        execSync(`git checkout ${JSON.stringify(worktree_branch)}`, {
-          cwd: worktree_path, stdio: 'pipe', timeout: 10000,
-        });
-      }
-    } catch (err: any) {
-      console.warn(`[workflow ${workflow.id}] branch check failed:`, err.message);
+    const branchCheck = ensureWorktreeBranch(worktree_path, worktree_branch);
+    if (!branchCheck.ok) {
+      console.warn(`[workflow ${workflow.id}] branch check failed:`, branchCheck.error);
     }
   }
 
