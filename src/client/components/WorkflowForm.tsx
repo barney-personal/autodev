@@ -138,7 +138,10 @@ export function WorkflowForm({ onSubmit, onClose }: WorkflowFormProps) {
                 min={1}
                 max={50}
                 value={maxCycles}
-                onChange={e => setMaxCycles(Number(e.target.value))}
+                onChange={e => {
+                  const v = parseInt(e.target.value, 10);
+                  setMaxCycles(Number.isNaN(v) || v < 1 ? 10 : v);
+                }}
               />
             </div>
             <div className="form-group">

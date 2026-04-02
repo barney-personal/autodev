@@ -374,6 +374,83 @@ describe('WorkflowManager: onJobCompleted phase transitions', () => {
     expect(statuses).toContain('blocked');
   });
 
+  it('max_cycles reached with remaining milestones blocks instead of completing', async () => {
+    const socket = await import('../server/socket/SocketManager.js');
+    const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    const { upsertNote, getWorkflowById } = await import('../server/db/queries.js');
+
+    const project = await insertTestProject();
+    const workflow = await insertTestWorkflow({
+      project_id: project.id,
+      status: 'running',
+      current_phase: 'implement',
+      current_cycle: 1,
+      max_cycles: 1,          // max_cycles = 1, so current_cycle >= max_cycles
+      milestones_total: 9,
+      milestones_done: 0,
+    });
+    // Plan has 9 milestones, only 1 checked
+    upsertNote(`workflow/${workflow.id}/plan`, [
+      '- [x] M1: First milestone',
+      '- [ ] M2: Second milestone',
+      '- [ ] M3: Third milestone',
+      '- [ ] M4: Fourth milestone',
+      '- [ ] M5: Fifth milestone',
+      '- [ ] M6: Sixth milestone',
+      '- [ ] M7: Seventh milestone',
+      '- [ ] M8: Eighth milestone',
+      '- [ ] M9: Ninth milestone',
+    ].join('\n'), null);
+
+    const job = await insertTestJob({
+      workflow_id: workflow.id,
+      workflow_cycle: 1,
+      workflow_phase: 'implement',
+      status: 'done',
+    });
+
+    onJobCompleted(job);
+
+    const updated = getWorkflowById(workflow.id)!;
+    // Must be blocked, NOT complete — 8 milestones still unchecked
+    expect(updated.status).toBe('blocked');
+    expect(updated.milestones_done).toBe(1);
+    expect(updated.milestones_total).toBe(9);
+
+    // Should NOT have emitted 'complete'
+    const statuses = vi.mocked(socket.emitWorkflowUpdate).mock.calls.map(c => c[0].status).filter(Boolean);
+    expect(statuses).not.toContain('complete');
+  });
+
+  it('max_cycles reached with ALL milestones done correctly marks complete', async () => {
+    const socket = await import('../server/socket/SocketManager.js');
+    const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    const { upsertNote, getWorkflowById } = await import('../server/db/queries.js');
+
+    const project = await insertTestProject();
+    const workflow = await insertTestWorkflow({
+      project_id: project.id,
+      status: 'running',
+      current_phase: 'implement',
+      current_cycle: 5,
+      max_cycles: 5,
+    });
+    // All milestones checked
+    upsertNote(`workflow/${workflow.id}/plan`, '- [x] M1\n- [x] M2\n- [x] M3', null);
+
+    const job = await insertTestJob({
+      workflow_id: workflow.id,
+      workflow_cycle: 5,
+      workflow_phase: 'implement',
+      status: 'done',
+    });
+
+    onJobCompleted(job);
+
+    const updated = getWorkflowById(workflow.id)!;
+    expect(updated.status).toBe('complete');
+  });
+
   it('non-workflow job is silently ignored', async () => {
     const socket = await import('../server/socket/SocketManager.js');
     const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
