@@ -1095,7 +1095,7 @@ export function resumeWorkflow(
       // instead of creating a new one with -b, which would fail with "branch already exists".
       let branchExists = false;
       try {
-        execSync(`git rev-parse --verify refs/heads/${branchName}`, {
+        execSync(`git rev-parse --verify ${JSON.stringify(`refs/heads/${branchName}`)}`, {
           cwd: current.work_dir, stdio: 'pipe', timeout: 10000,
         });
         branchExists = true;

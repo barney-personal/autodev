@@ -205,6 +205,12 @@ describe('WorkflowManager: resumeWorkflow worktree restoration', () => {
     expect(worktreeAddCalls.length).toBe(1);
     const addCmd = worktreeAddCalls[0][0] as string;
     expect(addCmd).not.toContain(' -b ');
+
+    // Resilience event should be logged for successful worktree restoration (Fix-C13a)
+    expect(_logResilienceEvent).toHaveBeenCalledWith(
+      'worktree_restore', 'workflow', workflow.id,
+      expect.objectContaining({ action: 'restore', outcome: 'success' }),
+    );
   });
 
   it('does not attempt worktree restoration when use_worktree=0', async () => {
