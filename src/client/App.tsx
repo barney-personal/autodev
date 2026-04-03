@@ -264,7 +264,7 @@ export default function App() {
   const filteredJobIds = useMemo(() => new Set(filteredJobs.map(j => j.id)), [filteredJobs]);
 
   const filteredAgents = useMemo(() => {
-    if (activeProjectId === '__archived__') return archivedAgents.filter(a => !isEyeJob(a.job as any));
+    if (activeProjectId === '__archived__') return archivedAgents.filter(a => !isEyeJob(a.job));
     const matching = agents.filter(a => filteredJobIds.has(a.job_id));
     // In active view, only show the most recent agent per job (hides superseded/restarted agents)
     const latestByJob = new Map<string, AgentWithJob>();

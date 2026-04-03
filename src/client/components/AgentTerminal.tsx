@@ -236,8 +236,8 @@ export function AgentTerminal({ agent, onClose, onContinued, onRenameJob }: Agen
   const viewStartRef = useRef<number>(Date.now());
   const [childAgents, setChildAgents] = useState<ChildAgentSummary[]>(agent.child_agents ?? []);
   const [activeTab, setActiveTab] = useState<'output' | 'changes'>('output');
-  const [diff, setDiff] = useState<string | null>((agent as any).diff ?? null);
-  const [baseSha, setBaseSha] = useState<string | null>((agent as any).base_sha ?? null);
+  const [diff, setDiff] = useState<string | null>(agent.diff ?? null);
+  const [baseSha, setBaseSha] = useState<string | null>(agent.base_sha ?? null);
   const [diffFetched, setDiffFetched] = useState(false);
   const [fullDescription, setFullDescription] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState(false);
@@ -268,8 +268,8 @@ export function AgentTerminal({ agent, onClose, onContinued, onRenameJob }: Agen
     viewStartRef.current = Date.now();
     setChildAgents(agent.child_agents ?? []);
     setActiveTab('output');
-    setDiff((agent as any).diff ?? null);
-    setBaseSha((agent as any).base_sha ?? null);
+    setDiff(agent.diff ?? null);
+    setBaseSha(agent.base_sha ?? null);
     setDiffFetched(false);
     setFullDescription(null);
     setPtySnapshotMode(false);
@@ -348,7 +348,7 @@ export function AgentTerminal({ agent, onClose, onContinued, onRenameJob }: Agen
     isTruncatedRef.current = isTruncated;
   }, [isTruncated]);
 
-  const isInteractive = !!(agent.job as any).is_interactive;
+  const isInteractive = !!agent.job.is_interactive;
   const [tmuxCopied, setTmuxCopied] = useState(false);
   const [ptySnapshotMode, setPtySnapshotMode] = useState(false);
   // Ref so the useEffect closure can read the latest value without re-running
@@ -634,7 +634,7 @@ export function AgentTerminal({ agent, onClose, onContinued, onRenameJob }: Agen
       return () => {
         socket.off('pty:data', ptyDataHandler);
         socket.off('pty:closed', ptyClosedHandler);
-        containerRef.current?.removeEventListener('wheel', handleWheel as EventListener, { capture: true } as any);
+        containerRef.current?.removeEventListener('wheel', handleWheel as EventListener, { capture: true });
         if (snapshotDebounceTimer) clearTimeout(snapshotDebounceTimer);
         inputDispose.dispose();
         if (resizeTimer) clearTimeout(resizeTimer);

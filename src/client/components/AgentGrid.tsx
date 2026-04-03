@@ -162,7 +162,7 @@ export function AgentGrid({ agents, queuedJobs = [], onSelectAgent, onArchiveJob
         presentStatuses.length > 1 ||
         flaggedCount > 0 ||
         unreadIds.length > 0 ||
-        agents.some(a => (a.job as any)?.is_interactive && (a.status === 'running' || a.status === 'starting')) ||
+        agents.some(a => a.job?.is_interactive && (a.status === 'running' || a.status === 'starting')) ||
         (onArchiveAll && agents.some(a => a.job?.status === 'done' || a.job?.status === 'failed' || a.job?.status === 'cancelled'))
       ) && (
         <div className="agent-filter-bar">
@@ -209,7 +209,7 @@ export function AgentGrid({ agents, queuedJobs = [], onSelectAgent, onArchiveJob
               <span className="agent-filter-count">{unreadIds.length}</span>
             </button>
           )}
-          {agents.some(a => (a.job as any).is_interactive && (a.status === 'running' || a.status === 'starting')) && (
+          {agents.some(a => a.job?.is_interactive && (a.status === 'running' || a.status === 'starting')) && (
             <button
               className="btn btn-danger btn-sm"
               onClick={() => fetch('/api/agents/disconnect-all', { method: 'DELETE' })}
