@@ -1,7 +1,6 @@
 import { randomUUID } from 'crypto';
 import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
-import { hasActiveTransport } from '../mcp/McpServer.js';
 import { logResilienceEvent } from './ResilienceLogger.js';
 import type { FileLock } from '../../shared/types.js';
 
@@ -299,7 +298,6 @@ class FileLockRegistry {
     // in integrations/child_process and breaks test mocks that don't include it).
     const { hasActiveTransport } = await import('../mcp/McpServer.js');
 
-
     // Don't force-release if the holder is actively connected
     if (hasActiveTransport(oldest.agentId)) return false;
 
@@ -323,7 +321,7 @@ class FileLockRegistry {
     logResilienceEvent('deadlock_resolved', 'lock', oldest.lock.id, details);
     socket.emitDeadlockResolved(details);
 
-    console.log(`[file-lock] Auto-resolved deadlock: released ${oldest.file} held by ${oldest.agentId} (cycle: ${cycleAgents.join(' → ')})`);
+    console.log(`[file-lock] Auto-resolved deadlock: released ${oldest.file} held by ${oldest.agentId} (cycle: ${cycleAgents.join(' -> ')})`);
 
     return true;
   }
