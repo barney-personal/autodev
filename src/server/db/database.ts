@@ -524,6 +524,19 @@ export function initDb(dbPath: string): DatabaseSync {
   `);
   db.exec('CREATE INDEX IF NOT EXISTS idx_resilience_events_type_time ON resilience_events(event_type, created_at)');
 
+  // ── Workflow File Claims (M13/6B) ──────────────────────────────────────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS workflow_file_claims (
+      id          TEXT PRIMARY KEY,
+      workflow_id TEXT NOT NULL REFERENCES workflows(id),
+      file_path   TEXT NOT NULL,
+      claimed_at  INTEGER NOT NULL,
+      released_at INTEGER
+    )
+  `);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_wfc_workflow ON workflow_file_claims(workflow_id)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_wfc_file ON workflow_file_claims(file_path) WHERE released_at IS NULL');
+
   // ── Performance indexes ────────────────────────────────────────────────────
   db.exec('CREATE INDEX IF NOT EXISTS idx_agents_job_id ON agents(job_id)');
   db.exec("CREATE INDEX IF NOT EXISTS idx_jobs_context_eye ON jobs(status) WHERE json_extract(context, '$.eye') = 1");

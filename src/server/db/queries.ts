@@ -2428,3 +2428,57 @@ export function isWorkDirInUse(dirPath: string): boolean {
   ).get(dirPath);
   return !!row;
 }
+
+// ─── Workflow File Claims (M13/6B) ──────────────────────────────────────────
+
+export interface FileClaim {
+  id: string;
+  workflow_id: string;
+  file_path: string;
+  claimed_at: number;
+  released_at: number | null;
+}
+
+/** Claim files for a workflow. Returns any conflicting active claims from other workflows. */
+export function claimFiles(workflowId: string, filePaths: string[]): FileClaim[] {
+  const db = getDb();
+  const { randomUUID } = require('crypto');
+  const now = Date.now();
+  const conflicts: FileClaim[] = [];
+
+  for (const fp of filePaths) {
+    // Check for active claims from other workflows
+    const existing = db.prepare(
+      'SELECT * FROM workflow_file_claims WHERE file_path = ? AND workflow_id != ? AND released_at IS NULL'
+    ).get(fp, workflowId);
+    if (existing) {
+      conflicts.push(cast<FileClaim>(existing));
+    }
+    // Upsert our claim (idempotent — skip if already claimed by this workflow)
+    const alreadyClaimed = db.prepare(
+      'SELECT 1 FROM workflow_file_claims WHERE file_path = ? AND workflow_id = ? AND released_at IS NULL'
+    ).get(fp, workflowId);
+    if (!alreadyClaimed) {
+      db.prepare(
+        'INSERT INTO workflow_file_claims (id, workflow_id, file_path, claimed_at) VALUES (?, ?, ?, ?)'
+      ).run(randomUUID(), workflowId, fp, now);
+    }
+  }
+  return conflicts;
+}
+
+/** Release all active claims for a workflow. */
+export function releaseWorkflowClaims(workflowId: string): void {
+  const db = getDb();
+  db.prepare(
+    'UPDATE workflow_file_claims SET released_at = ? WHERE workflow_id = ? AND released_at IS NULL'
+  ).run(Date.now(), workflowId);
+}
+
+/** Get all active claims for a workflow. */
+export function getActiveClaimsForWorkflow(workflowId: string): FileClaim[] {
+  const db = getDb();
+  return db.prepare(
+    'SELECT * FROM workflow_file_claims WHERE workflow_id = ? AND released_at IS NULL'
+  ).all(workflowId).map(r => cast<FileClaim>(r));
+}

@@ -780,6 +780,22 @@ function spawnPhaseJob(workflow: Workflow, phase: WorkflowPhase, cycle: number, 
     const planNote = queries.getNote(`workflow/${workflow.id}/plan`);
     const milestones = parseMilestones(planNote?.value ?? '');
     queries.upsertNote(`workflow/${workflow.id}/pre-implement-milestones/${cycle}`, String(milestones.done), null);
+
+    // M13/6B: Advisory file claims — extract file paths from first unchecked milestone
+    if (planNote?.value) {
+      const firstUnchecked = planNote.value.split('\n').find(l => /^- \[ \]/.test(l));
+      if (firstUnchecked) {
+        // Extract paths like src/foo/bar.ts, ./path/file.js, etc.
+        const pathMatches = firstUnchecked.match(/(?:^|[\s`"'(])([a-zA-Z0-9_./-]+\.\w{1,5})(?=[\s`"'),]|$)/g);
+        if (pathMatches) {
+          const filePaths = pathMatches.map(m => m.trim().replace(/^[`"'(]/, ''));
+          const conflicts = queries.claimFiles(workflow.id, filePaths);
+          if (conflicts.length > 0) {
+            console.warn(`[workflow ${workflow.id}] file claim conflicts: ${conflicts.map(c => `${c.file_path} (held by ${c.workflow_id})`).join(', ')}`);
+          }
+        }
+      }
+    }
   }
 
   const job = queries.insertJob({
@@ -1261,6 +1277,9 @@ export function pushAndCreatePr(workflow: Workflow, isDraft: boolean): string | 
  * Pushes the worktree branch, opens a GitHub PR, then removes the local worktree.
  */
 export function finalizeWorkflow(workflow: Workflow): void {
+  // M13/6B: Release file claims on workflow completion
+  queries.releaseWorkflowClaims(workflow.id);
+
   if (!workflow.worktree_path || !workflow.work_dir) return;
 
   try {
@@ -1274,6 +1293,7 @@ export function finalizeWorkflow(workflow: Workflow): void {
  * Called when a workflow is cancelled — skip the PR, just clean up the worktree.
  */
 export function cleanupWorktree(workflow: Workflow): void {
+  queries.releaseWorkflowClaims(workflow.id);
   _removeWorktree(workflow);
 }
 
