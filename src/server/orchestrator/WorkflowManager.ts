@@ -544,11 +544,11 @@ function spawnPhaseJob(workflow: Workflow, phase: WorkflowPhase, cycle: number, 
   if (modelOverride) model = modelOverride;
   model = getWorkflowFallbackModel(workflow, phase, model) ?? model;
 
-  // Verify worktree health (directory, .git, git internals, branch) before spawning
+  // Verify worktree branch before spawning
   if (workflow.worktree_path && workflow.worktree_branch) {
-    const healthCheck = verifyWorktreeHealth(workflow.worktree_path, workflow.worktree_branch, workflow.work_dir);
-    if (!healthCheck.ok) {
-      const reason = `Worktree health check failed before ${phase}: ${healthCheck.error}`;
+    const branchCheck = ensureWorktreeBranch(workflow.worktree_path, workflow.worktree_branch);
+    if (!branchCheck.ok) {
+      const reason = `Worktree branch verification failed before ${phase}: ${branchCheck.error}`;
       console.log(`[workflow ${workflow.id}] ${reason} — marking blocked`);
       updateAndEmit(workflow.id, { status: 'blocked', current_phase: phase, blocked_reason: reason });
       return;

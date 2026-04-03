@@ -1312,11 +1312,8 @@ describe('WorkflowManager: worktree branch verification (M5)', () => {
     upsertNote(`workflow/${workflow.id}/plan`, '- [ ] M1\n- [ ] M2', null);
     upsertNote(`workflow/${workflow.id}/contract`, '# contract', null);
 
-    // Mock: verifyWorktreeHealth checks pass, then ensureWorktreeBranch:
-    // rev-parse --abbrev-ref → drifted, checkout → ok
+    // Mock: ensureWorktreeBranch: rev-parse --abbrev-ref → drifted, checkout → ok
     vi.mocked(execSync)
-      .mockReturnValueOnce(Buffer.from('true\n'))    // --is-inside-work-tree
-      .mockReturnValueOnce(Buffer.from('abc123\n'))  // rev-parse HEAD
       .mockReturnValueOnce(Buffer.from('main\n'))    // rev-parse --abbrev-ref HEAD → drifted
       .mockReturnValueOnce(Buffer.from(''));          // checkout → ok
 
@@ -1358,12 +1355,9 @@ describe('WorkflowManager: worktree branch verification (M5)', () => {
     upsertNote(`workflow/${workflow.id}/plan`, '- [ ] M1\n- [ ] M2', null);
     upsertNote(`workflow/${workflow.id}/contract`, '# contract', null);
 
-    // Mock: verifyWorktreeHealth checks pass, then ensureWorktreeBranch:
-    // rev-parse --abbrev-ref → drifted, checkout → throws
+    // Mock: ensureWorktreeBranch: rev-parse → wrong branch, checkout throws
     vi.mocked(execSync)
-      .mockReturnValueOnce(Buffer.from('true\n'))    // --is-inside-work-tree
-      .mockReturnValueOnce(Buffer.from('abc123\n'))  // rev-parse HEAD
-      .mockReturnValueOnce(Buffer.from('main\n'))    // rev-parse --abbrev-ref HEAD → drifted
+      .mockReturnValueOnce(Buffer.from('main\n'))    // rev-parse --abbrev-ref HEAD → wrong branch
       .mockImplementationOnce(() => { throw new Error('cannot checkout: uncommitted changes'); });
 
     const assessJob = await insertTestJob({
@@ -1376,7 +1370,7 @@ describe('WorkflowManager: worktree branch verification (M5)', () => {
 
     const updated = getWorkflowById(workflow.id)!;
     expect(updated.status).toBe('blocked');
-    expect(updated.blocked_reason).toContain('Worktree health check failed');
+    expect(updated.blocked_reason).toContain('Worktree branch verification failed');
     expect(updated.blocked_reason).toContain('review');
     expect(updated.blocked_reason).toContain('cannot checkout');
   });
