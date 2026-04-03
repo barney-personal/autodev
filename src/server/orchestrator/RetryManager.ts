@@ -57,8 +57,8 @@ function retrySame(job: Job): boolean {
     description: job.description,
     context: job.context,
     priority: job.priority,
-    work_dir: (job as any).work_dir ?? null,
-    max_turns: (job as any).max_turns ?? 50,
+    work_dir: job.work_dir ?? null,
+    max_turns: job.max_turns ?? 50,
     model: job.model ?? null,
     template_id: job.template_id ?? null,
     depends_on: null,
@@ -133,7 +133,7 @@ function retryAnalyze(job: Job, agentId: string): boolean {
     description: analysisPrompt,
     context: null,
     priority: job.priority + 1, // slightly higher to run soon
-    work_dir: (job as any).work_dir ?? null,
+    work_dir: job.work_dir ?? null,
     max_turns: 10,
     model: 'claude-haiku-4-5-20251001',
     template_id: null,
@@ -169,7 +169,7 @@ interface AnalysisContext {
 }
 
 function buildAnalysisPrompt(ctx: AnalysisContext): string {
-  const workDir = (ctx.originalJob as any).work_dir ?? process.cwd();
+  const workDir = ctx.originalJob.work_dir ?? process.cwd();
   const retrySettings = [
     `retry_policy: '${ctx.originalJob.retry_policy}'`,
     `max_retries: ${ctx.originalJob.max_retries}`,
@@ -205,7 +205,7 @@ ${ctx.diff}
 3. **Create a retry job** using create_job with:
    - The SAME task description as the original, PLUS an "## Previous Failure Analysis" section with your diagnosis and specific guidance on what to do differently
    - work_dir: '${workDir}'
-   - max_turns: ${(ctx.originalJob as any).max_turns ?? 50}
+   - max_turns: ${ctx.originalJob.max_turns ?? 50}
    ${ctx.originalJob.model ? `- model: '${ctx.originalJob.model}'` : ''}
    ${ctx.originalJob.template_id ? `- template_id is not available via create_job, so include any relevant template context in the description` : ''}
 

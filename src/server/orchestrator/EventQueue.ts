@@ -52,7 +52,7 @@ export function pushEvent(eventName: string, payload: any): void {
     db.prepare('DELETE FROM event_queue WHERE created_at < ?').run(cutoffTime);
 
     // If still over limit, keep only the newest MAX_EVENTS
-    const count = (db.prepare('SELECT COUNT(*) as cnt FROM event_queue').get() as any).cnt;
+    const count = (db.prepare('SELECT COUNT(*) as cnt FROM event_queue').get() as { cnt: number }).cnt;
     if (count > MAX_EVENTS) {
       const excess = count - MAX_EVENTS;
       db.prepare(

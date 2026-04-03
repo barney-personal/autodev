@@ -247,7 +247,7 @@ export async function resolveModel(job: Job): Promise<string | null> {
       throw new Error(`Anthropic API ${response.status}: ${await response.text()}`);
     }
 
-    const data = await response.json() as any;
+    const data = await response.json() as { content?: Array<{ text?: string }> };
     const word = (data.content?.[0]?.text ?? '').trim().toLowerCase();
     const complexity = (['simple', 'medium', 'complex'] as const).find(c => word.includes(c)) ?? 'medium';
     const classified = COMPLEXITY_TO_MODEL[complexity];

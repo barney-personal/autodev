@@ -193,11 +193,11 @@ export function runAgent(options: RunOptions): void {
   const logPath = getLogPath(agentId);
   const errPath = getStderrPath(agentId);
 
-  const workDir = (job as any).work_dir ?? process.cwd();
-  const stopMode = (job as any).stop_mode ?? 'turns';
-  const stopValue = (job as any).stop_value ?? null;
+  const workDir = job.work_dir ?? process.cwd();
+  const stopMode = job.stop_mode ?? 'turns';
+  const stopValue = job.stop_value ?? null;
   const maxTurns = effectiveMaxTurns(stopMode, stopValue);
-  const model: string | null = (job as any).model ?? null;
+  const model: string | null = job.model ?? null;
   const useCodex = isCodexModel(model);
   if (useCodex) ensureCodexTrusted(workDir);
 
@@ -584,7 +584,7 @@ export async function handleJobCompletion(
   status: 'done' | 'failed',
 ): Promise<void> {
   // Clean up git checkpoint tag created before dispatch
-  const workDir = (job as any).work_dir ?? process.cwd();
+  const workDir = job.work_dir ?? process.cwd();
   try {
     const tagName = `orchestrator/checkpoint/${agentId.slice(0, 8)}`;
     execSync(`git tag -d ${tagName} 2>/dev/null || true`, { cwd: workDir, stdio: 'pipe', timeout: 5000 });
@@ -970,7 +970,7 @@ export function readClaudeMd(workDir: string): string | null {
 }
 
 function buildPrompt(job: Job): string {
-  const model: string | null = (job as any).model ?? null;
+  const model: string | null = job.model ?? null;
   let prompt = '';
 
   // Codex has no --append-system-prompt flag, so prepend it to the prompt
@@ -985,7 +985,7 @@ function buildPrompt(job: Job): string {
     prompt += job.pre_debate_summary + '\n\n## Original Task\n';
   }
 
-  const templateId = (job as any).template_id as string | null;
+  const templateId = job.template_id;
   if (templateId) {
     const template = queries.getTemplateById(templateId);
     if (template) {
@@ -1011,7 +1011,7 @@ function buildPrompt(job: Job): string {
   }
 
   // Inject CLAUDE.md for Codex agents (Claude reads it natively)
-  const workDir = (job as any).work_dir ?? process.cwd();
+  const workDir = job.work_dir ?? process.cwd();
   if (isCodexModel(model)) {
     const claudeMd = readClaudeMd(workDir);
     if (claudeMd) {
@@ -1028,8 +1028,8 @@ function buildPrompt(job: Job): string {
 export const MEMORY_BUDGET = 2000;
 
 export function buildMemorySection(job: Job): string {
-  const projectId: string | null = (job as any).project_id ?? null;
-  const workDir: string | null = (job as any).work_dir ?? null;
+  const projectId: string | null = job.project_id ?? null;
+  const workDir: string | null = job.work_dir ?? null;
   const effectiveProjectId: string | null = projectId ?? workDir ?? null;
   const memories = queries.getMemoryForJob(effectiveProjectId, job.title, job.description);
   if (memories.length === 0) return '';

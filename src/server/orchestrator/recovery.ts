@@ -74,7 +74,7 @@ export function runRecovery(): void {
       if (!agentWithJob) continue;
       const { job } = agentWithJob;
 
-      const isCodexBatch = isCodexModel((job as any).model ?? null) && !job.is_interactive;
+      const isCodexBatch = isCodexModel(job.model ?? null) && !job.is_interactive;
 
       if (isCodexBatch) {
         // Legacy stream-json path: use PID-based recovery
@@ -133,7 +133,7 @@ export function runRecovery(): void {
       } else {
         // Tmux-based path (all Claude agents, interactive or not)
         if (isTmuxSessionAlive(agent.id)) {
-          const isDebateStage = isAutoExitJob(job as any);
+          const isDebateStage = isAutoExitJob(job);
 
           if (!job.is_interactive && !isDebateStage) {
             // Non-interactive automated agent (e.g. Eye, verification agents).
@@ -185,7 +185,7 @@ export function runRecovery(): void {
             // re-register it as an orphaned wait so the watchdog can restart it once its
             // child jobs are all terminal. Set disconnected_at in the past to bypass the
             // 60-second grace period — the server restart already serves as that delay.
-            const pendingWaitIds: string | null = (agent as any).pending_wait_ids ?? null;
+            const pendingWaitIds: string | null = agent.pending_wait_ids ?? null;
             if (pendingWaitIds) {
               try {
                 const jobIds: string[] = JSON.parse(pendingWaitIds);
@@ -202,7 +202,7 @@ export function runRecovery(): void {
           }
         } else {
           // Interactive or debate-stage → done; other non-interactive → failed (no finish_job called)
-          const isDebateStage = isAutoExitJob(job as any);
+          const isDebateStage = isAutoExitJob(job);
           const finalStatus = (job.is_interactive || isDebateStage) ? 'done' : 'failed';
           console.log(`[recovery] tmux agent ${agent.id} — session gone, marking ${finalStatus}`);
 

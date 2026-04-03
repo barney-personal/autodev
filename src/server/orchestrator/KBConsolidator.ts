@@ -193,7 +193,7 @@ async function callHaiku(apiKey: string, prompt: string): Promise<string> {
     throw new Error(`Anthropic API ${response.status}: ${await response.text()}`);
   }
 
-  const data = await response.json() as any;
+  const data = await response.json() as { content?: Array<{ text?: string }> };
   const text = (data.content?.[0]?.text ?? '').trim();
 
   return extractFirstJsonArray(text) ?? '[]';

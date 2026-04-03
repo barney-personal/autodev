@@ -164,7 +164,7 @@ async function tick(): Promise<void> {
       const readyJob = queries.getJobById(job.id)!;
 
       agentId = randomUUID();
-      queries.insertAgent({ id: agentId, job_id: job.id, status: 'starting', parent_agent_id: (readyJob as any).created_by_agent_id ?? undefined });
+      queries.insertAgent({ id: agentId, job_id: job.id, status: 'starting', parent_agent_id: readyJob.created_by_agent_id ?? undefined });
       socket.emitAgentNew(queries.getAgentWithJob(agentId)!);
 
       // If worktree requested, create one and override the working directory
@@ -174,7 +174,7 @@ async function tick(): Promise<void> {
 
       // Create a git checkpoint tag before the agent starts, so mid-edit crashes
       // can be recovered by resetting to this tag. Lightweight and cheap.
-      const dispatchWorkDir = (dispatchJob as any).work_dir ?? process.cwd();
+      const dispatchWorkDir = dispatchJob.work_dir ?? process.cwd();
       try {
         const isGitRepo = fs.existsSync(path.join(dispatchWorkDir, '.git')) ||
           (() => { try { execSync('git rev-parse --git-dir', { cwd: dispatchWorkDir, stdio: 'pipe', timeout: 3000 }); return true; } catch { return false; } })();
@@ -190,8 +190,8 @@ async function tick(): Promise<void> {
       // Codex batch agents still use runAgent (stream-json path); all others use tmux.
       // Debate-stage jobs use --print inside tmux (piped through tee to .ndjson for UI display)
       // and exit naturally — no finish_job needed.
-      const useCodexBatch = isCodexModel((dispatchJob as any).model ?? null) && !dispatchJob.is_interactive;
-      const isDebateStage = isAutoExitJob(dispatchJob as any);
+      const useCodexBatch = isCodexModel(dispatchJob.model ?? null) && !dispatchJob.is_interactive;
+      const isDebateStage = isAutoExitJob(dispatchJob);
       const autoFinish = !dispatchJob.is_interactive && !isDebateStage;
       const resumeSessionId = queries.getNote(`job-resume:${job.id}`)?.value ?? undefined;
       _totalDispatched++;
@@ -238,7 +238,7 @@ async function tick(): Promise<void> {
  * with work_dir pointing to the new worktree.
  */
 function createWorktree(job: Job, agentId: string): Job {
-  const workDir = (job as any).work_dir ?? process.cwd();
+  const workDir = job.work_dir ?? process.cwd();
   const shortId = agentId.slice(0, 8);
 
   // Resolve to the actual git repo root — prevents nested .orchestrator-worktrees
@@ -284,5 +284,5 @@ function createWorktree(job: Job, agentId: string): Job {
   queries.updateJobWorkDir(job.id, worktreeDir);
 
   // Return a copy of the job with the overridden work_dir
-  return { ...job, work_dir: worktreeDir } as any;
+  return { ...job, work_dir: worktreeDir };
 }

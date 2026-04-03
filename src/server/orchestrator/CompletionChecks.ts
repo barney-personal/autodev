@@ -57,7 +57,7 @@ function checkForErrorEvents(agentId: string): boolean {
 }
 
 function runCustomCommand(cmd: string, job: Job): string | null {
-  const workDir = (job as any).work_dir ?? process.cwd();
+  const workDir = job.work_dir ?? process.cwd();
   try {
     execSync(cmd, { cwd: workDir, timeout: 30_000, stdio: 'pipe' });
     return null; // exit 0 = pass

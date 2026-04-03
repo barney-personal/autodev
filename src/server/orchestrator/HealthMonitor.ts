@@ -92,7 +92,7 @@ function tick(): void {
     }
 
     // High turns: approaching max_turns
-    const maxTurns = (job as any).max_turns ?? 50;
+    const maxTurns = job.max_turns ?? 50;
     const threshold = Math.floor(maxTurns * TURN_WARNING_RATIO);
     if (agent.num_turns != null && agent.num_turns >= threshold && !queries.hasUndismissedWarning(agent.id, 'high_turns')) {
       emitWarning(agent.id, 'high_turns', `Used ${agent.num_turns}/${maxTurns} turns`);
@@ -120,8 +120,8 @@ function tick(): void {
     }
 
     // ── Budget enforcement (stop_mode === 'budget') ──────────────────────
-    const stopMode: StopMode = (job as any).stop_mode ?? 'turns';
-    const stopValue: number | null = (job as any).stop_value ?? null;
+    const stopMode: StopMode = job.stop_mode ?? 'turns';
+    const stopValue: number | null = job.stop_value ?? null;
 
     if (stopMode === 'budget' && stopValue != null) {
       // Use direct cost_usd if available (from PTY scraping), otherwise estimate from tokens
@@ -132,7 +132,7 @@ function tick(): void {
       } else {
         const inputTokens = agent.estimated_input_tokens ?? 0;
         const outputTokens = agent.estimated_output_tokens ?? 0;
-        const model: string | null = (job as any).model ?? null;
+        const model: string | null = job.model ?? null;
         estimated = estimateCostUsd(model, inputTokens, outputTokens);
       }
       const ratio = estimated / stopValue;

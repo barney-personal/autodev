@@ -222,7 +222,7 @@ function buildEnrichmentSummary(debate: Debate): string {
   if (debate.status === 'consensus') {
     const summary = (() => {
       if (!debate.consensus) return 'Both sides agreed.';
-      try { return (JSON.parse(debate.consensus) as any).summary ?? 'Both sides agreed.'; } catch { return 'Both sides agreed.'; }
+      try { return (JSON.parse(debate.consensus) as { summary?: string }).summary ?? 'Both sides agreed.'; } catch { return 'Both sides agreed.'; }
     })();
     return `## Debate Consensus\n${summary}`;
   }
@@ -648,7 +648,7 @@ function buildVerificationReviewPrompt(
 
   const consensusSummary = (() => {
     if (!debate.consensus) return null;
-    try { return (JSON.parse(debate.consensus) as any).summary ?? null; } catch { return null; }
+    try { return (JSON.parse(debate.consensus) as { summary?: string }).summary ?? null; } catch { return null; }
   })();
 
   const isSubsequentRound = debate.verification_round > 0;
@@ -727,7 +727,7 @@ function buildPostActionPrompt(
 
   const consensusSummary = (() => {
     if (!debate.consensus) return null;
-    try { return (JSON.parse(debate.consensus) as any).summary ?? null; } catch { return null; }
+    try { return (JSON.parse(debate.consensus) as { summary?: string }).summary ?? null; } catch { return null; }
   })();
 
   let prompt = `# Post-Debate Action\n\n`;

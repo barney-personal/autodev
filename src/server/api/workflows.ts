@@ -3,7 +3,7 @@ import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
 import { resumeWorkflow, cleanupWorktree } from '../orchestrator/WorkflowManager.js';
 import { createAutonomousAgentRun } from '../orchestrator/AutonomousAgentRunManager.js';
-import type { CreateAutonomousAgentRunRequest } from '../../shared/types.js';
+import type { CreateAutonomousAgentRunRequest, WorkflowPhase } from '../../shared/types.js';
 
 const router = Router();
 
@@ -117,7 +117,7 @@ router.post('/:id/resume', (req, res) => {
   }
 
   try {
-    const job = resumeWorkflow(workflow, { phase: targetPhase as any, cycle: targetCycle });
+    const job = resumeWorkflow(workflow, { phase: targetPhase as WorkflowPhase, cycle: targetCycle });
     const updated = queries.getWorkflowById(workflow.id);
     res.json({ workflow: updated, jobs: [job] });
   } catch (err: any) {

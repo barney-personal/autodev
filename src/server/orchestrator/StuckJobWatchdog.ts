@@ -115,7 +115,7 @@ function check(): void {
       const IDLE_THRESHOLD_MS = 20 * 60 * 1000; // 20 minutes
       if ((tmuxAlive || pidAlive) && !agent.pending_wait_ids) {
         const idleJob = queries.getJobById(agent.job_id);
-        const isStuckCandidate = idleJob && !idleJob.is_interactive && !isAutoExitJob(idleJob as any);
+        const isStuckCandidate = idleJob && !idleJob.is_interactive && !isAutoExitJob(idleJob);
         const idleMs = Date.now() - agent.updated_at;
         if (isStuckCandidate && idleMs > IDLE_THRESHOLD_MS) {
           console.warn(`[watchdog] non-interactive agent ${agent.id} idle ${Math.round(idleMs / 60000)}min without MCP activity — killing`);
@@ -229,7 +229,7 @@ function check(): void {
     } else {
       // Tmux-based agent: session ended without finish_job being called.
       // Interactive or debate-stage → done; other non-interactive → failed.
-      const isDebateStage = job ? isAutoExitJob(job as any) : false;
+      const isDebateStage = job ? isAutoExitJob(job) : false;
       const finalStatus = (job?.is_interactive || isDebateStage) ? 'done' : 'failed';
       console.log(
         `[watchdog] agent ${agent.id} (tmux-based) — session gone, marking ${finalStatus}`
@@ -539,7 +539,7 @@ function check(): void {
       const stuckMs = Date.now() - agent.updated_at;
       if (stuckMs < RATE_LIMIT_STUCK_THRESHOLD_MS) continue;
 
-      const currentModel = (job as any).model ?? null;
+      const currentModel = job.model ?? null;
       if (!currentModel) continue;
 
       markModelRateLimited(currentModel, 5 * 60 * 1000);

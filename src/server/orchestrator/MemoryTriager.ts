@@ -40,8 +40,8 @@ export async function triageLearnings(agentId: string, job: Job): Promise<void> 
     return;
   }
 
-  const projectId: string | null = (job as any).project_id ?? null;
-  const workDir: string | null = (job as any).work_dir ?? null;
+  const projectId: string | null = job.project_id ?? null;
+  const workDir: string | null = job.work_dir ?? null;
   // Use work_dir as fallback scoping key so learnings from different codebases don't mix
   const effectiveProjectId: string | null = projectId ?? workDir ?? null;
 
@@ -196,7 +196,7 @@ Respond with ONLY a JSON array like:
     throw new Error(`Anthropic API ${response.status}: ${await response.text()}`);
   }
 
-  const data = await response.json() as any;
+  const data = await response.json() as { content?: Array<{ text?: string }> };
   const text = (data.content?.[0]?.text ?? '').trim();
 
   const match = text.match(/\[[\s\S]*\]/);
