@@ -1099,8 +1099,14 @@ export function resumeWorkflow(
         });
       }
       queries.updateWorkflow(current.id, { worktree_path: worktreePath, worktree_branch: branchName });
+      logResilienceEvent('worktree_restore', 'workflow', current.id, {
+        action: 'restore', outcome: 'success', branch: branchName, worktree_path: worktreePath,
+      });
       console.log(`[workflow ${current.id}] restored worktree at ${worktreePath} (branch: ${branchName}) during resume`);
     } catch (err: any) {
+      logResilienceEvent('worktree_restore', 'workflow', current.id, {
+        action: 'restore', outcome: 'failed', branch: branchName, error: err.message,
+      });
       throw new Error(`Worktree restoration failed during resume: ${err.message}`);
     }
   }

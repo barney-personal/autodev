@@ -50,6 +50,11 @@ vi.mock('../server/instrument.js', () => ({
   Sentry: { captureException: vi.fn() },
 }));
 
+const _logResilienceEvent = vi.fn();
+vi.mock('../server/orchestrator/ResilienceLogger.js', () => ({
+  logResilienceEvent: (...args: any[]) => _logResilienceEvent(...args),
+}));
+
 const execSyncMock = vi.fn((cmd: string) => {
   if (typeof cmd === 'string' && cmd.includes('rev-parse --abbrev-ref HEAD')) {
     return Buffer.from('expected-branch\n');
@@ -113,6 +118,12 @@ describe('WorkflowManager: resumeWorkflow worktree restoration', () => {
       (c: any[]) => typeof c[0] === 'string' && c[0].includes('git worktree add'),
     );
     expect(worktreeAddCalls.length).toBe(1);
+
+    // Resilience event should be logged for successful worktree restoration (Fix-C12c)
+    expect(_logResilienceEvent).toHaveBeenCalledWith(
+      'worktree_restore', 'workflow', workflow.id,
+      expect.objectContaining({ action: 'restore', outcome: 'success', branch: after!.worktree_branch, worktree_path: after!.worktree_path }),
+    );
   });
 
   it('throws and keeps workflow blocked when worktree restoration fails', async () => {
@@ -146,6 +157,12 @@ describe('WorkflowManager: resumeWorkflow worktree restoration', () => {
     // No phase job should have been inserted
     const allJobs = queries.listJobs();
     expect(allJobs.filter(j => j.workflow_id === workflow.id)).toHaveLength(0);
+
+    // Resilience event should be logged for failed worktree restoration (Fix-C12c)
+    expect(_logResilienceEvent).toHaveBeenCalledWith(
+      'worktree_restore', 'workflow', workflow.id,
+      expect.objectContaining({ action: 'restore', outcome: 'failed', error: 'fatal: branch already exists' }),
+    );
   });
 
   it('re-attaches existing branch without -b when branch survived DB recovery', async () => {
