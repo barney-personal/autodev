@@ -323,9 +323,10 @@ describe('WorkflowManager: diminishing returns detector', () => {
 
     onJobCompleted(job);
 
-    // Delta should be clamped to 0 (not -1)
+    // No cycle-progress note should be written when reviewer restructured
+    // (milestones.done < preImplDone → skip to avoid false zero in diminishing returns detector)
     const cpNote = getNote(`workflow/${workflow.id}/cycle-progress/5`);
-    expect(cpNote?.value).toBe('0');
+    expect(cpNote).toBeNull();
 
     // Rolling average = (0 + 1 + 1) / 3 = 0.67 → should NOT block
     const updated = getWorkflowById(workflow.id)!;
@@ -335,6 +336,49 @@ describe('WorkflowManager: diminishing returns detector', () => {
     // Zero-progress counter should NOT have incremented (reviewer restructuring, not genuine zero-progress)
     const zpNote = getNote(`workflow/${workflow.id}/zero-progress-count`);
     expect(zpNote?.value ?? '0').toBe('0');
+  });
+
+  it('skips cycle-progress note on reviewer restructuring so diminishing returns does not false-trigger', async () => {
+    const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    const { upsertNote, getWorkflowById, getNote } = await import('../server/db/queries.js');
+
+    const project = await insertTestProject();
+    const workflow = await insertTestWorkflow({
+      project_id: project.id,
+      status: 'running',
+      current_phase: 'implement',
+      current_cycle: 5,
+      max_cycles: 10,
+      milestones_total: 10,
+      milestones_done: 4,
+    });
+
+    // Reviewer restructured: unchecked 1 milestone, so done went from 5 → 4
+    upsertNote(`workflow/${workflow.id}/plan`,
+      '- [x] M1\n- [x] M2\n- [x] M3\n- [x] M4\n- [ ] M5\n- [ ] M6\n- [ ] M7\n- [ ] M8\n- [ ] M9\n- [ ] M10', null);
+    upsertNote(`workflow/${workflow.id}/pre-implement-milestones/5`, '5', null);
+    // Previous 2 cycles had zero progress — would trigger DR if this cycle also records 0
+    upsertNote(`workflow/${workflow.id}/cycle-progress/3`, '0', null);
+    upsertNote(`workflow/${workflow.id}/cycle-progress/4`, '0', null);
+
+    const job = await insertTestJob({
+      workflow_id: workflow.id,
+      workflow_cycle: 5,
+      workflow_phase: 'implement',
+      status: 'done',
+    });
+
+    onJobCompleted(job);
+
+    // No cycle-progress note written for this cycle (reviewer restructuring)
+    const cpNote = getNote(`workflow/${workflow.id}/cycle-progress/5`);
+    expect(cpNote).toBeNull();
+
+    // Diminishing returns detector should NOT trigger — only 2 of 3 notes exist
+    const updated = getWorkflowById(workflow.id)!;
+    expect(updated.status).not.toBe('blocked');
+    expect(updated.blocked_reason ?? '').not.toContain('Diminishing returns');
+    expect(updated.current_cycle).toBe(6);
   });
 
   it('does NOT trigger when rolling 3-cycle average is exactly 0.33 (strict < 0.3)', async () => {

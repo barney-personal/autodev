@@ -255,10 +255,14 @@ function _onJobCompleted(job: Job): void {
           if (preImplNote) {
             const preImplDone = parseInt(preImplNote.value, 10);
 
-            // Write per-cycle progress delta BEFORE zero-progress check (persists even if break fires)
-            // Clamp to 0: plan restructuring (reviewer unchecking milestones) can make done < preImplDone
+            // Compute progress delta. Clamp to 0: reviewer restructuring can make done < preImplDone
             const delta = Math.max(0, milestones.done - preImplDone);
-            queries.upsertNote(`workflow/${workflow.id}/cycle-progress/${updated.current_cycle}`, String(delta), null);
+            // Only write cycle-progress note when no reviewer restructuring occurred.
+            // When milestones.done < preImplDone, the reviewer changed the plan during implement —
+            // skip the note so the diminishing returns detector doesn't count a false zero.
+            if (milestones.done >= preImplDone) {
+              queries.upsertNote(`workflow/${workflow.id}/cycle-progress/${updated.current_cycle}`, String(delta), null);
+            }
 
             if (delta === 0 && milestones.done >= preImplDone) {
               // No progress this cycle (genuine zero-progress, not reviewer restructuring)
