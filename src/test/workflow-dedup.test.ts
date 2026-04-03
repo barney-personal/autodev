@@ -88,6 +88,7 @@ vi.mock('../server/orchestrator/FailureClassifier.js', () => ({
       || kind === 'provider_billing'
       || kind === 'auth_failure'
   ),
+  _resetWarnedUnclassifiedForTest: vi.fn(),
 }));
 
 // Shared job ID used to prove cross-test dedup independence

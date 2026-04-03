@@ -60,6 +60,7 @@ vi.mock('../server/orchestrator/FailureClassifier.js', () => ({
   isFallbackEligibleFailure: vi.fn(() => false),
   isSameModelRetryEligible: vi.fn(() => false),
   shouldMarkProviderUnavailable: vi.fn(() => false),
+  _resetWarnedUnclassifiedForTest: vi.fn(),
 }));
 
 describe('Workflow queue wakeups', () => {

@@ -110,6 +110,10 @@ const CODEX_CLI_CRASH_PATTERNS = [
   /\breading prompt from stdin\b/i,
 ];
 
+// Dedup set for unclassified failure warnings — keyed on first 200 chars, capped at 100 entries
+const _warnedUnclassified = new Set<string>();
+const WARN_DEDUP_CAP = 100;
+
 export function classifyFailureText(text: string | null | undefined): FailureKind {
   if (!text) return 'unknown';
 
@@ -127,7 +131,22 @@ export function classifyFailureText(text: string | null | undefined): FailureKin
   if (TIMEOUT_PATTERNS.some(pattern => pattern.test(text))) return 'timeout';
   if (CODEX_CLI_CRASH_PATTERNS.some(pattern => pattern.test(text))) return 'codex_cli_crash';
 
+  // Warn about unclassified failure text so operators can identify new patterns
+  const dedupKey = text.slice(0, 200);
+  if (!_warnedUnclassified.has(dedupKey)) {
+    if (_warnedUnclassified.size >= WARN_DEDUP_CAP) {
+      _warnedUnclassified.clear();
+    }
+    _warnedUnclassified.add(dedupKey);
+    console.warn(`[FailureClassifier] Unclassified failure text (falling back to task_failure): ${dedupKey}`);
+  }
+
   return 'task_failure';
+}
+
+/** Reset the dedup set — for tests only */
+export function _resetWarnedUnclassifiedForTest(): void {
+  _warnedUnclassified.clear();
 }
 
 export function classifyJobFailure(jobId: string): FailureKind {

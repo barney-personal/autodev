@@ -46,6 +46,7 @@ export async function resetManagerState() {
   const { _resetForTest: resetQueue } = await import('../server/orchestrator/WorkQueueManager.js');
   const { _resetForTest: resetPriority } = await import('../server/orchestrator/ProcessPriority.js');
   const { _resetCompletedJobsForTest: resetCompletedJobs } = await import('../server/orchestrator/AgentRunner.js');
+  const { _resetWarnedUnclassifiedForTest: resetWarnedUnclassified } = await import('../server/orchestrator/FailureClassifier.js');
   resetWorkflow();
   resetDebate();
   resetModelClassifier();
@@ -53,6 +54,7 @@ export async function resetManagerState() {
   resetQueue();
   resetPriority();
   resetCompletedJobs();
+  resetWarnedUnclassified();
 }
 
 // ─── Socket Mock ──────────────────────────────────────────────────────────────
