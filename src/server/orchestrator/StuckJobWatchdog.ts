@@ -34,8 +34,16 @@ import { markModelRateLimited, getFallbackModel, getModelProvider, markProviderR
 import { claimRecovery } from './RecoveryLedger.js';
 import { classifyFailureText, isFallbackEligibleFailure, shouldMarkProviderUnavailable } from './FailureClassifier.js';
 import { nudgeQueue } from './WorkQueueManager.js';
+import { parseMilestones } from './WorkflowManager.js';
+import { logResilienceEvent } from './ResilienceLogger.js';
 
 const WATCHDOG_INTERVAL_MS = 30_000;
+const SLOW_PROGRESS_WARN_MS = 15 * 60 * 1000;  // 15 minutes
+const SLOW_PROGRESS_BLOCK_MS = 30 * 60 * 1000;  // 30 minutes
+const SLOW_PROGRESS_ACTIVE_MS = 5 * 60 * 1000;  // agent must be active within 5 min
+
+/** Tracks milestone progress snapshots per workflow_id for slow-progress detection. */
+const _milestoneSnapshots = new Map<string, { milestonesDone: number; checkedAt: number }>();
 
 let _timer: NodeJS.Timeout | null = null;
 
@@ -582,6 +590,91 @@ function check(): void {
     }
   }
 
+  // ── Check 9: Slow-progress detection for workflow implement agents ─────────
+  // Track milestone progress over time for workflow agents in the implement phase.
+  // If no milestone progress for 15 min → warning; 30 min → block.
+  {
+    const seenWorkflows = new Set<string>();
+    for (const agent of queries.listAllRunningAgents()) {
+      const job = queries.getJobById(agent.job_id);
+      if (!job?.workflow_id || job.workflow_phase !== 'implement') continue;
+      if (seenWorkflows.has(job.workflow_id)) continue;
+      seenWorkflows.add(job.workflow_id);
+
+      const workflow = queries.getWorkflowById(job.workflow_id);
+      if (!workflow || workflow.status !== 'running') {
+        // Workflow completed/cancelled/blocked — clean up snapshot
+        _milestoneSnapshots.delete(job.workflow_id);
+        continue;
+      }
+
+      // Read real-time milestone count from the plan note (NOT workflow.milestones_done which is stale)
+      const planNote = queries.getNote(`workflow/${job.workflow_id}/plan`);
+      if (!planNote?.value) continue;
+      const { done: currentDone } = parseMilestones(planNote.value);
+
+      const snapshot = _milestoneSnapshots.get(job.workflow_id);
+      if (!snapshot) {
+        // First observation — record baseline and skip
+        _milestoneSnapshots.set(job.workflow_id, { milestonesDone: currentDone, checkedAt: Date.now() });
+        continue;
+      }
+
+      // Progress detected — reset snapshot
+      if (currentDone > snapshot.milestonesDone) {
+        _milestoneSnapshots.set(job.workflow_id, { milestonesDone: currentDone, checkedAt: Date.now() });
+        continue;
+      }
+
+      // No progress — check if agent is actually active (updated within last 5 min)
+      const agentIdleMs = Date.now() - agent.updated_at;
+      if (agentIdleMs > SLOW_PROGRESS_ACTIVE_MS) continue; // agent isn't active, idle detection handles this
+
+      const stalledMs = Date.now() - snapshot.checkedAt;
+
+      if (stalledMs >= SLOW_PROGRESS_BLOCK_MS) {
+        // 30 min without progress — block the workflow
+        console.warn(`[watchdog] workflow ${job.workflow_id.slice(0, 8)} implement agent active but 0 milestone progress for ${Math.round(stalledMs / 60000)}min — blocking`);
+        queries.updateWorkflow(job.workflow_id, {
+          status: 'blocked',
+          blocked_reason: `Slow progress: implement agent active for ${Math.round(stalledMs / 60000)}min with no milestone advancement (${currentDone} milestones done). Manual review needed.`,
+        });
+        const updatedWorkflow = queries.getWorkflowById(job.workflow_id);
+        if (updatedWorkflow) {
+          try { socket.emitWorkflowUpdate(updatedWorkflow); } catch { /* ignore */ }
+        }
+        logResilienceEvent('slow_progress_block', 'workflow', job.workflow_id, {
+          agent_id: agent.id,
+          stalled_ms: stalledMs,
+          milestones_done: currentDone,
+        });
+        _milestoneSnapshots.delete(job.workflow_id);
+      } else if (stalledMs >= SLOW_PROGRESS_WARN_MS) {
+        // 15 min without progress — emit warning
+        console.warn(`[watchdog] workflow ${job.workflow_id.slice(0, 8)} implement agent active but 0 milestone progress for ${Math.round(stalledMs / 60000)}min — warning`);
+        const warning = queries.insertWarning({
+          id: randomUUID(),
+          agent_id: agent.id,
+          type: 'slow_progress',
+          message: `Implement agent active for ${Math.round(stalledMs / 60000)}min with no milestone progress (${currentDone} done). May be stuck in a loop.`,
+        });
+        try { socket.emitWarningNew(warning); } catch { /* ignore */ }
+        logResilienceEvent('slow_progress_warning', 'workflow', job.workflow_id, {
+          agent_id: agent.id,
+          stalled_ms: stalledMs,
+          milestones_done: currentDone,
+        });
+      }
+    }
+
+    // Clean up snapshots for workflows that no longer have running implement agents
+    for (const workflowId of _milestoneSnapshots.keys()) {
+      if (!seenWorkflows.has(workflowId)) {
+        _milestoneSnapshots.delete(workflowId);
+      }
+    }
+  }
+
   // ── Check 4: Orphaned locks from terminal agents ────────────────────────────
   const orphaned = queries.getActiveLocksForTerminalAgents();
   if (orphaned.length > 0) {
@@ -696,4 +789,14 @@ export function stopWatchdog(): void {
     clearInterval(_timer);
     _timer = null;
   }
+}
+
+/** Exposed for test isolation — clears the milestone snapshot map. */
+export function _resetMilestoneSnapshotsForTest(): void {
+  _milestoneSnapshots.clear();
+}
+
+/** Exposed for tests — read-only access to snapshot map. */
+export function _getMilestoneSnapshotsForTest(): Map<string, { milestonesDone: number; checkedAt: number }> {
+  return _milestoneSnapshots;
 }
