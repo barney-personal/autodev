@@ -452,10 +452,43 @@ describe('StuckJobWatchdog: slow-progress detection', () => {
     // Snapshot should be deleted — not left with stale checkedAt
     expect(_getMilestoneSnapshotsForTest().has(workflowId)).toBe(false);
 
+    // Resilience event should be logged for the stale snapshot being cleared (Fix-C5a)
+    expect(_logResilienceEvent).toHaveBeenCalledOnce();
+    expect(_logResilienceEvent).toHaveBeenCalledWith(
+      'slow_progress_snapshot_cleared',
+      'workflow',
+      workflowId,
+      expect.objectContaining({
+        reason: 'plan_note_missing',
+        stale_milestones_done: 1,
+      }),
+    );
+
     // No warnings or blocks should be emitted
-    expect(_logResilienceEvent).not.toHaveBeenCalled();
     expect(socket.emitWarningNew).not.toHaveBeenCalled();
     expect(socket.emitWorkflowUpdate).not.toHaveBeenCalled();
+  });
+
+  it('does not log event when plan note is missing but no snapshot exists (Fix-C5a)', async () => {
+    const { _getMilestoneSnapshotsForTest } = await import('../server/orchestrator/StuckJobWatchdog.js');
+    const queries = await import('../server/db/queries.js');
+
+    const { workflowId } = await setupWorkflowWithAgent({
+      milestonesPlan: '- [x] M1\n- [ ] M2\n- [ ] M3',
+      agentUpdatedAt: Date.now(),
+    });
+
+    // Remove the plan note — no snapshot was ever created
+    queries.deleteNote(`workflow/${workflowId}/plan`);
+    expect(_getMilestoneSnapshotsForTest().has(workflowId)).toBe(false);
+
+    const { startWatchdog, stopWatchdog } = await import('../server/orchestrator/StuckJobWatchdog.js');
+    startWatchdog();
+    stopWatchdog();
+
+    // No snapshot existed, so no resilience event should be logged
+    expect(_logResilienceEvent).not.toHaveBeenCalled();
+    expect(_getMilestoneSnapshotsForTest().has(workflowId)).toBe(false);
   });
 
   it('does not warn if agent is inactive (updated_at > 5 min ago)', async () => {

@@ -614,7 +614,15 @@ function check(): void {
         // Plan note missing (e.g., during repair job rewrite or race condition).
         // Clear any existing snapshot to prevent stale checkedAt from triggering
         // a false warning/block when the plan note reappears.
-        _milestoneSnapshots.delete(job.workflow_id);
+        const existingSnapshot = _milestoneSnapshots.get(job.workflow_id);
+        if (existingSnapshot) {
+          logResilienceEvent('slow_progress_snapshot_cleared', 'workflow', job.workflow_id, {
+            reason: 'plan_note_missing',
+            stale_checked_at: existingSnapshot.checkedAt,
+            stale_milestones_done: existingSnapshot.milestonesDone,
+          });
+          _milestoneSnapshots.delete(job.workflow_id);
+        }
         continue;
       }
       const { done: currentDone } = parseMilestones(planNote.value);
