@@ -252,6 +252,11 @@ function _onJobCompleted(job: Job): void {
 
           if (preImplNote) {
             const preImplDone = parseInt(preImplNote.value, 10);
+
+            // Write per-cycle progress delta BEFORE zero-progress check (persists even if break fires)
+            const delta = milestones.done - preImplDone;
+            queries.upsertNote(`workflow/${workflow.id}/cycle-progress/${updated.current_cycle}`, String(delta), null);
+
             if (milestones.done <= preImplDone) {
               // No progress this cycle
               const prevCount = parseInt(queries.getNote(zeroProgressKey)?.value ?? '0', 10);
@@ -268,6 +273,27 @@ function _onJobCompleted(job: Job): void {
             } else {
               // Progress was made — reset counter
               queries.upsertNote(zeroProgressKey, '0', null);
+            }
+
+            // Diminishing returns detector: if rolling 3-cycle average < 0.3, block.
+            // This catches sustained slow progress (0.1-0.3/cycle) that zero-progress misses.
+            const cycle = updated.current_cycle;
+            if (cycle >= 3) {
+              const cp1 = queries.getNote(`workflow/${workflow.id}/cycle-progress/${cycle}`);
+              const cp2 = queries.getNote(`workflow/${workflow.id}/cycle-progress/${cycle - 1}`);
+              const cp3 = queries.getNote(`workflow/${workflow.id}/cycle-progress/${cycle - 2}`);
+              if (cp1 && cp2 && cp3) {
+                const avg = (parseFloat(cp1.value) + parseFloat(cp2.value) + parseFloat(cp3.value)) / 3;
+                if (avg < 0.3) {
+                  const freshWf = queries.getWorkflowById(workflow.id)!;
+                  if (freshWf.status !== 'blocked') {
+                    const drReason = `Diminishing returns: average ${avg.toFixed(2)} milestones/cycle over last 3 cycles (${milestones.done}/${milestones.total} complete)`;
+                    console.log(`[workflow ${workflow.id}] ${drReason} — marking blocked`);
+                    updateAndEmit(workflow.id, { status: 'blocked', current_phase: 'implement' as WorkflowPhase, blocked_reason: drReason });
+                    break;
+                  }
+                }
+              }
             }
           }
 
