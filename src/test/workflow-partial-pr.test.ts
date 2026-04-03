@@ -745,12 +745,10 @@ describe('Fix-C11a: transient rev-parse errors propagate to callers via countBra
       if (cmd === 'git symbolic-ref refs/remotes/origin/HEAD') {
         return Buffer.from('refs/remotes/origin/main\n');
       }
-      // rev-parse --verify throws a TRANSIENT error (not ref-missing)
+      // rev-parse --verify throws a TRANSIENT error (not ref-missing).
+      // This propagates immediately out of countCommitsAgainstBaseRef and
+      // countBranchCommits — origin/HEAD is never attempted.
       if (cmd === 'git rev-parse --verify "origin/main"') {
-        throw new Error('fatal: Unable to create /tmp/wt/.git/index.lock: Permission denied');
-      }
-      // origin/HEAD fallback also gets a transient error
-      if (cmd === 'git rev-parse --verify "origin/HEAD"') {
         throw new Error('fatal: Unable to create /tmp/wt/.git/index.lock: Permission denied');
       }
       // branch check
@@ -779,6 +777,10 @@ describe('Fix-C11a: transient rev-parse errors propagate to callers via countBra
     // PR creation was attempted
     const prCreateCall = execSyncCalls.find(c => typeof c.cmd === 'string' && c.cmd.includes('gh pr create'));
     expect(prCreateCall).toBeDefined();
+
+    // Transient error propagates immediately — origin/HEAD fallback was NOT attempted (Fix-C12a)
+    const originHeadCall = execSyncCalls.find(c => typeof c.cmd === 'string' && c.cmd === 'git rev-parse --verify "origin/HEAD"');
+    expect(originHeadCall).toBeUndefined();
   });
 
   it('getPrCreationOutcome returns failed_with_publishable_commits when rev-parse throws transient error', async () => {
@@ -792,5 +794,9 @@ describe('Fix-C11a: transient rev-parse errors propagate to callers via countBra
     // Transient error propagates through countBranchCommits to getPrCreationOutcome's catch block,
     // which returns 'failed_with_publishable_commits' (preserves worktree)
     expect(outcome).toBe('failed_with_publishable_commits');
+
+    // Transient error propagates immediately — origin/HEAD fallback was NOT attempted (Fix-C12a)
+    const originHeadCall = execSyncCalls.find(c => typeof c.cmd === 'string' && c.cmd === 'git rev-parse --verify "origin/HEAD"');
+    expect(originHeadCall).toBeUndefined();
   });
 });
