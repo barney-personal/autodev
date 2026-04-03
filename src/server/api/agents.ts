@@ -110,8 +110,8 @@ router.get('/:id/diff', (req, res) => {
   const agent = queries.getAgentById(req.params.id);
   if (!agent) { res.status(404).json({ error: 'not found' }); return; }
   res.json({
-    diff: (agent as any).diff ?? null,
-    base_sha: (agent as any).base_sha ?? null,
+    diff: agent.diff ?? null,
+    base_sha: agent.base_sha ?? null,
   });
 });
 
@@ -130,7 +130,7 @@ router.post('/:id/retry', (req, res) => {
   if (agent.status !== 'failed') { res.status(400).json({ error: 'Only failed agents can be retried' }); return; }
 
   const original = queries.getAgentWithJob(req.params.id)!;
-  const originalJob = original.job as any;
+  const originalJob = original.job;
   const { interactive } = req.body as { interactive?: boolean };
 
   const retryJob = queries.insertJob({
@@ -159,7 +159,7 @@ router.post('/:id/continue', (req, res) => {
   if (!message?.trim()) { res.status(400).json({ error: 'message is required' }); return; }
 
   const original = queries.getAgentWithJob(req.params.id)!;
-  const originalJob = original.job as any;
+  const originalJob = original.job;
 
   // Create a continuation job, marked running immediately to bypass the work queue
   const contJob = queries.insertJob({
@@ -313,7 +313,7 @@ router.post('/:id/reconnect', (req, res) => {
   const job = queries.getJobById(agent.job_id);
   if (!job) { res.status(404).json({ error: 'job not found' }); return; }
 
-  if (!(job as any).is_interactive) {
+  if (!job!.is_interactive) {
     res.status(400).json({ error: 'Only interactive agents can be reconnected' }); return;
   }
 

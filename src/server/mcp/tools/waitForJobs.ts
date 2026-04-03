@@ -100,7 +100,7 @@ export async function waitForJobsHandler(
             job_id: job.id,
             title: job.title,
             status: job.status,
-            work_dir: (job as any).work_dir ?? null,
+            work_dir: job.work_dir ?? null,
             result_text: latestAgent ? queries.getAgentResultText(latestAgent.id) : null,
             // Omit diff — it can be hundreds of KB per job, and a multi-job
             // wait can produce a multi-MB SSE event that causes delivery failures.
@@ -158,7 +158,7 @@ export async function waitForJobsHandler(
         job_id: j.id,
         title: j.title,
         status: j.status,
-        work_dir: (j as any).work_dir ?? null,
+        work_dir: j.work_dir ?? null,
         result_text: TERMINAL.includes(j.status) && latestAgent
           ? queries.getAgentResultText(latestAgent.id)
           : null,

@@ -5,7 +5,7 @@ import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
 import { spawnInitialRoundJobs } from '../orchestrator/DebateManager.js';
 import { nudgeQueue } from '../orchestrator/WorkQueueManager.js';
-import type { CreateJobRequest, Debate } from '../../shared/types.js';
+import type { CreateJobRequest, Debate, JobStatus } from '../../shared/types.js';
 
 const router = Router();
 const anthropic = new Anthropic();
@@ -172,7 +172,7 @@ router.get('/', (req, res) => {
     data = { jobs, total, agents };
   } else {
     const status = req.query.status as string | undefined;
-    data = queries.listJobsSlim(status as any);
+    data = queries.listJobsSlim(status as JobStatus | undefined);
   }
   res.json(data);
 });

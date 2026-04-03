@@ -218,8 +218,8 @@ export interface StartInteractiveOptions {
 }
 
 export function startInteractiveAgent({ agentId, job, cols = 100, rows = 50, resumeSessionId, autoFinish = false }: StartInteractiveOptions): void {
-  const workDir = getExistingCwd((job as any).work_dir ?? process.cwd());
-  const model: string | null = (job as any).model ?? null;
+  const workDir = getExistingCwd(job.work_dir ?? process.cwd());
+  const model: string | null = job.model ?? null;
   const mcpPort = Number(MCP_PORT);
 
   const mcpConfig = JSON.stringify({
@@ -253,7 +253,7 @@ export function startInteractiveAgent({ agentId, job, cols = 100, rows = 50, res
 
   // Debate-stage and workflow-phase jobs run Claude with --print so the process
   // exits automatically when the task is done, triggering the next stage.
-  const isDebateStage = isAutoExitJob(job as any);
+  const isDebateStage = isAutoExitJob(job);
 
   let execLine: string;
   if (useCodex) {
@@ -283,8 +283,8 @@ export function startInteractiveAgent({ agentId, job, cols = 100, rows = 50, res
   // Determine the expected branch for this job (if any) to enforce branch discipline.
   // Agents must commit to their task branch, never main.
   let expectedBranch: string | null = null;
-  if ((job as any).workflow_id) {
-    expectedBranch = queries.getWorkflowById((job as any).workflow_id)?.worktree_branch ?? null;
+  if (job.workflow_id) {
+    expectedBranch = queries.getWorkflowById(job.workflow_id)?.worktree_branch ?? null;
   }
   if (!expectedBranch) {
     // Check standalone job worktree branch from the worktrees DB table
@@ -485,7 +485,7 @@ export async function attachPty(agentId: string, job: Job, cols = 100, rows = 50
 
   // For debate-stage agents running --print, start tailing the tee'd .ndjson file so
   // agent_output is populated live and the UI streams output as it arrives.
-  if (isAutoExitJob(job as any)) {
+  if (isAutoExitJob(job)) {
     const ndjsonPath = path.join(PTY_LOG_DIR, `${agentId}.ndjson`);
     startTailing(agentId, job, ndjsonPath, 0, null);
   }
@@ -536,7 +536,7 @@ export async function attachPty(agentId: string, job: Job, cols = 100, rows = 50
         name: 'xterm-256color',
         cols,
         rows,
-        cwd: getExistingCwd((job as any).work_dir ?? process.cwd()),
+        cwd: getExistingCwd(job.work_dir ?? process.cwd()),
         env: ptyEnv,
       });
       break;
@@ -549,7 +549,7 @@ export async function attachPty(agentId: string, job: Job, cols = 100, rows = 50
   if (!ptyInstance) {
     // All retries exhausted — fall back to polling if tmux session is alive
     const err = lastErr!;
-    if (isAutoExitJob(job as any)) {
+    if (isAutoExitJob(job)) {
       console.warn(`[pty ${agentId}] PTY attach failed after ${PTY_SPAWN_MAX_RETRIES + 1} attempts (tailing continues):`, err.message);
     } else {
       console.warn(`[pty ${agentId}] PTY attach failed after ${PTY_SPAWN_MAX_RETRIES + 1} attempts:`, err.message);
@@ -567,7 +567,7 @@ export async function attachPty(agentId: string, job: Job, cols = 100, rows = 50
           Sentry.captureException(err2);
         });
       }, 5000);
-    } else if (!isAutoExitJob(job as any)) {
+    } else if (!isAutoExitJob(job)) {
       queries.updateAgent(agentId, { status: 'failed', error_message: err.message, finished_at: Date.now() });
       queries.updateJobStatus(job.id, 'failed');
       const updated = queries.getAgentWithJob(agentId);
@@ -625,7 +625,7 @@ export async function attachPty(agentId: string, job: Job, cols = 100, rows = 50
         // For interactive agents: user ended the session = done
         // For debate-stage jobs: --print mode exits naturally = done
         // For other non-interactive agents: tmux exit without finish_job = failed
-        const isDebateStage = isAutoExitJob(job as any);
+        const isDebateStage = isAutoExitJob(job);
         const status = (job.is_interactive || isDebateStage) ? 'done' : 'failed';
         const errorMsg = (job.is_interactive || isDebateStage) ? null : 'Agent session ended without calling finish_job.';
 
@@ -729,7 +729,7 @@ export function disconnectAll(): string[] {
 }
 
 function buildInteractivePrompt(job: Job): string {
-  const model: string | null = (job as any).model ?? null;
+  const model: string | null = job.model ?? null;
   let prompt = '';
 
   // Codex has no --append-system-prompt flag, so prepend it to the prompt
@@ -739,7 +739,7 @@ function buildInteractivePrompt(job: Job): string {
 
   prompt += `# Task: ${job.title}\n\n`;
 
-  const templateId = (job as any).template_id as string | null;
+  const templateId = job.template_id;
   if (templateId) {
     const template = queries.getTemplateById(templateId);
     if (template) {
@@ -765,7 +765,7 @@ function buildInteractivePrompt(job: Job): string {
   }
 
   // Inject CLAUDE.md for Codex agents (Claude reads it natively)
-  const workDir = (job as any).work_dir ?? process.cwd();
+  const workDir = job.work_dir ?? process.cwd();
   if (isCodexModel(model)) {
     const claudeMd = readClaudeMd(workDir);
     if (claudeMd) {

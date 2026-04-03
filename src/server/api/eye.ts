@@ -56,10 +56,10 @@ function getEyeState(): { running: boolean; active: boolean; scheduledAt: number
   const cycleCount = queries.countEyeCycles();
 
   const isActive = ['assigned', 'running'].includes(job.status);
-  const isSleeping = job.status === 'queued' && !!(job as any).scheduled_at && (job as any).scheduled_at > Date.now();
+  const isSleeping = job.status === 'queued' && !!job.scheduled_at && job.scheduled_at > Date.now();
   const isFailed = job.status === 'failed';
   const running = isActive || isSleeping || !!job.repeat_interval_ms;
-  const scheduledAt = isSleeping ? (job as any).scheduled_at : null;
+  const scheduledAt = isSleeping ? job.scheduled_at : null;
 
   // Auto-recover: if Eye failed and AgentRunner didn't schedule the next repeat
   // (e.g. server restart between failure and repeat scheduling), queue it now.

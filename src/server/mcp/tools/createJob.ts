@@ -30,7 +30,7 @@ export async function createJobHandler(agentId: string, input: z.infer<typeof cr
   if (agent) {
     const parentJob = queries.getJobById(agent.job_id);
     if (parentJob) {
-      if (!resolvedWorkDir) resolvedWorkDir = (parentJob as any)?.work_dir ?? null;
+      if (!resolvedWorkDir) resolvedWorkDir = parentJob.work_dir ?? null;
       inheritedProjectId = parentJob.project_id ?? null;
       inheritedModel = parentJob.model ?? null;
     }
