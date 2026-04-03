@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import * as queries from '../../db/queries.js';
-import { handleJobCompletion } from '../../orchestrator/AgentRunner.js';
+import { runJobCompletion } from '../../orchestrator/JobCompletionNotifier.js';
 import { disconnectAgent } from '../../orchestrator/PtyManager.js';
 
 export const finishJobSchema = z.object({
@@ -40,7 +40,7 @@ export async function finishJobHandler(
   queries.updateAgent(agentId, { status: 'done', finished_at: Date.now() });
 
   // Run shared post-processing (git diff, completion checks, learnings, debate, retry, etc.)
-  await handleJobCompletion(agentId, job, 'done');
+  await runJobCompletion(agentId, job, 'done');
 
   // Kill the tmux session after a brief delay so this tool response can be delivered first
   setTimeout(() => disconnectAgent(agentId), 500);

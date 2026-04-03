@@ -1,12 +1,13 @@
 /**
  * In-process event notifier for job terminal-state transitions.
  *
- * Zero project dependencies — safe to import from the DB layer without
- * creating circular imports.  When `updateJobStatus()` writes a terminal
+ * Only depends on shared/types (for Job) — safe to import from the DB
+ * or MCP layer without creating circular imports.  When `updateJobStatus()` writes a terminal
  * status it calls `notifyJobTerminal()`, which synchronously fires any
  * listeners registered by `waitForJobsHandler()` (or tests).
  */
 import { EventEmitter } from 'events';
+import type { Job } from '../../shared/types.js';
 
 const emitter = new EventEmitter();
 emitter.setMaxListeners(0); // allow unlimited concurrent waiters
@@ -55,6 +56,23 @@ export function onAnyTerminal(jobIds: string[]): { promise: Promise<string>; can
       for (const fn of cleanups) fn();
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Callback registration — allows MCP tools (finishJob) to invoke
+// handleJobCompletion without importing AgentRunner directly.
+// ---------------------------------------------------------------------------
+
+type CompletionHandler = (agentId: string, job: Job, status: 'done' | 'failed') => Promise<void>;
+let _completionHandler: CompletionHandler | null = null;
+
+export function registerCompletionHandler(h: CompletionHandler): void {
+  _completionHandler = h;
+}
+
+export async function runJobCompletion(agentId: string, job: Job, status: 'done' | 'failed'): Promise<void> {
+  if (!_completionHandler) throw new Error('No job completion handler registered — AgentRunner may not have initialized');
+  return _completionHandler(agentId, job, status);
 }
 
 /** Expose emitter for testing only. */

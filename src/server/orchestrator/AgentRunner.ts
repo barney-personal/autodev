@@ -21,6 +21,11 @@ import { isCodexModel, codexModelName, effectiveMaxTurns } from '../../shared/ty
 import { buildEyePrompt, isEyeJob, computeAdaptiveEyeInterval } from './EyeConfig.js';
 import { ensureCodexTrusted } from './PtyManager.js';
 import { buildNiceSpawn, isNiceAvailable } from './ProcessPriority.js';
+import { registerCompletionHandler } from './JobCompletionNotifier.js';
+
+// Register handleJobCompletion so MCP finishJob can invoke it without importing AgentRunner.
+// handleJobCompletion is a hoisted function declaration, so this reference is safe at module level.
+registerCompletionHandler(handleJobCompletion);
 
 const CLAUDE = process.env.CLAUDE_BIN ?? 'claude';
 const CODEX = process.env.CODEX_BIN ?? 'codex';
