@@ -38,20 +38,20 @@ export function emitAgentNew(agent: AgentWithJob): void {
   const payload = { agent };
   try {
     getIo().emit('agent:new', payload);
+    pushEvent('agent:new', payload);
   } catch (err) {
     console.warn('[socket] emitAgentNew error:', err);
   }
-  pushEvent('agent:new', payload);
 }
 
 export function emitAgentUpdate(agent: AgentWithJob): void {
   const payload = { agent };
   try {
     getIo().emit('agent:update', payload);
+    pushEvent('agent:update', payload);
   } catch (err) {
     console.warn('[socket] emitAgentUpdate error:', err);
   }
-  pushEvent('agent:update', payload);
 }
 
 // Max payload size for agent output events (512KB). Oversized events (e.g.
@@ -95,20 +95,20 @@ export function emitLockAcquired(lock: FileLock): void {
   const payload = { lock };
   try {
     getIo().emit('lock:acquired', payload);
+    pushEvent('lock:acquired', payload);
   } catch (err) {
     console.warn('[socket] emitLockAcquired error:', err);
   }
-  pushEvent('lock:acquired', payload);
 }
 
 export function emitLockReleased(lockId: string, filePath: string): void {
   const payload = { lock_id: lockId, file_path: filePath };
   try {
     getIo().emit('lock:released', payload);
+    pushEvent('lock:released', payload);
   } catch (err) {
     console.warn('[socket] emitLockReleased error:', err);
   }
-  pushEvent('lock:released', payload);
 }
 
 export function emitProjectNew(project: import('../../shared/types.js').Project): void {
@@ -123,20 +123,20 @@ export function emitJobNew(job: Job): void {
   const payload = { job };
   try {
     getIo().emit('job:new', payload);
+    pushEvent('job:new', payload);
   } catch (err) {
     console.warn('[socket] emitJobNew error:', err);
   }
-  pushEvent('job:new', payload);
 }
 
 export function emitJobUpdate(job: Job): void {
   const payload = { job };
   try {
     getIo().emit('job:update', payload);
+    pushEvent('job:update', payload);
   } catch (err) {
     console.warn('[socket] emitJobUpdate error:', err);
   }
-  pushEvent('job:update', payload);
 }
 
 export function emitPtyData(agentId: string, data: string): void {
@@ -175,20 +175,20 @@ export function emitWorkflowNew(workflow: Workflow): void {
   const payload = { workflow };
   try {
     getIo().emit('workflow:new', payload);
+    pushEvent('workflow:new', payload);
   } catch (err) {
     console.warn('[socket] emitWorkflowNew error:', err);
   }
-  pushEvent('workflow:new', payload);
 }
 
 export function emitWorkflowUpdate(workflow: Workflow): void {
   const payload = { workflow };
   try {
     getIo().emit('workflow:update', payload);
+    pushEvent('workflow:update', payload);
   } catch (err) {
     console.warn('[socket] emitWorkflowUpdate error:', err);
   }
-  pushEvent('workflow:update', payload);
 }
 
 export function emitWarningNew(warning: AgentWarning): void {
