@@ -104,49 +104,58 @@ router.post('/:id/wrap-up', (req, res) => {
 
   // Kill any running agents and cancel pending jobs — full cancellation semantics
   // matching the pattern in agents.ts POST /:id/cancel
+  // Each iteration is error-isolated so one failure cannot skip remaining agents/jobs.
   const jobs = queries.getJobsForWorkflow(workflow.id);
   for (const job of jobs) {
-    if (job.status === 'running' || job.status === 'assigned') {
-      const agents = queries.getAgentsWithJobByJobId(job.id);
-      for (const agent of agents) {
-        if (agent.status === 'running' || agent.status === 'starting' || agent.status === 'waiting_user') {
-          cancelledAgents.add(agent.id);
+    try {
+      if (job.status === 'running' || job.status === 'assigned') {
+        const agents = queries.getAgentsWithJobByJobId(job.id);
+        for (const agent of agents) {
+          if (agent.status === 'running' || agent.status === 'starting' || agent.status === 'waiting_user') {
+            try {
+              cancelledAgents.add(agent.id);
 
-          // Save tmux snapshot before killing so we retain last terminal state
-          if (isTmuxSessionAlive(agent.id)) {
-            try { saveSnapshot(agent.id); } catch { /* non-fatal */ }
+              // Save tmux snapshot before killing so we retain last terminal state
+              if (isTmuxSessionAlive(agent.id)) {
+                try { saveSnapshot(agent.id); } catch { /* non-fatal */ }
+              }
+
+              if (agent.pid) {
+                try { process.kill(-agent.pid, 'SIGTERM'); } catch { /* already gone */ }
+              }
+              try { execFileSync('tmux', ['kill-session', '-t', `orchestrator-${agent.id}`], { stdio: 'pipe' }); } catch { /* ok */ }
+              queries.updateAgent(agent.id, { status: 'cancelled', finished_at: Date.now() });
+              getFileLockRegistry().releaseAll(agent.id);
+              disconnectAgent(agent.id);
+
+              // Timeout any pending question so the MCP ask_user call doesn't hang
+              const pendingQ = queries.getPendingQuestion(agent.id);
+              if (pendingQ) {
+                queries.updateQuestion(pendingQ.id, {
+                  status: 'timeout',
+                  answer: '[TIMEOUT] Workflow wrapped up; agent cancelled.',
+                  answered_at: Date.now(),
+                });
+              }
+
+              // Emit agent update so the UI reflects the change immediately
+              const updatedAgent = queries.getAgentWithJob(agent.id);
+              if (updatedAgent) socket.emitAgentUpdate(updatedAgent);
+            } catch (agentErr) {
+              console.warn(`[wrap-up] Failed to cancel agent ${agent.id} in job ${job.id}:`, agentErr);
+            }
           }
-
-          if (agent.pid) {
-            try { process.kill(-agent.pid, 'SIGTERM'); } catch { /* already gone */ }
-          }
-          try { execFileSync('tmux', ['kill-session', '-t', `orchestrator-${agent.id}`], { stdio: 'pipe' }); } catch { /* ok */ }
-          queries.updateAgent(agent.id, { status: 'cancelled', finished_at: Date.now() });
-          getFileLockRegistry().releaseAll(agent.id);
-          disconnectAgent(agent.id);
-
-          // Timeout any pending question so the MCP ask_user call doesn't hang
-          const pendingQ = queries.getPendingQuestion(agent.id);
-          if (pendingQ) {
-            queries.updateQuestion(pendingQ.id, {
-              status: 'timeout',
-              answer: '[TIMEOUT] Workflow wrapped up; agent cancelled.',
-              answered_at: Date.now(),
-            });
-          }
-
-          // Emit agent update so the UI reflects the change immediately
-          const updatedAgent = queries.getAgentWithJob(agent.id);
-          if (updatedAgent) socket.emitAgentUpdate(updatedAgent);
         }
+        queries.updateJobStatus(job.id, 'cancelled');
+        const updatedJob = queries.getJobById(job.id);
+        if (updatedJob) socket.emitJobUpdate(updatedJob);
+      } else if (job.status === 'queued') {
+        queries.updateJobStatus(job.id, 'cancelled');
+        const updatedJob = queries.getJobById(job.id);
+        if (updatedJob) socket.emitJobUpdate(updatedJob);
       }
-      queries.updateJobStatus(job.id, 'cancelled');
-      const updatedJob = queries.getJobById(job.id);
-      if (updatedJob) socket.emitJobUpdate(updatedJob);
-    } else if (job.status === 'queued') {
-      queries.updateJobStatus(job.id, 'cancelled');
-      const updatedJob = queries.getJobById(job.id);
-      if (updatedJob) socket.emitJobUpdate(updatedJob);
+    } catch (jobErr) {
+      console.warn(`[wrap-up] Failed to cancel job ${job.id}:`, jobErr);
     }
   }
 

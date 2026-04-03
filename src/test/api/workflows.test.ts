@@ -586,4 +586,96 @@ describe('POST /api/workflows/:id/wrap-up', () => {
       killSpy.mockRestore();
     }
   });
+
+  it('isolates agent cancellation failures so one throw does not skip remaining agents/jobs (Fix-C11b)', async () => {
+    const { pushAndCreatePr, getPrCreationOutcome } = await import('../../server/orchestrator/WorkflowManager.js');
+    const { cancelledAgents } = await import('../../server/orchestrator/AgentRunner.js');
+    const { getFileLockRegistry } = await import('../../server/orchestrator/FileLockRegistry.js');
+    const { disconnectAgent } = await import('../../server/orchestrator/PtyManager.js');
+    const queries = await import('../../server/db/queries.js');
+    const socket = await import('../../server/socket/SocketManager.js');
+
+    vi.mocked(pushAndCreatePr).mockReturnValue(null);
+    vi.mocked(getPrCreationOutcome).mockReturnValue('no_publishable_commits');
+
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true as any);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const project = await insertTestProject();
+      const workflow = await insertTestWorkflow({
+        project_id: project.id,
+        status: 'running',
+        current_phase: 'implement',
+        use_worktree: 1,
+      });
+      queries.updateWorkflow(workflow.id, {
+        worktree_path: '/tmp/worktree',
+        worktree_branch: 'workflow/test-branch',
+      });
+
+      // Two running jobs, each with one running agent
+      const job1 = await insertTestJob({
+        workflow_id: workflow.id,
+        workflow_phase: 'implement',
+        status: 'running',
+      });
+      const agent1 = await insertAgent(job1.id, {
+        id: 'c11b-agent-1',
+        status: 'running',
+        pid: 1001,
+      });
+      const job2 = await insertTestJob({
+        workflow_id: workflow.id,
+        workflow_phase: 'implement',
+        status: 'running',
+      });
+      const agent2 = await insertAgent(job2.id, {
+        id: 'c11b-agent-2',
+        status: 'running',
+        pid: 1002,
+      });
+
+      // Make the first updateAgent call throw — simulating a DB error during agent1 cancellation
+      const originalUpdateAgent = queries.updateAgent.bind(queries);
+      let callCount = 0;
+      vi.spyOn(queries, 'updateAgent').mockImplementation((id: string, updates: any) => {
+        callCount++;
+        if (callCount === 1) {
+          throw new Error('DB write failed for agent1');
+        }
+        return originalUpdateAgent(id, updates);
+      });
+
+      const res = await request(app).post(`/api/workflows/${workflow.id}/wrap-up`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.outcome).toBe('no_publishable_commits');
+
+      // First job still cancelled despite agent1 cancellation throwing
+      const updatedJob1 = queries.getJobById(job1.id);
+      expect(updatedJob1?.status).toBe('cancelled');
+
+      // Second job also cancelled — not skipped by agent1's throw
+      const updatedJob2 = queries.getJobById(job2.id);
+      expect(updatedJob2?.status).toBe('cancelled');
+
+      // Second agent was cancelled — not skipped
+      const updatedAgent2 = queries.getAgentById(agent2.id);
+      expect(updatedAgent2?.status).toBe('cancelled');
+      expect(updatedAgent2?.finished_at).toEqual(expect.any(Number));
+      expect(cancelledAgents.has(agent2.id)).toBe(true);
+
+      // Second agent's disconnect was called
+      expect(vi.mocked(disconnectAgent)).toHaveBeenCalledWith(agent2.id);
+
+      // Warning logged for the failed first agent cancellation
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('c11b-agent-1'),
+        expect.objectContaining({ message: expect.stringContaining('DB write failed') }),
+      );
+    } finally {
+      killSpy.mockRestore();
+      warnSpy.mockRestore();
+    }
+  });
 });
