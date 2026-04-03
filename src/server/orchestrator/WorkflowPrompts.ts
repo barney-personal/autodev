@@ -1,4 +1,5 @@
 import type { Workflow } from '../../shared/types.js';
+import { effectiveMaxTurns } from '../../shared/types.js';
 
 // ─── Inline Context ──────────────────────────────────────────────────────────
 
@@ -113,6 +114,7 @@ ${workflow.work_dir ?? '(not specified)'}
 1. **Read the codebase** — scan the project structure, key files, tests, dependencies, and configuration.
 2. **Assess quality** — note any issues, patterns, tech debt, missing tests, or areas for improvement relevant to the task.
 3. **Write a plan** with concrete milestones as markdown checkboxes. Each milestone should be achievable in a single implementation cycle.
+4. **Size milestones for the turn budget** — the implement phase has approximately **${effectiveMaxTurns(workflow.stop_mode_implement, workflow.stop_value_implement)} turns** per cycle. Size each milestone to be completable within ~30-40 tool calls. If a milestone seems too large, split it into smaller sub-milestones.
 
 ## Plan Format
 
@@ -326,6 +328,9 @@ ${workflow.task}
 
 ## Working Directory
 ${workflow.work_dir ?? '(not specified)'}
+
+## Budget
+You have approximately **${effectiveMaxTurns(workflow.stop_mode_implement, workflow.stop_value_implement)} turns** for this implementation cycle. Plan your work accordingly. If you are making good progress but sense you are running low on turns, commit your current work, update the plan with partial progress notes, and write a worklog entry describing what remains.
 
 ## Instructions
 

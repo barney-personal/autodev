@@ -4,6 +4,7 @@ import {
   capText,
   buildReviewPrompt,
   buildImplementPrompt,
+  buildAssessPrompt,
   type InlineContext,
 } from '../server/orchestrator/WorkflowPrompts.js';
 
@@ -243,5 +244,59 @@ describe('buildImplementPrompt with inline context', () => {
 
     // Step numbering should be standard (step 5 = implement)
     expect(prompt).toContain('5. **Implement it**');
+  });
+});
+
+// ─── buildImplementPrompt turn budget visibility (M3/1B) ──────────────────
+
+describe('buildImplementPrompt turn budget visibility', () => {
+  it('includes Budget heading and turn count with default turns mode', () => {
+    const wf = makeWorkflow({ stop_mode_implement: 'turns', stop_value_implement: 75 });
+    const prompt = buildImplementPrompt(wf, 2);
+
+    expect(prompt).toContain('## Budget');
+    expect(prompt).toContain('75 turns');
+    expect(prompt).toContain('commit your current work');
+  });
+
+  it('uses safety cap when stop_mode is not turns', () => {
+    const wf = makeWorkflow({ stop_mode_implement: 'budget', stop_value_implement: 5 });
+    const prompt = buildImplementPrompt(wf, 2);
+
+    expect(prompt).toContain('## Budget');
+    expect(prompt).toContain('1000 turns');
+  });
+
+  it('Budget section appears between Working Directory and Instructions', () => {
+    const wf = makeWorkflow({ stop_mode_implement: 'turns', stop_value_implement: 50 });
+    const prompt = buildImplementPrompt(wf, 1);
+
+    const dirIdx = prompt.indexOf('## Working Directory');
+    const budgetIdx = prompt.indexOf('## Budget');
+    const instrIdx = prompt.indexOf('## Instructions');
+
+    expect(dirIdx).toBeLessThan(budgetIdx);
+    expect(budgetIdx).toBeLessThan(instrIdx);
+  });
+});
+
+// ─── buildAssessPrompt turn-aware milestone sizing (M6/1A) ────────────────
+
+describe('buildAssessPrompt turn-aware milestone sizing', () => {
+  it('includes turn budget number and 30-40 tool calls guidance', () => {
+    const wf = makeWorkflow({ stop_mode_implement: 'turns', stop_value_implement: 80 });
+    const prompt = buildAssessPrompt(wf);
+
+    expect(prompt).toContain('80 turns');
+    expect(prompt).toContain('30-40 tool calls');
+    expect(prompt).toContain('Size milestones for the turn budget');
+  });
+
+  it('uses safety cap when stop_mode is not turns', () => {
+    const wf = makeWorkflow({ stop_mode_implement: 'budget', stop_value_implement: null });
+    const prompt = buildAssessPrompt(wf);
+
+    expect(prompt).toContain('1000 turns');
+    expect(prompt).toContain('30-40 tool calls');
   });
 });
