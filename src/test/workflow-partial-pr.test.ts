@@ -725,3 +725,72 @@ describe('countBranchCommits: safe fallback chain (Fix-C4b)', () => {
     expect(() => countBranchCommits('/tmp/wt')).toThrow('fatal: bad object abc1234');
   });
 });
+
+describe('Fix-C11a: transient rev-parse errors propagate to callers via countBranchCommits', () => {
+  beforeEach(async () => {
+    execSyncCalls.length = 0;
+    await setupTestDb();
+  });
+
+  afterEach(async () => {
+    await cleanupTestDb();
+    vi.restoreAllMocks();
+  });
+
+  function mockTransientRevParseFailure() {
+    vi.mocked(execSync).mockImplementation((cmd: any, opts?: any) => {
+      execSyncCalls.push({ cmd, opts });
+      if (typeof cmd !== 'string') return Buffer.from('');
+      // symbolic-ref succeeds — remote default branch is known
+      if (cmd === 'git symbolic-ref refs/remotes/origin/HEAD') {
+        return Buffer.from('refs/remotes/origin/main\n');
+      }
+      // rev-parse --verify throws a TRANSIENT error (not ref-missing)
+      if (cmd === 'git rev-parse --verify "origin/main"') {
+        throw new Error('fatal: Unable to create /tmp/wt/.git/index.lock: Permission denied');
+      }
+      // origin/HEAD fallback also gets a transient error
+      if (cmd === 'git rev-parse --verify "origin/HEAD"') {
+        throw new Error('fatal: Unable to create /tmp/wt/.git/index.lock: Permission denied');
+      }
+      // branch check
+      if (cmd.includes('rev-parse --abbrev-ref HEAD')) return Buffer.from('workflow/test-branch\n');
+      if (cmd.startsWith('git push')) return Buffer.from('');
+      if (cmd.includes('gh pr create')) return Buffer.from('https://github.com/test/repo/pull/99\n');
+      return Buffer.from('');
+    });
+  }
+
+  it('pushAndCreatePr still attempts PR when rev-parse throws transient error (safe default: hasCommits=true)', async () => {
+    mockTransientRevParseFailure();
+
+    const { pushAndCreatePr } = await import('../server/orchestrator/WorkflowManager.js');
+    const wf = makeWorkflow();
+
+    const prUrl = pushAndCreatePr(wf, false);
+
+    // PR should be created — transient error triggers safe default (hasCommits = true)
+    expect(prUrl).toBe('https://github.com/test/repo/pull/99');
+
+    // Push was attempted
+    const pushCall = execSyncCalls.find(c => typeof c.cmd === 'string' && c.cmd.startsWith('git push'));
+    expect(pushCall).toBeDefined();
+
+    // PR creation was attempted
+    const prCreateCall = execSyncCalls.find(c => typeof c.cmd === 'string' && c.cmd.includes('gh pr create'));
+    expect(prCreateCall).toBeDefined();
+  });
+
+  it('getPrCreationOutcome returns failed_with_publishable_commits when rev-parse throws transient error', async () => {
+    mockTransientRevParseFailure();
+
+    const { getPrCreationOutcome } = await import('../server/orchestrator/WorkflowManager.js');
+    const wf = makeWorkflow({ worktree_path: '/tmp/wt', work_dir: '/tmp/test' });
+
+    const outcome = getPrCreationOutcome(wf, null);
+
+    // Transient error propagates through countBranchCommits to getPrCreationOutcome's catch block,
+    // which returns 'failed_with_publishable_commits' (preserves worktree)
+    expect(outcome).toBe('failed_with_publishable_commits');
+  });
+});
