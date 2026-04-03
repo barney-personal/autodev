@@ -659,6 +659,14 @@ describe('POST /api/workflows/:id/wrap-up', () => {
       const updatedJob2 = queries.getJobById(job2.id);
       expect(updatedJob2?.status).toBe('cancelled');
 
+      // Agent1: runtime protection is in place (cancelledAgents.add at line 116
+      // runs BEFORE the throwing updateAgent at line 127), but DB status stays
+      // 'running' because updateAgent threw before persisting the cancellation.
+      // This DB/runtime inconsistency is expected — handleAgentExit checks
+      // cancelledAgents to avoid respawning, so the runtime set is sufficient.
+      expect(cancelledAgents.has('c11b-agent-1')).toBe(true);
+      expect(queries.getAgentById('c11b-agent-1')?.status).toBe('running');
+
       // Second agent was cancelled — not skipped
       const updatedAgent2 = queries.getAgentById(agent2.id);
       expect(updatedAgent2?.status).toBe('cancelled');
