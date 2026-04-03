@@ -166,10 +166,13 @@ Write the plan to the shared scratchpad using \`write_note\` with key \`${planKe
 <brief assessment of current state relevant to the task>
 
 ## Milestones
-- [ ] **M1: <title>** — <description with clear acceptance criteria>
-- [ ] **M2: <title>** — <description with clear acceptance criteria>
-- [ ] **M3: <title>** — <description with clear acceptance criteria>
+- [ ] **M1: <title>** [S] — <description with clear acceptance criteria>
+- [ ] **M2: <title>** [M] — <description with clear acceptance criteria>
+- [ ] **M3: <title>** [L] — <description with clear acceptance criteria>
 (add as many as needed, but keep each achievable in one cycle)
+
+Annotate each milestone with a complexity estimate: [S] ~10 tool calls, [M] ~25, [L] ~40, [XL] ~60+.
+Total estimated tool calls across all milestones should not exceed ${effectiveMaxTurns(workflow.stop_mode_implement, workflow.stop_value_implement)} × ${workflow.max_cycles} cycles = ${effectiveMaxTurns(workflow.stop_mode_implement, workflow.stop_value_implement) * workflow.max_cycles} total. If over budget, reduce scope or split milestones.
 
 ## Priority Order
 <which milestone to tackle first and why>

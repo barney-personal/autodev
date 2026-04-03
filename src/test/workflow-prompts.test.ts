@@ -300,6 +300,25 @@ describe('buildAssessPrompt turn-aware milestone sizing', () => {
     expect(prompt).toContain('1000 turns');
     expect(prompt).toContain('30-40 tool calls');
   });
+
+  it('includes complexity annotation instructions [S]/[M]/[L]/[XL] (M15/1D)', () => {
+    const wf = makeWorkflow({ stop_mode_implement: 'turns', stop_value_implement: 100, max_cycles: 10 });
+    const prompt = buildAssessPrompt(wf);
+
+    expect(prompt).toContain('[S] ~10 tool calls');
+    expect(prompt).toContain('[M] ~25');
+    expect(prompt).toContain('[L] ~40');
+    expect(prompt).toContain('[XL] ~60+');
+  });
+
+  it('computes total tool call budget from turns × cycles (M15/1D)', () => {
+    const wf = makeWorkflow({ stop_mode_implement: 'turns', stop_value_implement: 100, max_cycles: 5 });
+    const prompt = buildAssessPrompt(wf);
+
+    // 100 turns × 5 cycles = 500 total
+    expect(prompt).toContain('100 × 5 cycles = 500 total');
+    expect(prompt).toContain('reduce scope or split milestones');
+  });
 });
 
 // ─── extractMilestoneChecklist (M11/5C) ─────────────────────────────────────
