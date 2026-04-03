@@ -665,6 +665,11 @@ describe('POST /api/workflows/:id/wrap-up', () => {
       expect(queries.getAgentById('c11b-agent-1')?.status).toBe('cancelled');
       expect(queries.getAgentById('c11b-agent-1')?.finished_at).toEqual(expect.any(Number));
 
+      // Agent1: after retry updateAgent succeeded, emitAgentUpdate was called so UI reflects the change (Fix-C17a)
+      expect(vi.mocked(socket.emitAgentUpdate)).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'c11b-agent-1', status: 'cancelled' }),
+      );
+
       // Agent1: best-effort cleanup released locks and disconnected PTY
       // getFileLockRegistry is called multiple times; check all returned registries
       const registryCalls = vi.mocked(getFileLockRegistry).mock.results;
