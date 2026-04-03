@@ -456,3 +456,57 @@ describe('finalizeWorkflow: blocked status on PR failure', () => {
     expect(updated!.blocked_reason).toBeFalsy();
   });
 });
+
+describe('getPrCreationOutcome: git error handling (Fix-C7b)', () => {
+  beforeEach(async () => {
+    execSyncCalls.length = 0;
+    await setupTestDb();
+  });
+
+  afterEach(async () => {
+    await cleanupTestDb();
+    vi.restoreAllMocks();
+  });
+
+  it('returns failed_with_publishable_commits when execSync throws (preserves worktree)', async () => {
+    const mockedExecSync = vi.mocked(execSync);
+    mockedExecSync.mockImplementation((cmd: any) => {
+      if (typeof cmd === 'string' && cmd.includes('rev-list --count')) {
+        throw new Error('fatal: .git/index.lock: File exists');
+      }
+      return Buffer.from('');
+    });
+
+    const { getPrCreationOutcome } = await import('../server/orchestrator/WorkflowManager.js');
+    const wf = makeWorkflow({ worktree_path: '/tmp/wt', work_dir: '/tmp/test' });
+
+    const outcome = getPrCreationOutcome(wf, null);
+
+    expect(outcome).toBe('failed_with_publishable_commits');
+  });
+
+  it('returns no_publishable_commits when rev-list returns 0', async () => {
+    vi.mocked(execSync).mockImplementation((cmd: any) => {
+      if (typeof cmd === 'string' && cmd.includes('rev-list --count')) {
+        return Buffer.from('0\n');
+      }
+      return Buffer.from('');
+    });
+
+    const { getPrCreationOutcome } = await import('../server/orchestrator/WorkflowManager.js');
+    const wf = makeWorkflow({ worktree_path: '/tmp/wt', work_dir: '/tmp/test' });
+
+    const outcome = getPrCreationOutcome(wf, null);
+
+    expect(outcome).toBe('no_publishable_commits');
+  });
+
+  it('returns created when prUrl is provided', async () => {
+    const { getPrCreationOutcome } = await import('../server/orchestrator/WorkflowManager.js');
+    const wf = makeWorkflow();
+
+    const outcome = getPrCreationOutcome(wf, 'https://github.com/test/repo/pull/1');
+
+    expect(outcome).toBe('created');
+  });
+});

@@ -1344,7 +1344,10 @@ export function getPrCreationOutcome(workflow: Workflow, prUrl: string | null): 
       { cwd: workflow.worktree_path, stdio: 'pipe', timeout: 10000 }
     ).toString().trim();
     hasPublishableCommits = parseInt(count, 10) > 0;
-  } catch { /* can't check — treat as no publishable commits */ }
+  } catch (err: any) {
+    console.warn(`[workflow ${workflow.id}] getPrCreationOutcome: git error — preserving worktree as safe default:`, err?.message);
+    return 'failed_with_publishable_commits';
+  }
 
   return hasPublishableCommits ? 'failed_with_publishable_commits' : 'no_publishable_commits';
 }
