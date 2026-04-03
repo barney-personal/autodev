@@ -79,7 +79,6 @@ describe('WorkflowManager: diminishing returns detector', () => {
   });
 
   it('blocks workflow when rolling 3-cycle average < 0.3 milestones/cycle', async () => {
-    const socket = await import('../server/socket/SocketManager.js');
     const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
     const { upsertNote, getWorkflowById } = await import('../server/db/queries.js');
 
@@ -91,7 +90,7 @@ describe('WorkflowManager: diminishing returns detector', () => {
       current_cycle: 5,
       max_cycles: 10,
       milestones_total: 10,
-      milestones_done: 3,
+      milestones_done: 4,
     });
 
     // Plan: 4/10 done, pre-implement also 4 → delta = 0 this cycle
@@ -119,7 +118,6 @@ describe('WorkflowManager: diminishing returns detector', () => {
   });
 
   it('does NOT trigger on a single slow cycle (< 3 cycles of history)', async () => {
-    const socket = await import('../server/socket/SocketManager.js');
     const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
     const { upsertNote, getWorkflowById, getNote } = await import('../server/db/queries.js');
 
