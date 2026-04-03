@@ -59,6 +59,9 @@ const execSyncMock = vi.fn((cmd: string) => {
   if (typeof cmd === 'string' && cmd.includes('rev-parse --abbrev-ref HEAD')) {
     return Buffer.from('expected-branch\n');
   }
+  if (typeof cmd === 'string' && cmd.includes('rev-parse --verify') && cmd.includes('refs/heads/')) {
+    throw new Error('fatal: Needed a single revision');
+  }
   return Buffer.from('');
 });
 
@@ -118,6 +121,8 @@ describe('WorkflowManager: resumeWorkflow worktree restoration', () => {
       (c: any[]) => typeof c[0] === 'string' && c[0].includes('git worktree add'),
     );
     expect(worktreeAddCalls.length).toBe(1);
+    const addCmd = worktreeAddCalls[0][0] as string;
+    expect(addCmd).toContain(' -b ');
 
     // Resilience event should be logged for successful worktree restoration (Fix-C12c)
     expect(_logResilienceEvent).toHaveBeenCalledWith(
@@ -182,7 +187,7 @@ describe('WorkflowManager: resumeWorkflow worktree restoration', () => {
 
     // rev-parse --verify succeeds → branch exists; worktree add without -b should succeed
     execSyncMock.mockImplementation((cmd: string) => {
-      if (typeof cmd === 'string' && cmd.includes('rev-parse --verify refs/heads/')) {
+      if (typeof cmd === 'string' && cmd.includes('rev-parse --verify') && cmd.includes('refs/heads/')) {
         return Buffer.from('abc1234\n'); // branch exists
       }
       if (typeof cmd === 'string' && cmd.includes('rev-parse --abbrev-ref HEAD')) {
