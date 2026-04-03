@@ -197,6 +197,11 @@ function _onJobCompleted(job: Job): void {
         // the user from resuming. Block so they can increase max_cycles and continue.
         console.log(`[workflow ${workflow.id}] reached max cycles (${updated.max_cycles}) with ${milestones.done}/${milestones.total} milestones — marking blocked (not complete)`);
         updateAndEmit(workflow.id, { status: 'blocked', current_phase: 'idle' as WorkflowPhase, blocked_reason: `Reached max cycles (${updated.max_cycles}) with ${milestones.done}/${milestones.total} milestones complete` });
+        // Create a draft PR for partial work so it's not lost
+        if (milestones.done > 0) {
+          const latestWf = queries.getWorkflowById(workflow.id)!;
+          pushAndCreatePr(latestWf, true);
+        }
       } else {
         // Zero-progress detection: if milestones_done didn't increase during this implement
         // cycle, track consecutive zero-progress cycles and block after 2 to avoid burning
@@ -700,15 +705,15 @@ export function resumeWorkflow(
 // ─── Finalization & Cleanup ──────────────────────────────────────────────────
 
 /**
- * Called when a workflow completes successfully.
- * Pushes the worktree branch, opens a GitHub PR, then removes the local worktree.
+ * Push the worktree branch and create a GitHub PR.
+ * Does NOT remove the worktree — callers decide when to clean up.
+ * Returns the PR URL on success, or null if no PR was created.
  */
-export function finalizeWorkflow(workflow: Workflow): void {
+export function pushAndCreatePr(workflow: Workflow, isDraft: boolean): string | null {
   const { worktree_path, worktree_branch, work_dir } = workflow;
-  if (!worktree_path || !work_dir) return;
+  if (!worktree_path || !work_dir) return null;
 
   // Ensure the worktree is on the correct branch before pushing.
-  // Agents may have drifted to main — switch back and cherry-pick if needed.
   if (worktree_branch) {
     const branchCheck = ensureWorktreeBranch(worktree_path, worktree_branch);
     if (!branchCheck.ok) {
@@ -716,43 +721,57 @@ export function finalizeWorkflow(workflow: Workflow): void {
     }
   }
 
+  // Count commits on the branch that aren't on the remote default branch
+  let hasCommits = false;
   try {
-    // Count commits on the branch that aren't on the remote default branch
-    let hasCommits = false;
-    try {
-      const n = execSync(
-        'git rev-list --count HEAD ^origin/HEAD 2>/dev/null || git rev-list --count HEAD',
-        { cwd: worktree_path, stdio: 'pipe', timeout: 10000 }
-      ).toString().trim();
-      hasCommits = parseInt(n, 10) > 0;
-    } catch { /* not a git repo or no remote — skip PR */ }
+    const n = execSync(
+      'git rev-list --count HEAD ^origin/HEAD 2>/dev/null || git rev-list --count HEAD',
+      { cwd: worktree_path, stdio: 'pipe', timeout: 10000 }
+    ).toString().trim();
+    hasCommits = parseInt(n, 10) > 0;
+  } catch { /* not a git repo or no remote — skip PR */ }
 
-    if (hasCommits && worktree_branch) {
-      try {
-        // Push branch to remote
-        execSync(`git push -u origin ${JSON.stringify(worktree_branch)}`, {
-          cwd: worktree_path, stdio: 'pipe', timeout: 30000,
-        });
+  if (!hasCommits || !worktree_branch) {
+    console.log(`[workflow ${workflow.id}] no commits on branch — skipping PR`);
+    return null;
+  }
 
-        // Build PR body from plan note milestones
-        const planNote = queries.getNote(`workflow/${workflow.id}/plan`);
-        const body = _buildPrBody(workflow, planNote?.value ?? null);
-        const title = `[Workflow] ${workflow.title}`;
+  try {
+    // Push branch to remote
+    execSync(`git push -u origin ${JSON.stringify(worktree_branch)}`, {
+      cwd: worktree_path, stdio: 'pipe', timeout: 30000,
+    });
 
-        // Create PR via gh CLI
-        const prUrl = execSync(
-          `gh pr create --title ${JSON.stringify(title)} --body ${JSON.stringify(body)} --head ${JSON.stringify(worktree_branch)}`,
-          { cwd: worktree_path, stdio: 'pipe', timeout: 30000 }
-        ).toString().trim();
+    // Build PR body from plan note milestones
+    const planNote = queries.getNote(`workflow/${workflow.id}/plan`);
+    const body = _buildPrBody(workflow, planNote?.value ?? null, { partial: isDraft });
+    const title = `[Workflow] ${workflow.title}`;
 
-        updateAndEmit(workflow.id, { pr_url: prUrl });
-        console.log(`[workflow ${workflow.id}] PR created: ${prUrl}`);
-      } catch (err: any) {
-        console.warn(`[workflow ${workflow.id}] push/PR failed (worktree branch preserved locally):`, err.message);
-      }
-    } else {
-      console.log(`[workflow ${workflow.id}] no commits on branch — skipping PR`);
-    }
+    // Create PR via gh CLI
+    const draftFlag = isDraft ? ' --draft' : '';
+    const prUrl = execSync(
+      `gh pr create --title ${JSON.stringify(title)} --body ${JSON.stringify(body)} --head ${JSON.stringify(worktree_branch)}${draftFlag}`,
+      { cwd: worktree_path, stdio: 'pipe', timeout: 30000 }
+    ).toString().trim();
+
+    updateAndEmit(workflow.id, { pr_url: prUrl });
+    console.log(`[workflow ${workflow.id}] ${isDraft ? 'draft ' : ''}PR created: ${prUrl}`);
+    return prUrl;
+  } catch (err: any) {
+    console.warn(`[workflow ${workflow.id}] push/PR failed (worktree branch preserved locally):`, err.message);
+    return null;
+  }
+}
+
+/**
+ * Called when a workflow completes successfully.
+ * Pushes the worktree branch, opens a GitHub PR, then removes the local worktree.
+ */
+export function finalizeWorkflow(workflow: Workflow): void {
+  if (!workflow.worktree_path || !workflow.work_dir) return;
+
+  try {
+    pushAndCreatePr(workflow, false);
   } finally {
     _removeWorktree(workflow);
   }
@@ -779,7 +798,7 @@ function _removeWorktree(workflow: Workflow): void {
   }
 }
 
-export function _buildPrBody(workflow: Workflow, planText: string | null): string {
+export function _buildPrBody(workflow: Workflow, planText: string | null, options?: { partial?: boolean }): string {
   const { total, done } = parseMilestones(planText ?? '');
   const milestoneLines = planText
     ? planText.split('\n')
@@ -792,16 +811,23 @@ export function _buildPrBody(workflow: Workflow, planText: string | null): strin
         })
         .join('\n')
     : '';
-  return [
+  const lines = [
     `## ${workflow.title}`,
     '',
+  ];
+  if (options?.partial) {
+    lines.push(`**Partial completion** — ${done}/${total} milestones done. Remaining milestones need manual intervention or resuming the workflow.`);
+    lines.push('');
+  }
+  lines.push(
     `**Task:** ${workflow.task}`,
     '',
     `**Cycles:** ${workflow.current_cycle}/${workflow.max_cycles} · **Milestones:** ${done}/${total} complete`,
     '',
     '## Milestones',
     milestoneLines || '_No plan available_',
-  ].join('\n');
+  );
+  return lines.join('\n');
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

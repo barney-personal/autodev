@@ -140,4 +140,32 @@ describe('_buildPrBody', () => {
     expect(body).not.toContain('Implementer:');
     expect(body).not.toContain('Reviewer:');
   });
+
+  it('includes partial completion notice when partial option is true', () => {
+    const body = _buildPrBody(makeWorkflow(), PLAN_MIXED, { partial: true });
+    expect(body).toContain('**Partial completion**');
+    expect(body).toContain('2/4 milestones done');
+    expect(body).toContain('Remaining milestones need manual intervention or resuming the workflow');
+  });
+
+  it('does not include partial notice when partial option is false', () => {
+    const body = _buildPrBody(makeWorkflow(), PLAN_MIXED, { partial: false });
+    expect(body).not.toContain('Partial completion');
+  });
+
+  it('does not include partial notice when options not provided', () => {
+    const body = _buildPrBody(makeWorkflow(), PLAN_MIXED);
+    expect(body).not.toContain('Partial completion');
+  });
+
+  it('partial body still includes all other metadata', () => {
+    const wf = makeWorkflow({ title: 'My PR', task: 'Fix bugs', current_cycle: 3, max_cycles: 5 });
+    const body = _buildPrBody(wf, PLAN_MIXED, { partial: true });
+    expect(body).toContain('## My PR');
+    expect(body).toContain('**Task:** Fix bugs');
+    expect(body).toContain('**Cycles:** 3/5');
+    expect(body).toContain('**Milestones:** 2/4 complete');
+    expect(body).toContain('- Done: **M1: First milestone**');
+    expect(body).toContain('- Pending: **M2: Second milestone**');
+  });
 });
