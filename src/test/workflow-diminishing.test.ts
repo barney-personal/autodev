@@ -284,8 +284,11 @@ describe('WorkflowManager: diminishing returns detector', () => {
     onJobCompleted(job);
 
     const afterImpl = getWorkflowById(workflow.id)!;
-    // Should NOT be blocked by diminishing returns — only 1 cycle of history after resume
-    // It should increment zero-progress count to 1, but NOT trigger diminishing returns
+    // Should NOT be blocked at all — only 1 cycle of history after resume
+    expect(afterImpl.status).not.toBe('blocked');
+    // Should have advanced to cycle 6 (implement handler completed successfully)
+    expect(afterImpl.current_cycle).toBe(6);
+    // Blocked reason should not contain diminishing returns
     expect(afterImpl.blocked_reason ?? '').not.toContain('Diminishing returns');
     // Zero-progress count should be 1 (not high enough to block yet either)
     const zpNote = getNote(`workflow/${workflow.id}/zero-progress-count`);
