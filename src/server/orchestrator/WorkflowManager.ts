@@ -656,11 +656,26 @@ export function preReadWorkflowContext(workflowId: string): InlineWorkflowContex
   const contract = queries.getNote(`workflow/${workflowId}/contract`);
   const worklogNotes = queries.listNotes(`workflow/${workflowId}/worklog/`);
   const recentDiff = queries.getLastImplementDiff(workflowId);
+
+  // M9/2A: Compute compact diff summary from worktree merge-base
+  let diffSummary: string | undefined;
+  const workflow = queries.getWorkflowById(workflowId);
+  if (workflow?.worktree_path && existsSync(workflow.worktree_path)) {
+    try {
+      const stat = execSync('git diff --stat $(git merge-base HEAD main) HEAD 2>/dev/null', {
+        cwd: workflow.worktree_path,
+        timeout: 5000,
+      }).toString().trim();
+      if (stat) diffSummary = stat;
+    } catch { /* worktree may not have commits yet — skip */ }
+  }
+
   return {
     plan: plan?.value ?? undefined,
     contract: contract?.value ?? undefined,
     worklogs: worklogNotes.map(n => ({ key: n.key, value: n.value })),
     recentDiff: recentDiff ?? undefined,
+    diffSummary,
   };
 }
 

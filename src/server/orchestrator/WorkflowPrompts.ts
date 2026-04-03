@@ -10,6 +10,8 @@ export interface InlineWorkflowContext {
   worklogs?: Array<{ key: string; value: string }>;
   /** Diff from the last completed implement-phase agent (review prompts only). */
   recentDiff?: string;
+  /** Compact `git diff --stat` from merge-base — shows files changed so far in the worktree. */
+  diffSummary?: string;
 }
 
 // Back-compat for older tests/imports.
@@ -47,6 +49,7 @@ export function hasInlineContent(ctx: InlineWorkflowContext | undefined): boolea
   if (ctx.plan) return true;
   if (ctx.contract) return true;
   if (ctx.worklogs && ctx.worklogs.length > 0) return true;
+  if (ctx.diffSummary) return true;
   return false;
 }
 
@@ -64,6 +67,9 @@ export function renderInlineContext(
   }
   if (ctx?.contract) {
     parts.push(`### Operating Contract (from \`${contractKey}\`)\n\n${ctx.contract}`);
+  }
+  if (ctx?.diffSummary) {
+    parts.push(`### Files Changed So Far\n\n\`\`\`\n${ctx.diffSummary}\n\`\`\``);
   }
   if (ctx?.worklogs && ctx.worklogs.length > 0) {
     const sorted = sortWorklogsByNumericCycle(ctx.worklogs);

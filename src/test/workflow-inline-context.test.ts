@@ -219,6 +219,22 @@ describe('renderInlineContext', () => {
     expect(result).toContain('hello');
     expect(result).not.toContain('truncated');
   });
+
+  it('renders diffSummary as "Files Changed So Far" section', () => {
+    const ctx: InlineWorkflowContext = {
+      diffSummary: ' src/foo.ts | 10 +++++-----\n 1 file changed, 5 insertions(+), 5 deletions(-)',
+    };
+    const result = renderInlineContext(ctx, planKey, contractKey, worklogPrefix);
+    expect(result).toContain('### Files Changed So Far');
+    expect(result).toContain('src/foo.ts');
+    expect(result).toContain('```');
+  });
+
+  it('omits diffSummary section when not present', () => {
+    const ctx: InlineWorkflowContext = { plan: 'some plan', worklogs: [] };
+    const result = renderInlineContext(ctx, planKey, contractKey, worklogPrefix);
+    expect(result).not.toContain('Files Changed So Far');
+  });
 });
 
 describe('buildReviewPrompt with InlineWorkflowContext', () => {
@@ -599,6 +615,17 @@ describe('preReadWorkflowContext', () => {
     const ctx = preReadWorkflowContext(wf.id);
 
     expect(ctx.recentDiff).toBeUndefined();
+  });
+
+  it('returns undefined diffSummary when workflow has no worktree', async () => {
+    const { upsertNote } = await import('../server/db/queries.js');
+    const wfId = 'test-wf-no-worktree';
+    upsertNote(`workflow/${wfId}/plan`, 'a plan', null);
+
+    const { preReadWorkflowContext } = await import('../server/orchestrator/WorkflowManager.js');
+    const ctx = preReadWorkflowContext(wfId);
+
+    expect(ctx.diffSummary).toBeUndefined();
   });
 });
 

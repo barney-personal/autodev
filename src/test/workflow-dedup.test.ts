@@ -1397,12 +1397,14 @@ describe('WorkflowManager: worktree branch verification (M5)', () => {
     upsertNote(`workflow/${workflow.id}/contract`, '# contract', null);
 
     // Mock: verifyWorktreeHealth runs --is-inside-work-tree, rev-parse HEAD,
-    // then ensureWorktreeBranch runs rev-parse --abbrev-ref HEAD → drifted, checkout → ok
+    // then ensureWorktreeBranch runs rev-parse --abbrev-ref HEAD → drifted, checkout → ok,
+    // then preReadWorkflowContext runs git diff --stat for M9/2A context injection
     vi.mocked(execSync)
       .mockReturnValueOnce(Buffer.from('true\n'))    // --is-inside-work-tree
       .mockReturnValueOnce(Buffer.from('abc123\n'))  // rev-parse HEAD
       .mockReturnValueOnce(Buffer.from('main\n'))    // rev-parse --abbrev-ref HEAD → drifted
-      .mockReturnValueOnce(Buffer.from(''));          // checkout → ok
+      .mockReturnValueOnce(Buffer.from(''))           // checkout → ok
+      .mockReturnValueOnce(Buffer.from(''));           // git diff --stat (M9 context injection)
 
     const job = resumeWorkflow(workflow);
 
@@ -1412,8 +1414,8 @@ describe('WorkflowManager: worktree branch verification (M5)', () => {
     const emitJobNewCalls = vi.mocked(socket.emitJobNew).mock.calls;
     expect(emitJobNewCalls.length).toBeGreaterThanOrEqual(1);
 
-    // execSync: is-inside-work-tree, rev-parse HEAD, rev-parse --abbrev-ref, checkout
-    expect(execSync).toHaveBeenCalledTimes(4);
+    // execSync: is-inside-work-tree, rev-parse HEAD, rev-parse --abbrev-ref, checkout, diff --stat
+    expect(execSync).toHaveBeenCalledTimes(5);
     expect(vi.mocked(execSync).mock.calls[2][0]).toContain('rev-parse --abbrev-ref HEAD');
     expect(vi.mocked(execSync).mock.calls[3][0]).toContain('git checkout');
   });
