@@ -2442,7 +2442,6 @@ export interface FileClaim {
 /** Claim files for a workflow. Returns any conflicting active claims from other workflows. */
 export function claimFiles(workflowId: string, filePaths: string[]): FileClaim[] {
   const db = getDb();
-  const { randomUUID } = require('crypto');
   const now = Date.now();
   const conflicts: FileClaim[] = [];
 
