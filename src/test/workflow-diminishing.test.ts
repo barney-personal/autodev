@@ -330,7 +330,7 @@ describe('WorkflowManager: diminishing returns detector', () => {
     const cpNote = getNote(`workflow/${workflow.id}/cycle-progress/5`);
     expect(cpNote).toBeNull();
 
-    // Rolling average = (0 + 1 + 1) / 3 = 0.67 → should NOT block
+    // DR detector skipped: no cycle-progress/5 note written during restructuring (cp1 is null)
     const updated = getWorkflowById(workflow.id)!;
     expect(updated.status).not.toBe('blocked');
     expect(updated.current_cycle).toBe(6);
