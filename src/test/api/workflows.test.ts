@@ -21,6 +21,16 @@ vi.mock('../../server/orchestrator/FileLockRegistry.js', () => ({
     releaseAll: vi.fn(),
   })),
 }));
+vi.mock('../../server/orchestrator/PtyManager.js', () => ({
+  isTmuxSessionAlive: vi.fn(() => false),
+  saveSnapshot: vi.fn(),
+  disconnectAgent: vi.fn(),
+  disconnectAll: vi.fn(() => []),
+  getPtyBuffer: vi.fn(() => []),
+  getSnapshot: vi.fn(() => null),
+  attachPty: vi.fn(),
+  startInteractiveAgent: vi.fn(),
+}));
 vi.mock('../../server/orchestrator/WorkflowManager.js', () => ({
   startWorkflow: vi.fn((wf: any) => ({
     id: 'assess-job-id',
@@ -401,16 +411,18 @@ describe('POST /api/workflows/:id/wrap-up', () => {
     expect(vi.mocked(cleanupWorktree)).toHaveBeenCalledTimes(1);
   });
 
-  it('cancels running agents with pid, tmux, and lock cleanup during wrap-up (Fix-C17b)', async () => {
+  it('cancels running agents with pid, tmux, snapshot, lock cleanup, and emitAgentUpdate during wrap-up (Fix-C17b)', async () => {
     const { pushAndCreatePr, getPrCreationOutcome } = await import('../../server/orchestrator/WorkflowManager.js');
     const { cancelledAgents } = await import('../../server/orchestrator/AgentRunner.js');
     const { getFileLockRegistry } = await import('../../server/orchestrator/FileLockRegistry.js');
+    const { isTmuxSessionAlive, saveSnapshot } = await import('../../server/orchestrator/PtyManager.js');
     const { execFileSync } = await import('child_process');
     const queries = await import('../../server/db/queries.js');
     const socket = await import('../../server/socket/SocketManager.js');
 
     vi.mocked(pushAndCreatePr).mockReturnValue(null);
     vi.mocked(getPrCreationOutcome).mockReturnValue('no_publishable_commits');
+    vi.mocked(isTmuxSessionAlive).mockReturnValue(true);
 
     const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true as any);
     try {
@@ -442,6 +454,11 @@ describe('POST /api/workflows/:id/wrap-up', () => {
       expect(res.status).toBe(200);
       expect(res.body.outcome).toBe('no_publishable_commits');
       expect(cancelledAgents.has(agent.id)).toBe(true);
+
+      // tmux snapshot saved before kill
+      expect(vi.mocked(isTmuxSessionAlive)).toHaveBeenCalledWith(agent.id);
+      expect(vi.mocked(saveSnapshot)).toHaveBeenCalledWith(agent.id);
+
       expect(killSpy).toHaveBeenCalledWith(-4321, 'SIGTERM');
       expect(vi.mocked(execFileSync)).toHaveBeenCalledWith(
         'tmux',
@@ -458,6 +475,108 @@ describe('POST /api/workflows/:id/wrap-up', () => {
       expect(updatedAgent?.finished_at).toEqual(expect.any(Number));
       expect(updatedJob?.status).toBe('cancelled');
 
+      // emitAgentUpdate called for cancelled agent
+      expect(socket.emitAgentUpdate).toHaveBeenCalledWith(expect.objectContaining({
+        id: agent.id,
+        status: 'cancelled',
+      }));
+      expect(socket.emitJobUpdate).toHaveBeenCalledWith(expect.objectContaining({
+        id: job.id,
+        status: 'cancelled',
+      }));
+    } finally {
+      killSpy.mockRestore();
+    }
+  });
+
+  it('cancels waiting_user agents with pending question timeout and emitAgentUpdate during wrap-up (Fix-C16b)', async () => {
+    const { pushAndCreatePr, getPrCreationOutcome } = await import('../../server/orchestrator/WorkflowManager.js');
+    const { cancelledAgents } = await import('../../server/orchestrator/AgentRunner.js');
+    const { getFileLockRegistry } = await import('../../server/orchestrator/FileLockRegistry.js');
+    const { execFileSync } = await import('child_process');
+    const queries = await import('../../server/db/queries.js');
+    const socket = await import('../../server/socket/SocketManager.js');
+
+    vi.mocked(pushAndCreatePr).mockReturnValue(null);
+    vi.mocked(getPrCreationOutcome).mockReturnValue('no_publishable_commits');
+
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true as any);
+    try {
+      const project = await insertTestProject();
+      const workflow = await insertTestWorkflow({
+        project_id: project.id,
+        status: 'running',
+        current_phase: 'implement',
+        use_worktree: 1,
+      });
+      queries.updateWorkflow(workflow.id, {
+        worktree_path: '/tmp/worktree',
+        worktree_branch: 'workflow/test-branch',
+      });
+
+      const job = await insertTestJob({
+        workflow_id: workflow.id,
+        workflow_phase: 'implement',
+        status: 'running',
+      });
+      const agent = await insertAgent(job.id, {
+        id: 'wrapup-waiting-agent',
+        status: 'waiting_user',
+        pid: 5555,
+      });
+
+      // Insert a pending question for this agent
+      const { randomUUID } = await import('crypto');
+      const questionId = randomUUID();
+      queries.insertQuestion({
+        id: questionId,
+        agent_id: agent.id,
+        question: 'Should I proceed?',
+        answer: null,
+        status: 'pending',
+        asked_at: Date.now() - 60000,
+        answered_at: null,
+        timeout_ms: 300000,
+      });
+
+      const res = await request(app).post(`/api/workflows/${workflow.id}/wrap-up`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.outcome).toBe('no_publishable_commits');
+
+      // waiting_user agent was cancelled
+      expect(cancelledAgents.has(agent.id)).toBe(true);
+      const updatedAgent = queries.getAgentById(agent.id);
+      expect(updatedAgent?.status).toBe('cancelled');
+      expect(updatedAgent?.finished_at).toEqual(expect.any(Number));
+
+      // Process killed and tmux cleaned up
+      expect(killSpy).toHaveBeenCalledWith(-5555, 'SIGTERM');
+      expect(vi.mocked(execFileSync)).toHaveBeenCalledWith(
+        'tmux',
+        ['kill-session', '-t', `orchestrator-${agent.id}`],
+        { stdio: 'pipe' },
+      );
+
+      // Locks released
+      const registry = vi.mocked(getFileLockRegistry).mock.results[0]?.value;
+      expect(registry.releaseAll).toHaveBeenCalledWith(agent.id);
+
+      // Pending question timed out
+      const updatedQuestion = queries.getQuestionById(questionId);
+      expect(updatedQuestion?.status).toBe('timeout');
+      expect(updatedQuestion?.answer).toContain('Workflow wrapped up');
+      expect(updatedQuestion?.answered_at).toEqual(expect.any(Number));
+
+      // emitAgentUpdate called so UI updates immediately
+      expect(socket.emitAgentUpdate).toHaveBeenCalledWith(expect.objectContaining({
+        id: agent.id,
+        status: 'cancelled',
+      }));
+
+      // Job also cancelled
+      const updatedJob = queries.getJobById(job.id);
+      expect(updatedJob?.status).toBe('cancelled');
       expect(socket.emitJobUpdate).toHaveBeenCalledWith(expect.objectContaining({
         id: job.id,
         status: 'cancelled',

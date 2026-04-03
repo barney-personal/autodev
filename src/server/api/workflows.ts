@@ -5,6 +5,7 @@ import * as socket from '../socket/SocketManager.js';
 import { resumeWorkflow, cleanupWorktree, pushAndCreatePr, getPrCreationOutcome } from '../orchestrator/WorkflowManager.js';
 import { cancelledAgents } from '../orchestrator/AgentRunner.js';
 import { getFileLockRegistry } from '../orchestrator/FileLockRegistry.js';
+import { isTmuxSessionAlive, saveSnapshot } from '../orchestrator/PtyManager.js';
 import { createAutonomousAgentRun } from '../orchestrator/AutonomousAgentRunManager.js';
 import type { CreateAutonomousAgentRunRequest, WorkflowPhase } from '../../shared/types.js';
 
@@ -101,20 +102,41 @@ router.post('/:id/wrap-up', (req, res) => {
     return;
   }
 
-  // Kill any running agents and cancel pending jobs
+  // Kill any running agents and cancel pending jobs — full cancellation semantics
+  // matching the pattern in agents.ts POST /:id/cancel
   const jobs = queries.getJobsForWorkflow(workflow.id);
   for (const job of jobs) {
     if (job.status === 'running' || job.status === 'assigned') {
       const agents = queries.getAgentsWithJobByJobId(job.id);
       for (const agent of agents) {
-        if (agent.status === 'running' || agent.status === 'starting') {
+        if (agent.status === 'running' || agent.status === 'starting' || agent.status === 'waiting_user') {
           cancelledAgents.add(agent.id);
+
+          // Save tmux snapshot before killing so we retain last terminal state
+          if (isTmuxSessionAlive(agent.id)) {
+            try { saveSnapshot(agent.id); } catch { /* non-fatal */ }
+          }
+
           if (agent.pid) {
             try { process.kill(-agent.pid, 'SIGTERM'); } catch { /* already gone */ }
           }
           try { execFileSync('tmux', ['kill-session', '-t', `orchestrator-${agent.id}`], { stdio: 'pipe' }); } catch { /* ok */ }
           queries.updateAgent(agent.id, { status: 'cancelled', finished_at: Date.now() });
           getFileLockRegistry().releaseAll(agent.id);
+
+          // Timeout any pending question so the MCP ask_user call doesn't hang
+          const pendingQ = queries.getPendingQuestion(agent.id);
+          if (pendingQ) {
+            queries.updateQuestion(pendingQ.id, {
+              status: 'timeout',
+              answer: '[TIMEOUT] Workflow wrapped up; agent cancelled.',
+              answered_at: Date.now(),
+            });
+          }
+
+          // Emit agent update so the UI reflects the change immediately
+          const updatedAgent = queries.getAgentWithJob(agent.id);
+          if (updatedAgent) socket.emitAgentUpdate(updatedAgent);
         }
       }
       queries.updateJobStatus(job.id, 'cancelled');
