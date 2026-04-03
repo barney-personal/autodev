@@ -98,6 +98,7 @@ export function createSocketMock() {
     emitQuestionAnswered: vi.fn(),
     emitLockAcquired: vi.fn(),
     emitLockReleased: vi.fn(),
+    emitDeadlockResolved: vi.fn(),
     emitProjectNew: vi.fn(),
     emitJobNew: vi.fn(),
     emitJobUpdate: vi.fn(),

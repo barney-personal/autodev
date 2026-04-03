@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
+import { logResilienceEvent } from './ResilienceLogger.js';
 import type { FileLock } from '../../shared/types.js';
 
 // Prefix used to represent a global checkout/worktree lock.
@@ -63,6 +64,10 @@ export function getFileLockRegistry(): FileLockRegistry {
   return _instance;
 }
 
+export function _resetForTest(): void {
+  _instance = null;
+}
+
 class FileLockRegistry {
   // Each entry is a callback that wakes a single waiter to re-check.
   private waiters = new Set<() => void>();
@@ -70,6 +75,9 @@ class FileLockRegistry {
   // Tracks which files each agent is currently blocked waiting to acquire.
   // Used for deadlock (cycle) detection in the wait-for graph.
   private waitingFor = new Map<string, string[]>();
+
+  // Counter for automatic deadlock resolutions.
+  private deadlockResolutions = 0;
 
   constructor() {
     // Heartbeat: periodically wake all waiters so a missed release notification
@@ -203,43 +211,122 @@ class FileLockRegistry {
    * Detect whether registering agentId as waiting for its files (already set in
    * this.waitingFor) would create a cycle in the wait-for graph.
    *
-   * Wait-for graph: edge A → B means "A is blocked waiting for a file held by B".
-   * A deadlock exists when there is a cycle: A → B → ... → A.
+   * Wait-for graph: edge A -> B means "A is blocked waiting for a file held by B".
+   * A deadlock exists when there is a cycle: A -> B -> ... -> A.
    *
    * Algorithm: DFS from each current holder of the files agentId wants.
    * If any DFS path reaches agentId, we have a cycle.
+   *
+   * Returns the cycle as an array of agent IDs, or null if no cycle.
    */
-  private detectDeadlock(agentId: string): boolean {
+  private detectDeadlock(agentId: string): string[] | null {
     const myFiles = this.waitingFor.get(agentId);
-    if (!myFiles || myFiles.length === 0) return false;
+    if (!myFiles || myFiles.length === 0) return null;
 
     const visited = new Set<string>();
+    const path: string[] = [];
 
     // Returns true if we can reach agentId by following wait-for edges from `current`.
     const canReachSelf = (current: string): boolean => {
       if (current === agentId) return true;
       if (visited.has(current)) return false;
       visited.add(current);
+      path.push(current);
 
       const waiting = this.waitingFor.get(current);
-      if (!waiting) return false;
+      if (!waiting) { path.pop(); return false; }
 
       for (const file of waiting) {
         for (const holder of this.holdersOf(file, current)) {
           if (canReachSelf(holder)) return true;
         }
       }
+      path.pop();
       return false;
     };
 
     // Start DFS from each holder of the files agentId is blocked on.
     for (const file of myFiles) {
       for (const holder of this.holdersOf(file, agentId)) {
-        if (canReachSelf(holder)) return true;
+        visited.clear();
+        path.length = 0;
+        if (canReachSelf(holder)) {
+          return [agentId, ...path];
+        }
       }
     }
 
-    return false;
+    return null;
+  }
+
+  /**
+   * Find the oldest lock held by an agent in the cycle that is blocking another
+   * agent in the cycle. This is the lock to force-release for deadlock recovery.
+   */
+  private getOldestLockInCycle(cycleAgents: string[]): { agentId: string; file: string; lock: FileLock } | null {
+    const agentSet = new Set(cycleAgents);
+    let oldest: { agentId: string; file: string; lock: FileLock } | null = null;
+
+    for (const agentId of cycleAgents) {
+      const waitingFiles = this.waitingFor.get(agentId);
+      if (!waitingFiles) continue;
+
+      for (const file of waitingFiles) {
+        for (const lock of queries.getActiveLocksForFile(file)) {
+          if (agentSet.has(lock.agent_id) && lock.agent_id !== agentId) {
+            if (!oldest || lock.acquired_at < oldest.lock.acquired_at) {
+              oldest = { agentId: lock.agent_id, file, lock };
+            }
+          }
+        }
+      }
+    }
+
+    return oldest;
+  }
+
+  /**
+   * Attempt to auto-resolve a deadlock by force-releasing the oldest lock in the
+   * cycle, but ONLY if the holding agent has no active MCP transport and its last
+   * activity was >5s ago. Returns true if the lock was released.
+   */
+  private async tryAutoResolveDeadlock(cycleAgents: string[]): Promise<boolean> {
+    const oldest = this.getOldestLockInCycle(cycleAgents);
+    if (!oldest) return false;
+
+    // Dynamic import to avoid import-time dependency on McpServer (which pulls
+    // in integrations/child_process and breaks test mocks that don't include it).
+    const { hasActiveTransport } = await import('../mcp/McpServer.js');
+
+    // Don't force-release if the holder is actively connected
+    if (hasActiveTransport(oldest.agentId)) return false;
+
+    // Don't force-release if the holder had recent activity (<5s ago)
+    const agent = queries.getAgentById(oldest.agentId);
+    if (agent && Date.now() - agent.updated_at < 5_000) return false;
+
+    // Safe to force-release
+    this.release(oldest.agentId, [oldest.file]);
+    this.deadlockResolutions++;
+
+    const details = {
+      cycle_agents: cycleAgents,
+      released_agent: oldest.agentId,
+      released_file: oldest.file,
+      lock_id: oldest.lock.id,
+      lock_acquired_at: oldest.lock.acquired_at,
+      resolution_count: this.deadlockResolutions,
+    };
+
+    logResilienceEvent('deadlock_resolved', 'lock', oldest.lock.id, details);
+    socket.emitDeadlockResolved(details);
+
+    console.log(`[file-lock] Auto-resolved deadlock: released ${oldest.file} held by ${oldest.agentId} (cycle: ${cycleAgents.join(' -> ')})`);
+    return true;
+  }
+
+  getDeadlockResolutionCount(): number {
+    return this.deadlockResolutions;
   }
 
   /**
@@ -249,10 +336,11 @@ class FileLockRegistry {
    *
    * Deadlock detection: before each sleep cycle the registry checks for a cycle
    * in the wait-for graph. If Agent A holds file1 and waits for file2 while
-   * Agent B holds file2 and waits for file1, the cycle is detected immediately
-   * and the waiting agent receives { success: false, deadlock_detected: true }
-   * so it can release its current locks and retry rather than hanging for the
-   * full timeout duration.
+   * Agent B holds file2 and waits for file1, the cycle is detected immediately.
+   * The system first tries to auto-resolve by force-releasing the oldest lock
+   * held by an idle agent. If the holder is still active, the waiting agent
+   * receives { success: false, deadlock_detected: true } so it can release its
+   * held locks and retry.
    */
   async acquire(
     agentId: string,
@@ -281,10 +369,16 @@ class FileLockRegistry {
         // deadlock checks can traverse through us.
         this.waitingFor.set(agentId, files);
 
-        // Check for a cycle in the wait-for graph. If detected, fail immediately
-        // so this agent can release its held locks and retry, avoiding a multi-
-        // minute hang.
-        if (this.detectDeadlock(agentId)) {
+        // Check for a cycle in the wait-for graph. If detected, try to auto-
+        // resolve by force-releasing the oldest lock held by an idle agent.
+        // If the holder is still active, fall back to returning deadlock_detected
+        // so this agent can release its held locks and retry.
+        const cycle = this.detectDeadlock(agentId);
+        if (cycle) {
+          if (await this.tryAutoResolveDeadlock(cycle)) {
+            // Lock was released — retry acquire on next iteration
+            continue;
+          }
           return {
             success: false,
             acquired: [],
