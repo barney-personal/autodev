@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import { execSync } from 'child_process';
 import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import path from 'path';
-import { captureWithContext } from '../instrument.js';
+import { captureWithContext, Sentry } from '../instrument.js';
 import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
 import type { Job, Workflow, WorkflowPhase, StopMode } from '../../shared/types.js';
@@ -606,6 +606,14 @@ function spawnPhaseJob(workflow: Workflow, phase: WorkflowPhase, cycle: number, 
   if (modelOverride) model = modelOverride;
   model = getWorkflowFallbackModel(workflow, phase, model) ?? model;
 
+  // Safety guard: block if use_worktree=1 but worktree_path is null (e.g. after DB recovery)
+  if (workflow.use_worktree && !workflow.worktree_path) {
+    const reason = `Worktree required (use_worktree=1) but worktree_path is null — cannot spawn ${phase} job`;
+    console.log(`[workflow ${workflow.id}] ${reason} — marking blocked`);
+    updateAndEmit(workflow.id, { status: 'blocked', current_phase: phase, blocked_reason: reason });
+    return;
+  }
+
   // Verify worktree branch before spawning
   if (workflow.worktree_path && workflow.worktree_branch) {
     const branchCheck = ensureWorktreeBranch(workflow.worktree_path, workflow.worktree_branch);
@@ -1139,8 +1147,28 @@ function updateAndEmit(id: string, fields: Parameters<typeof queries.updateWorkf
     // Socket failure is non-fatal — the DB write already succeeded
     console.warn(`[workflow] updateAndEmit: socket.emitWorkflowUpdate failed for workflow ${id}:`, emitErr);
   }
-  // Write diagnostic file when a workflow becomes blocked
+  // Blocked is a real error — report to Sentry and write diagnostic
   if (fields.status === 'blocked') {
+    const reason = fields.blocked_reason ?? updated.blocked_reason ?? 'unknown';
+    const err = new Error(`Workflow blocked: ${updated.title} — ${reason}`);
+    err.name = 'WorkflowBlocked';
+    Sentry.captureException(err, {
+      tags: {
+        component: 'WorkflowManager',
+        workflow_id: updated.id,
+      },
+      extra: {
+        title: updated.title,
+        blocked_reason: reason,
+        phase: updated.current_phase,
+        cycle: updated.current_cycle,
+        max_cycles: updated.max_cycles,
+        milestones: `${updated.milestones_done}/${updated.milestones_total}`,
+        implementer_model: updated.implementer_model,
+        reviewer_model: updated.reviewer_model,
+        worktree_branch: updated.worktree_branch ?? 'none',
+      },
+    });
     try { writeBlockedDiagnostic(updated); } catch { /* best effort */ }
   }
 }
