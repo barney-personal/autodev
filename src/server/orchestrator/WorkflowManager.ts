@@ -70,13 +70,22 @@ function _onJobCompleted(job: Job): void {
       }
       const fallbackModel = getWorkflowFallbackModel(workflow, job.workflow_phase as WorkflowPhase, currentModel);
       if (fallbackModel && fallbackModel !== currentModel) {
-        console.log(`[workflow ${workflow.id}] phase '${job.workflow_phase}' failed on ${currentModel} (${failureKind}) → retrying with ${fallbackModel}`);
         const phase = job.workflow_phase as WorkflowPhase;
         const cycle = job.workflow_cycle ?? workflow.current_cycle;
-        spawnPhaseJob(workflow, phase, cycle, fallbackModel);
-        return;
+        const recoveryKey = `workflow/${workflow.id}/recovery/${phase}/cycle-${cycle}/model-fallback`;
+        if (queries.getNote(recoveryKey)) {
+          console.log(`[workflow ${workflow.id}] phase '${phase}' model-fallback already spawned (idempotency key exists) — skipping duplicate`);
+          // Fall through to block — recovery already in progress
+        } else {
+          queries.upsertNote(recoveryKey, `fallback=${fallbackModel},from=${currentModel},failure=${failureKind}`, null);
+          console.log(`[workflow ${workflow.id}] phase '${job.workflow_phase}' failed on ${currentModel} (${failureKind}) → retrying with ${fallbackModel}`);
+          spawnPhaseJob(workflow, phase, cycle, fallbackModel);
+          return;
+        }
       }
-      const noFallbackReason = `Phase '${job.workflow_phase}' failed on ${currentModel} (${failureKind}) — no fallback model available`;
+      const noFallbackReason = queries.getNote(`workflow/${workflow.id}/recovery/${job.workflow_phase as string}/cycle-${job.workflow_cycle ?? workflow.current_cycle}/model-fallback`)
+        ? `Phase '${job.workflow_phase}' model-fallback recovery already spawned — duplicate completion skipped`
+        : `Phase '${job.workflow_phase}' failed on ${currentModel} (${failureKind}) — no fallback model available`;
       console.log(`[workflow ${workflow.id}] ${noFallbackReason}`);
       updateAndEmit(workflow.id, { status: 'blocked', current_phase: job.workflow_phase ?? 'idle', blocked_reason: noFallbackReason });
       return;
@@ -89,18 +98,30 @@ function _onJobCompleted(job: Job): void {
       const attempts = parseInt(queries.getNote(attemptsKey)?.value ?? '0', 10);
       const MAX_CLI_RETRIES = 3;
       if (attempts < MAX_CLI_RETRIES) {
-        queries.upsertNote(attemptsKey, String(attempts + 1), null);
-        console.log(`[workflow ${workflow.id}] phase '${phase}' hit ${failureKind} on ${currentModel} — same-model retry ${attempts + 1}/${MAX_CLI_RETRIES}`);
-        spawnPhaseJob(workflow, phase, cycle);
-        return;
+        const cliRetryKey = `workflow/${workflow.id}/recovery/${phase}/cycle-${cycle}/cli-retry-${attempts + 1}`;
+        if (queries.getNote(cliRetryKey)) {
+          console.log(`[workflow ${workflow.id}] phase '${phase}' cli-retry-${attempts + 1} already spawned (idempotency key exists) — skipping`);
+        } else {
+          queries.upsertNote(attemptsKey, String(attempts + 1), null);
+          queries.upsertNote(cliRetryKey, `model=${currentModel},failure=${failureKind},attempt=${attempts + 1}`, null);
+          console.log(`[workflow ${workflow.id}] phase '${phase}' hit ${failureKind} on ${currentModel} — same-model retry ${attempts + 1}/${MAX_CLI_RETRIES}`);
+          spawnPhaseJob(workflow, phase, cycle);
+          return;
+        }
       }
       // Same-model retries exhausted — try a different provider before blocking.
       // e.g. Codex keeps crashing → fall back to Claude for the review phase.
       const altModel = getAlternateProviderModel(currentModel);
       if (altModel) {
-        console.log(`[workflow ${workflow.id}] phase '${phase}' exhausted ${MAX_CLI_RETRIES} retries on ${currentModel} (${failureKind}) → switching provider to ${altModel}`);
-        spawnPhaseJob(workflow, phase, cycle, altModel);
-        return;
+        const altProviderKey = `workflow/${workflow.id}/recovery/${phase}/cycle-${cycle}/alt-provider`;
+        if (queries.getNote(altProviderKey)) {
+          console.log(`[workflow ${workflow.id}] phase '${phase}' alt-provider already spawned (idempotency key exists) — skipping`);
+        } else {
+          queries.upsertNote(altProviderKey, `alt=${altModel},from=${currentModel},failure=${failureKind}`, null);
+          console.log(`[workflow ${workflow.id}] phase '${phase}' exhausted ${MAX_CLI_RETRIES} retries on ${currentModel} (${failureKind}) → switching provider to ${altModel}`);
+          spawnPhaseJob(workflow, phase, cycle, altModel);
+          return;
+        }
       }
       console.log(`[workflow ${workflow.id}] phase '${phase}' hit ${failureKind} on ${currentModel} — exhausted ${MAX_CLI_RETRIES} retries, no alternate provider available`);
     }
