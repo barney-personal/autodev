@@ -368,7 +368,8 @@ export function parseMilestones(planText: string): { total: number; done: number
 /**
  * Attempt to recover a plan from the assess agent's text output.
  * Scans assistant text blocks for a "# Plan" header followed by at least one
- * unchecked milestone (`- [ ]`). If found, writes it as the plan note.
+ * unchecked milestone (`- [ ]`). If multiple valid plans are found across
+ * messages, uses the last one (most refined), breaking ties by milestone count.
  * Returns true if a valid plan was recovered.
  */
 export function recoverPlanFromAgentOutput(job: Job, workflowId: string): boolean {
@@ -376,10 +377,14 @@ export function recoverPlanFromAgentOutput(job: Job, workflowId: string): boolea
     const agents = queries.getAgentsWithJobByJobId(job.id);
     if (agents.length === 0) return false;
 
-    // Check each agent (most recent first — getAgentsWithJobByJobId orders DESC)
+    // Collect all valid plan candidates — agents commonly refine their plan
+    // across multiple messages, so the last valid fragment is most likely the
+    // complete final version.
+    let bestPlan: string | null = null;
+    let bestMilestones = 0;
+
     for (const agent of agents) {
       const output = queries.getAgentOutput(agent.id);
-      // Collect all assistant text blocks
       for (const row of output) {
         if (row.event_type !== 'assistant') continue;
         try {
@@ -389,12 +394,21 @@ export function recoverPlanFromAgentOutput(job: Job, workflowId: string): boolea
             if (block.type !== 'text' || typeof block.text !== 'string') continue;
             const plan = extractPlanFromText(block.text);
             if (plan) {
-              queries.upsertNote(`workflow/${workflowId}/plan`, plan, null);
-              return true;
+              const { total } = parseMilestones(plan);
+              // Prefer the last plan seen; break ties by milestone count
+              if (bestPlan === null || total >= bestMilestones) {
+                bestPlan = plan;
+                bestMilestones = total;
+              }
             }
           }
         } catch { /* skip malformed */ }
       }
+    }
+
+    if (bestPlan) {
+      queries.upsertNote(`workflow/${workflowId}/plan`, bestPlan, null);
+      return true;
     }
   } catch (err) {
     console.warn(`[workflow ${workflowId}] failed to recover plan from agent output:`, err);

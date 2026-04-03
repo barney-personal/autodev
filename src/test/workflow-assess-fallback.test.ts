@@ -37,6 +37,11 @@ vi.mock('child_process', () => ({
   }),
 }));
 
+vi.mock('../server/instrument.js', () => ({
+  captureWithContext: vi.fn(),
+  Sentry: { captureException: vi.fn() },
+}));
+
 vi.mock('../server/socket/SocketManager.js', () => createSocketMock());
 
 vi.mock('../server/orchestrator/WorkflowPrompts.js', () => ({
@@ -177,6 +182,61 @@ describe('WorkflowManager: assess output fallback (M7/4C)', () => {
     const jobs = getJobsForWorkflow(workflow.id);
     const repairJob = jobs.find(j => j.title?.includes('repair'));
     expect(repairJob).toBeDefined();
+  });
+
+  it('recovers the last (most refined) plan when multiple fragments exist', async () => {
+    const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    const { upsertNote, getWorkflowById, getNote, insertAgent, insertAgentOutput } = await import('../server/db/queries.js');
+
+    const project = await insertTestProject();
+    const workflow = await insertTestWorkflow({
+      project_id: project.id,
+      status: 'running',
+      current_phase: 'assess',
+      current_cycle: 0,
+    });
+
+    upsertNote(`workflow/${workflow.id}/contract`, 'test contract', null);
+
+    const job = await insertTestJob({
+      workflow_id: workflow.id,
+      workflow_cycle: 0,
+      workflow_phase: 'assess',
+      status: 'done',
+    });
+
+    const agent = insertAgent({ id: `agent-${job.id}`, job_id: job.id, status: 'done' });
+
+    // First message: early draft with 2 milestones
+    const earlyPlan = '# Plan\n\n- [ ] M1: First thing\n- [ ] M2: Second thing';
+    insertAgentOutput({
+      agent_id: agent.id,
+      seq: 1,
+      event_type: 'assistant',
+      content: makeAssistantEvent(earlyPlan),
+      created_at: Date.now(),
+    });
+
+    // Second message: refined plan with 4 milestones (the final version)
+    const refinedPlan = '# Plan\n\n- [ ] M1: First thing\n- [ ] M2: Second thing\n- [ ] M3: Third thing\n- [ ] M4: Fourth thing';
+    insertAgentOutput({
+      agent_id: agent.id,
+      seq: 2,
+      event_type: 'assistant',
+      content: makeAssistantEvent(refinedPlan),
+      created_at: Date.now(),
+    });
+
+    onJobCompleted(job);
+
+    // Should recover the refined plan (4 milestones), not the early draft (2)
+    const planNote = getNote(`workflow/${workflow.id}/plan`);
+    expect(planNote?.value).toContain('- [ ] M3');
+    expect(planNote?.value).toContain('- [ ] M4');
+
+    const updated = getWorkflowById(workflow.id)!;
+    expect(updated.status).not.toBe('blocked');
+    expect(updated.current_cycle).toBe(1);
   });
 
   it('falls through when plan header exists but has no milestones', async () => {
