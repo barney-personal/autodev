@@ -2,13 +2,44 @@ import { randomUUID } from 'crypto';
 import { getDb } from './database.js';
 import { notifyJobTerminal } from '../orchestrator/JobCompletionNotifier.js';
 import { validateTransition } from '../orchestrator/StateTransitions.js';
-import type { Job, Agent, AgentWithJob, ChildAgentSummary, Question, FileLock, AgentOutput, AgentOutputSegment, Template, Note, Project, BatchTemplate, Debate, DebateStatus, DebateRole, RetryPolicy, JobStatus, AgentStatus, SearchResult, AgentWarning, Worktree, Nudge, KBEntry, Review, TemplateModelStat, ReviewStatus, Discussion, DiscussionMessage, DiscussionStatus, DiscussionCategory, DiscussionPriority, Proposal, ProposalMessage, ProposalStatus, ProposalCategory, ProposalComplexity, Workflow, WorkflowStatus, WorkflowPhase, StopMode } from '../../shared/types.js';
+import type { Job, Agent, AgentWithJob, ChildAgentSummary, Question, FileLock, AgentOutput, AgentOutputSegment, Template, Note, Project, BatchTemplate, Debate, DebateStatus, DebateRole, RetryPolicy, JobStatus, AgentStatus, SearchResult, AgentWarning, Worktree, Nudge, KBEntry, Review, TemplateModelStat, ReviewStatus, Discussion, DiscussionMessage, DiscussionStatus, DiscussionCategory, DiscussionPriority, Proposal, ProposalMessage, ProposalStatus, ProposalCategory, ProposalComplexity, Workflow, WorkflowStatus, WorkflowPhase, StopMode, PrReview, PrReviewMessage } from '../../shared/types.js';
+
+// A raw database row before casting to a typed interface.
+type DbRow = Record<string, unknown>;
 
 // node:sqlite returns null-prototype objects; shallow-copy to a regular object.
 // SQLite rows are always flat scalars so a shallow copy is sufficient and far
 // cheaper than the JSON round-trip previously used here.
-function cast<T>(val: any): T {
+function cast<T>(val: unknown): T {
   return Object.assign({}, val) as T;
+}
+
+// ─── Event rendering types ───────────────────────────────────────────────────
+
+interface ClaudeContentBlock { type: string; text?: string; name?: string; input?: unknown }
+
+interface ClaudeStreamEvent {
+  type: string;
+  subtype?: string;
+  model?: string;
+  message?: { content?: ClaudeContentBlock[] };
+  result?: string;
+  is_error?: boolean;
+  error?: { message?: string };
+}
+
+interface CodexStreamEvent {
+  type: string;
+  thread_id?: string;
+  item?: {
+    type: string;
+    text?: string;
+    command?: string;
+    aggregated_output?: string;
+    exit_code?: number;
+  };
+  message?: string;
+  error?: { message?: string };
 }
 
 // ─── Jobs ─────────────────────────────────────────────────────────────────────
@@ -107,7 +138,7 @@ export function listJobs(status?: JobStatus): Job[] {
   } else {
     rows = db.prepare('SELECT * FROM jobs WHERE archived_at IS NULL ORDER BY priority DESC, created_at ASC').all();
   }
-  return rows.map((r: any) => cast<Job>(r));
+  return rows.map(r => cast<Job>(r));
 }
 
 /** Slim version for snapshot — truncates description to keep payload small. */
@@ -134,7 +165,7 @@ export function listArchivedJobs(limit?: number, offset?: number): Job[] {
     }
   }
   const rows = db.prepare(sql).all(...args);
-  return rows.map((r: any) => cast<Job>(r));
+  return rows.map(r => cast<Job>(r));
 }
 
 export function listArchivedJobsSlim(limit?: number, offset?: number): Job[] {
@@ -182,7 +213,7 @@ export function listEyeJobs(): Job[] {
     ORDER BY created_at DESC
     LIMIT 200
   `).all();
-  return rows.map((r: any) => cast<Job>(r));
+  return rows.map(r => cast<Job>(r));
 }
 
 /**
@@ -215,7 +246,7 @@ export function getEyeAgentsSlim(): AgentWithJob[] {
     ORDER BY a.started_at DESC
     LIMIT 100
   `).all();
-  return rows.map((r: any) => {
+  return rows.map((r: DbRow) => {
     const agent: Agent = {
       id: r.id, job_id: r.job_id, status: r.status, pid: r.pid, session_id: r.session_id,
       exit_code: r.exit_code, error_message: r.error_message, status_message: r.status_message,
@@ -318,7 +349,7 @@ export function getNextQueuedJob(): Job | null {
 export function getJobsByPreDebateId(debateId: string): Job[] {
   const db = getDb();
   const rows = db.prepare('SELECT * FROM jobs WHERE pre_debate_id = ?').all(debateId);
-  return rows.map((r: any) => cast<Job>(r));
+  return rows.map(r => cast<Job>(r));
 }
 
 export function updateJobDescription(id: string, description: string): void {
@@ -365,7 +396,7 @@ export function getJobsWithFailedDeps(): Job[] {
     WHERE j.status = 'queued'
       AND d.status IN ('failed', 'cancelled')
   `).all();
-  return rows.map((r: any) => cast<Job>(r));
+  return rows.map(r => cast<Job>(r));
 }
 
 export function getFailedDepsForJob(jobId: string): Array<{ id: string; title: string; status: string }> {
@@ -377,7 +408,7 @@ export function getFailedDepsForJob(jobId: string): Array<{ id: string; title: s
     JOIN jobs d ON d.id = dep.value
     WHERE d.status IN ('failed', 'cancelled')
   `).all(job.depends_on);
-  return rows.map((r: any) => cast<{ id: string; title: string; status: string }>(r));
+  return rows.map(r => cast<{ id: string; title: string; status: string }>(r));
 }
 
 // ─── Agents ───────────────────────────────────────────────────────────────────
@@ -416,7 +447,7 @@ export function listAgents(status?: AgentStatus): Agent[] {
   } else {
     rows = db.prepare('SELECT * FROM agents ORDER BY started_at DESC').all();
   }
-  return rows.map((r: any) => cast<Agent>(r));
+  return rows.map(r => cast<Agent>(r));
 }
 
 export function updateAgent(id: string, fields: Partial<Pick<Agent, 'status' | 'pid' | 'session_id' | 'exit_code' | 'error_message' | 'status_message' | 'output_read' | 'base_sha' | 'diff' | 'cost_usd' | 'duration_ms' | 'num_turns' | 'estimated_input_tokens' | 'estimated_output_tokens' | 'finished_at' | 'pending_wait_ids'>>): void {
@@ -461,7 +492,7 @@ export function listBatchAgents(status?: AgentStatus): Agent[] {
       ORDER BY a.started_at DESC
     `).all();
   }
-  return (rows as unknown[]).map((r: any) => cast<Agent>(r));
+  return (rows as unknown[]).map(r => cast<Agent>(r));
 }
 
 export function listRunningInteractiveAgents(): Agent[] {
@@ -472,7 +503,7 @@ export function listRunningInteractiveAgents(): Agent[] {
     WHERE j.is_interactive = 1
       AND a.status IN ('starting', 'running', 'waiting_user')
   `).all();
-  return (rows as unknown[]).map((r: any) => cast<Agent>(r));
+  return (rows as unknown[]).map(r => cast<Agent>(r));
 }
 
 /** All running agents regardless of is_interactive flag — used by unified watchdog/recovery. */
@@ -482,13 +513,13 @@ export function listAllRunningAgents(): Agent[] {
     SELECT * FROM agents
     WHERE status IN ('starting', 'running', 'waiting_user')
   `).all();
-  return (rows as unknown[]).map((r: any) => cast<Agent>(r));
+  return (rows as unknown[]).map(r => cast<Agent>(r));
 }
 
 export function getAgentsWithJob(): AgentWithJob[] {
   const db = getDb();
   const rows = db.prepare('SELECT * FROM agents ORDER BY started_at DESC').all();
-  return rows.map((r: any) => enrichAgent(cast<Agent>(r)));
+  return rows.map(r => enrichAgent(cast<Agent>(r)));
 }
 
 /**
@@ -504,7 +535,7 @@ export function getAgentsWithJobForSnapshot(): AgentWithJob[] {
     WHERE a.status IN ('starting', 'running', 'waiting_user')
       AND j.archived_at IS NULL
   `).all();
-  const activeIds = new Set(activeRows.map((r: any) => r.id));
+  const activeIds = new Set(activeRows.map((r: DbRow) => r.id as string));
 
   // Most recent finished agents (capped) — fills the grid
   const recentRows = db.prepare(`
@@ -517,7 +548,7 @@ export function getAgentsWithJobForSnapshot(): AgentWithJob[] {
   `).all();
 
   // Merge and dedup
-  const allRows = [...activeRows, ...recentRows.filter((r: any) => !activeIds.has(r.id))];
+  const allRows = [...activeRows, ...recentRows.filter((r: DbRow) => !activeIds.has(r.id as string))];
   const agents = allRows.map(r => cast<Agent>(r));
   if (agents.length === 0) return [];
 
@@ -529,7 +560,7 @@ export function getAgentsWithJobForSnapshot(): AgentWithJob[] {
 
   // Jobs — one query
   const jobRows = db.prepare(`SELECT * FROM jobs WHERE id IN (${ph(jobIds.length)})`).all(...jobIds);
-  const jobMap = new Map<string, Job>(jobRows.map((r: any) => { const j = cast<Job>(r); return [j.id, j]; }));
+  const jobMap = new Map<string, Job>(jobRows.map(r => { const j = cast<Job>(r); return [j.id, j]; }));
 
   // Pending questions — one query
   const qRows = db.prepare(`SELECT * FROM questions WHERE agent_id IN (${ph(agentIds.length)}) AND status = 'pending'`).all(...agentIds);
@@ -572,7 +603,7 @@ export function getAgentsWithJobForSnapshot(): AgentWithJob[] {
   }
 
   // Template names — one query
-  const templateIds = [...new Set(jobRows.map((r: any) => r.template_id).filter(Boolean))];
+  const templateIds = [...new Set(jobRows.map((r: DbRow) => r.template_id).filter(Boolean))];
   const templateMap = new Map<string, string>();
   if (templateIds.length > 0) {
     const tRows = db.prepare(`SELECT id, name FROM templates WHERE id IN (${ph(templateIds.length)})`).all(...templateIds) as Array<{ id: string; name: string }>;
@@ -614,9 +645,9 @@ export function getAgentsForJobIds(jobIds: string[]): AgentWithJob[] {
     ORDER BY a.started_at DESC
   `).all(...jobIds);
 
-  const latestByJob = new Map<string, any>();
-  for (const r of rows as any[]) {
-    if (!latestByJob.has(r.job_id)) latestByJob.set(r.job_id, r);
+  const latestByJob = new Map<string, DbRow>();
+  for (const r of rows as DbRow[]) {
+    if (!latestByJob.has(r.job_id as string)) latestByJob.set(r.job_id as string, r);
   }
 
   const agents = [...latestByJob.values()].map(r => cast<Agent>(r));
@@ -625,9 +656,9 @@ export function getAgentsForJobIds(jobIds: string[]): AgentWithJob[] {
   // Enrich with job data (same pattern as getAgentsWithJobForSnapshot)
   const agentJobIds = [...new Set(agents.map(a => a.job_id))];
   const jobRows = db.prepare(`SELECT * FROM jobs WHERE id IN (${ph(agentJobIds.length)})`).all(...agentJobIds);
-  const jobMap = new Map<string, Job>(jobRows.map((r: any) => { const j = cast<Job>(r); return [j.id, j]; }));
+  const jobMap = new Map<string, Job>(jobRows.map(r => { const j = cast<Job>(r); return [j.id, j]; }));
 
-  const templateIds = [...new Set(jobRows.map((r: any) => r.template_id).filter(Boolean))];
+  const templateIds = [...new Set(jobRows.map((r: DbRow) => r.template_id).filter(Boolean))];
   const templateMap = new Map<string, string>();
   if (templateIds.length > 0) {
     const tRows = db.prepare(`SELECT id, name FROM templates WHERE id IN (${ph(templateIds.length)})`).all(...templateIds) as Array<{ id: string; name: string }>;
@@ -653,7 +684,7 @@ export function getAgentsForJobIds(jobIds: string[]): AgentWithJob[] {
 export function getAgentsWithJobByJobId(jobId: string): AgentWithJob[] {
   const db = getDb();
   const rows = db.prepare('SELECT * FROM agents WHERE job_id = ? ORDER BY started_at DESC').all(jobId);
-  return (rows as unknown[]).map((r: any) => enrichAgent(cast<Agent>(r)));
+  return (rows as unknown[]).map(r => enrichAgent(cast<Agent>(r)));
 }
 
 export function getAgentWithJob(id: string): AgentWithJob | null {
@@ -671,7 +702,7 @@ function getChildAgentSummaries(agentId: string): ChildAgentSummary[] {
     WHERE a.parent_agent_id = ?
     ORDER BY a.started_at ASC
   `).all(agentId);
-  return rows.map((r: any) => cast<ChildAgentSummary>(r));
+  return rows.map(r => cast<ChildAgentSummary>(r));
 }
 
 function enrichAgent(agent: Agent): AgentWithJob {
@@ -690,12 +721,12 @@ function enrichAgent(agent: Agent): AgentWithJob {
   const lockRows = db.prepare(`
     SELECT * FROM file_locks WHERE agent_id = ? AND released_at IS NULL
   `).all(agent.id);
-  const active_locks = lockRows.map((r: any) => cast<FileLock>(r));
+  const active_locks = lockRows.map(r => cast<FileLock>(r));
   const child_agents = getChildAgentSummaries(agent.id);
   const warningRows = db.prepare(`
     SELECT * FROM agent_warnings WHERE agent_id = ? AND dismissed = 0 ORDER BY created_at DESC
   `).all(agent.id);
-  const warnings = warningRows.map((r: any) => cast<AgentWarning>(r));
+  const warnings = warningRows.map(r => cast<AgentWarning>(r));
   let template_name: string | null = null;
   if (job.template_id) {
     const tRow = db.prepare('SELECT name FROM templates WHERE id = ?').get(job.template_id) as { name: string } | undefined;
@@ -711,7 +742,7 @@ function extractSearchText(content: string): string {
     const ev = JSON.parse(content);
     // Claude events
     if (ev.type === 'assistant' && ev.message?.content) {
-      return (ev.message.content as any[])
+      return (ev.message.content as ClaudeContentBlock[])
         .filter(b => b.type === 'text')
         .map(b => b.text ?? '')
         .join(' ');
@@ -784,14 +815,14 @@ export function searchOutputs(query: string, limit = 50): SearchResult[] {
     LIMIT ?
   `;
   try {
-    const rows = db.prepare(sql).all(query, limit) as any[];
-    return rows.map((r: any) => cast<SearchResult>({ ...r }));
+    const rows = db.prepare(sql).all(query, limit);
+    return rows.map(r => cast<SearchResult>({ ...r as DbRow }));
   } catch {
     // Invalid FTS query — try as quoted phrase
     try {
       const escaped = `"${query.replace(/"/g, '""')}"`;
-      const rows = db.prepare(sql).all(escaped, limit) as any[];
-      return rows.map((r: any) => cast<SearchResult>({ ...r }));
+      const rows = db.prepare(sql).all(escaped, limit);
+      return rows.map(r => cast<SearchResult>({ ...r as DbRow }));
     } catch { return []; }
   }
 }
@@ -803,10 +834,10 @@ export function getAgentOutput(agentId: string, tail?: number): AgentOutput[] {
     const rows = db.prepare(
       'SELECT * FROM (SELECT * FROM agent_output WHERE agent_id = ? ORDER BY seq DESC LIMIT ?) ORDER BY seq ASC'
     ).all(agentId, tail);
-    return rows.map((r: any) => cast<AgentOutput>(r));
+    return rows.map(r => cast<AgentOutput>(r));
   }
   const rows = db.prepare('SELECT * FROM agent_output WHERE agent_id = ? ORDER BY seq ASC').all(agentId);
-  return rows.map((r: any) => cast<AgentOutput>(r));
+  return rows.map(r => cast<AgentOutput>(r));
 }
 
 export function getLatestAgentOutput(agentId: string): AgentOutput | null {
@@ -943,7 +974,7 @@ function renderEventServer(content: string): string {
   }
 }
 
-function renderClaudeEventServer(ev: any): string {
+function renderClaudeEventServer(ev: ClaudeStreamEvent): string {
   switch (ev.type) {
     case 'system': {
       const modelInfo = ev.model ? ` | ${ev.model}` : '';
@@ -978,7 +1009,7 @@ function renderClaudeEventServer(ev: any): string {
   }
 }
 
-function renderCodexEventServer(ev: any): string {
+function renderCodexEventServer(ev: CodexStreamEvent): string {
   switch (ev.type) {
     case 'thread.started':
       return `\x1b[36m[codex thread ${ev.thread_id ?? ''}]\x1b[0m\r\n`;
@@ -1154,7 +1185,7 @@ export function getActiveLocksForFile(filePath: string): FileLock[] {
   const rows = db.prepare(`
     SELECT * FROM file_locks WHERE file_path = ? AND released_at IS NULL AND expires_at > ?
   `).all(filePath, now);
-  return rows.map((r: any) => cast<FileLock>(r));
+  return rows.map(r => cast<FileLock>(r));
 }
 
 export function getActiveLocksForAgent(agentId: string): FileLock[] {
@@ -1163,7 +1194,7 @@ export function getActiveLocksForAgent(agentId: string): FileLock[] {
   const rows = db.prepare(`
     SELECT * FROM file_locks WHERE agent_id = ? AND released_at IS NULL AND expires_at > ?
   `).all(agentId, now);
-  return rows.map((r: any) => cast<FileLock>(r));
+  return rows.map(r => cast<FileLock>(r));
 }
 
 export function getAllActiveLocks(): FileLock[] {
@@ -1172,7 +1203,7 @@ export function getAllActiveLocks(): FileLock[] {
   const rows = db.prepare(`
     SELECT * FROM file_locks WHERE released_at IS NULL AND expires_at > ?
   `).all(now);
-  return rows.map((r: any) => cast<FileLock>(r));
+  return rows.map(r => cast<FileLock>(r));
 }
 
 export function releaseLock(id: string): void {
@@ -1197,7 +1228,7 @@ export function getActiveLocksForTerminalAgents(): FileLock[] {
       AND fl.expires_at > ?
       AND a.status IN ('done', 'failed', 'cancelled')
   `).all(now);
-  return rows.map((r: any) => cast<FileLock>(r));
+  return rows.map(r => cast<FileLock>(r));
 }
 
 // Returns unreleased locks whose TTL has expired. These are stale rows that
@@ -1209,7 +1240,7 @@ export function getExpiredUnreleasedLocks(): FileLock[] {
   const rows = db.prepare(`
     SELECT * FROM file_locks WHERE released_at IS NULL AND expires_at <= ?
   `).all(now);
-  return rows.map((r: any) => cast<FileLock>(r));
+  return rows.map(r => cast<FileLock>(r));
 }
 
 // Returns all unreleased locks for an agent regardless of TTL expiry.
@@ -1219,7 +1250,7 @@ export function getAllUnreleasedLocksForAgent(agentId: string): FileLock[] {
   const rows = db.prepare(
     'SELECT * FROM file_locks WHERE agent_id = ? AND released_at IS NULL'
   ).all(agentId);
-  return rows.map((r: any) => cast<FileLock>(r));
+  return rows.map(r => cast<FileLock>(r));
 }
 
 export function getActiveLocksForFiles(filePaths: string[]): FileLock[] {
@@ -1230,7 +1261,7 @@ export function getActiveLocksForFiles(filePaths: string[]): FileLock[] {
   const rows = db.prepare(`
     SELECT * FROM file_locks WHERE file_path IN (${placeholders}) AND released_at IS NULL AND expires_at > ?
   `).all(...filePaths, now);
-  return rows.map((r: any) => cast<FileLock>(r));
+  return rows.map(r => cast<FileLock>(r));
 }
 
 // Returns all active checkout:: locks. Used to find checkout locks that might
@@ -1242,7 +1273,7 @@ export function getAllActiveCheckoutLocks(): FileLock[] {
     SELECT * FROM file_locks
     WHERE file_path LIKE 'checkout::%' AND released_at IS NULL AND expires_at > ?
   `).all(now);
-  return rows.map((r: any) => cast<FileLock>(r));
+  return rows.map(r => cast<FileLock>(r));
 }
 
 // Returns all active non-checkout file locks whose path starts with dirPath + '/'.
@@ -1255,7 +1286,7 @@ export function getActiveFileLocksUnderPath(dirPath: string): FileLock[] {
     WHERE file_path LIKE ? AND file_path NOT LIKE 'checkout::%'
       AND released_at IS NULL AND expires_at > ?
   `).all(dirPath + '/%', now);
-  return rows.map((r: any) => cast<FileLock>(r));
+  return rows.map(r => cast<FileLock>(r));
 }
 
 // ─── Templates ────────────────────────────────────────────────────────────────
@@ -1278,7 +1309,7 @@ export function getTemplateById(id: string): Template | null {
 export function listTemplates(): Template[] {
   const db = getDb();
   const rows = db.prepare('SELECT * FROM templates ORDER BY name ASC').all();
-  return rows.map((r: any) => cast<Template>(r));
+  return rows.map(r => cast<Template>(r));
 }
 
 export function updateTemplate(id: string, fields: Partial<Pick<Template, 'name' | 'content' | 'work_dir' | 'model'>>): Template | null {
@@ -1326,7 +1357,7 @@ export function listNotes(prefix?: string): Note[] {
   } else {
     rows = db.prepare('SELECT * FROM notes ORDER BY key ASC').all();
   }
-  return rows.map((r: any) => cast<Note>(r));
+  return rows.map(r => cast<Note>(r));
 }
 
 export function deleteNote(key: string): void {
@@ -1375,7 +1406,7 @@ export function getProjectById(id: string): Project | null {
 export function listProjects(): Project[] {
   const db = getDb();
   const rows = db.prepare('SELECT * FROM projects ORDER BY name ASC').all();
-  return rows.map((r: any) => cast<Project>(r));
+  return rows.map(r => cast<Project>(r));
 }
 
 export function updateProject(id: string, fields: Partial<Pick<Project, 'name' | 'description'>>): Project | null {
@@ -1435,7 +1466,7 @@ export function getBatchTemplateById(id: string): BatchTemplate | null {
 export function listBatchTemplates(): BatchTemplate[] {
   const db = getDb();
   const rows = db.prepare('SELECT * FROM batch_templates ORDER BY name ASC').all();
-  return rows.map((r: any) => rowToBatchTemplate(cast<BatchTemplateRow>(r)));
+  return rows.map(r => rowToBatchTemplate(cast<BatchTemplateRow>(r)));
 }
 
 export function updateBatchTemplate(id: string, fields: Partial<Pick<BatchTemplate, 'name' | 'items'>>): BatchTemplate | null {
@@ -1490,7 +1521,7 @@ export function getDebateById(id: string): Debate | null {
 export function listDebates(): Debate[] {
   const db = getDb();
   const rows = db.prepare('SELECT * FROM debates ORDER BY created_at DESC').all();
-  return rows.map((r: any) => cast<Debate>(r));
+  return rows.map(r => cast<Debate>(r));
 }
 
 export function updateDebate(id: string, fields: Partial<Pick<Debate, 'current_round' | 'status' | 'consensus' | 'post_action_job_id' | 'verification_review_job_id' | 'verification_response_job_id' | 'verification_round' | 'current_loop'>>): Debate | null {
@@ -1513,13 +1544,13 @@ export function updateDebate(id: string, fields: Partial<Pick<Debate, 'current_r
 export function getJobsForDebate(debateId: string): Job[] {
   const db = getDb();
   const rows = db.prepare('SELECT * FROM jobs WHERE debate_id = ? ORDER BY debate_loop ASC, debate_round ASC, created_at ASC').all(debateId);
-  return rows.map((r: any) => cast<Job>(r));
+  return rows.map(r => cast<Job>(r));
 }
 
 export function getJobsForDebateRound(debateId: string, loop: number, round: number): Job[] {
   const db = getDb();
   const rows = db.prepare('SELECT * FROM jobs WHERE debate_id = ? AND debate_loop = ? AND debate_round = ?').all(debateId, loop, round);
-  return rows.map((r: any) => cast<Job>(r));
+  return rows.map(r => cast<Job>(r));
 }
 
 // ─── Agent result text ────────────────────────────────────────────────────────
@@ -1561,13 +1592,13 @@ export function insertWarning(warning: { id: string; agent_id: string; type: str
 export function getActiveWarningsForAgent(agentId: string): AgentWarning[] {
   const db = getDb();
   const rows = db.prepare('SELECT * FROM agent_warnings WHERE agent_id = ? AND dismissed = 0 ORDER BY created_at DESC').all(agentId);
-  return rows.map((r: any) => cast<AgentWarning>(r));
+  return rows.map(r => cast<AgentWarning>(r));
 }
 
 export function getAllActiveWarnings(): AgentWarning[] {
   const db = getDb();
   const rows = db.prepare('SELECT * FROM agent_warnings WHERE dismissed = 0 ORDER BY created_at DESC').all();
-  return rows.map((r: any) => cast<AgentWarning>(r));
+  return rows.map(r => cast<AgentWarning>(r));
 }
 
 export function dismissWarningsForAgent(agentId: string): void {
@@ -1601,7 +1632,7 @@ export function insertWorktree(wt: { id: string; agent_id: string; job_id: strin
 export function listActiveWorktrees(): Worktree[] {
   const db = getDb();
   const rows = db.prepare('SELECT * FROM worktrees WHERE cleaned_at IS NULL ORDER BY created_at DESC').all();
-  return rows.map((r: any) => cast<Worktree>(r));
+  return rows.map(r => cast<Worktree>(r));
 }
 
 export function markWorktreeCleaned(id: string): void {
@@ -1611,8 +1642,8 @@ export function markWorktreeCleaned(id: string): void {
 
 export function getWorktreeStats(): { active: number; cleaned: number } {
   const db = getDb();
-  const active = (db.prepare('SELECT COUNT(*) as c FROM worktrees WHERE cleaned_at IS NULL').get() as any).c;
-  const cleaned = (db.prepare('SELECT COUNT(*) as c FROM worktrees WHERE cleaned_at IS NOT NULL').get() as any).c;
+  const active = (db.prepare('SELECT COUNT(*) as c FROM worktrees WHERE cleaned_at IS NULL').get() as { c: number } | undefined)?.c ?? 0;
+  const cleaned = (db.prepare('SELECT COUNT(*) as c FROM worktrees WHERE cleaned_at IS NOT NULL').get() as { c: number } | undefined)?.c ?? 0;
   return { active, cleaned };
 }
 
@@ -1631,7 +1662,7 @@ export function insertNudge(nudge: { id: string; agent_id: string; message: stri
 export function getUndeliveredNudges(agentId: string): Nudge[] {
   const db = getDb();
   const rows = db.prepare('SELECT * FROM nudges WHERE agent_id = ? AND delivered = 0 ORDER BY created_at ASC').all(agentId);
-  return rows.map((r: any) => cast<Nudge>(r));
+  return rows.map(r => cast<Nudge>(r));
 }
 
 export function markNudgeDelivered(id: string): void {
@@ -1670,7 +1701,7 @@ export function listKBEntries(projectId?: string): KBEntry[] {
   } else {
     rows = db.prepare('SELECT * FROM knowledge_base ORDER BY updated_at DESC').all();
   }
-  return rows.map((r: any) => cast<KBEntry>(r));
+  return rows.map(r => cast<KBEntry>(r));
 }
 
 export function searchKB(query: string, projectId?: string, limit = 20): Array<KBEntry & { excerpt: string }> {
@@ -1686,17 +1717,17 @@ export function searchKB(query: string, projectId?: string, limit = 20): Array<K
   `;
   try {
     const args = projectId ? [query, projectId, limit] : [query, limit];
-    const rows = db.prepare(sql).all(...args) as any[];
-    const results = rows.map((r: any) => cast<KBEntry & { excerpt: string }>(r));
-    if (results.length > 0) touchKBEntries(results.map((r: any) => r.id));
+    const rows = db.prepare(sql).all(...args);
+    const results = rows.map(r => cast<KBEntry & { excerpt: string }>(r));
+    if (results.length > 0) touchKBEntries(results.map(r => r.id));
     return results;
   } catch {
     try {
       const escaped = `"${query.replace(/"/g, '""')}"`;
       const args = projectId ? [escaped, projectId, limit] : [escaped, limit];
-      const rows = db.prepare(sql).all(...args) as any[];
-      const results = rows.map((r: any) => cast<KBEntry & { excerpt: string }>(r));
-      if (results.length > 0) touchKBEntries(results.map((r: any) => r.id));
+      const rows = db.prepare(sql).all(...args);
+      const results = rows.map(r => cast<KBEntry & { excerpt: string }>(r));
+      if (results.length > 0) touchKBEntries(results.map(r => r.id));
       return results;
     } catch { return []; }
   }
@@ -1808,9 +1839,9 @@ export function searchKBForMemory(query: string, projectId: string | null, limit
     const args = projectId
       ? [projectId, ftsQuery, projectId, limit]
       : [ftsQuery, limit];
-    const rows = db.prepare(sql).all(...args) as any[];
-    const results = rows.map((r: any) => cast<KBEntry>(r));
-    if (results.length > 0) touchKBEntries(results.map((r: any) => r.id));
+    const rows = db.prepare(sql).all(...args);
+    const results = rows.map(r => cast<KBEntry>(r));
+    if (results.length > 0) touchKBEntries(results.map(r => r.id));
     return results;
   } catch {
     // FTS syntax error — try as quoted phrase of the first keyword
@@ -1819,9 +1850,9 @@ export function searchKBForMemory(query: string, projectId: string | null, limit
       const args = projectId
         ? [projectId, escaped, projectId, limit]
         : [escaped, limit];
-      const rows = db.prepare(sql).all(...args) as any[];
-      const results = rows.map((r: any) => cast<KBEntry>(r));
-      if (results.length > 0) touchKBEntries(results.map((r: any) => r.id));
+      const rows = db.prepare(sql).all(...args);
+      const results = rows.map(r => cast<KBEntry>(r));
+      if (results.length > 0) touchKBEntries(results.map(r => r.id));
       return results;
     } catch { return []; }
   }
@@ -1849,8 +1880,8 @@ export function getMemoryForJob(projectId: string | null, jobTitle?: string, job
       ORDER BY sort_group ASC, updated_at DESC
       LIMIT ?
     `).all(projectId, projectId, limit);
-    const results = rows.map((r: any) => cast<KBEntry>(r));
-    if (results.length > 0) touchKBEntries(results.map((r: any) => r.id));
+    const results = rows.map(r => cast<KBEntry>(r));
+    if (results.length > 0) touchKBEntries(results.map(r => r.id));
     return results;
   }
   const rows = db.prepare(`
@@ -1859,8 +1890,8 @@ export function getMemoryForJob(projectId: string | null, jobTitle?: string, job
     ORDER BY updated_at DESC
     LIMIT ?
   `).all(limit);
-  const results = rows.map((r: any) => cast<KBEntry>(r));
-  if (results.length > 0) touchKBEntries(results.map((r: any) => r.id));
+  const results = rows.map(r => cast<KBEntry>(r));
+  if (results.length > 0) touchKBEntries(results.map(r => r.id));
   return results;
 }
 
@@ -1885,10 +1916,10 @@ export function getKBEntriesForProject(projectId: string | null): KBEntry[] {
   const db = getDb();
   if (projectId) {
     const rows = db.prepare('SELECT * FROM knowledge_base WHERE project_id = ? ORDER BY updated_at DESC').all(projectId);
-    return rows.map((r: any) => cast<KBEntry>(r));
+    return rows.map(r => cast<KBEntry>(r));
   }
   const rows = db.prepare('SELECT * FROM knowledge_base WHERE project_id IS NULL ORDER BY updated_at DESC').all();
-  return rows.map((r: any) => cast<KBEntry>(r));
+  return rows.map(r => cast<KBEntry>(r));
 }
 
 // ─── Reviews (Feature 3) ────────────────────────────────────────────────────
@@ -1906,7 +1937,7 @@ export function insertReview(review: { id: string; parent_job_id: string; model:
 export function getReviewsForJob(parentJobId: string): Review[] {
   const db = getDb();
   const rows = db.prepare('SELECT * FROM reviews WHERE parent_job_id = ? ORDER BY created_at ASC').all(parentJobId);
-  return rows.map((r: any) => cast<Review>(r));
+  return rows.map(r => cast<Review>(r));
 }
 
 export function updateReview(id: string, fields: Partial<Pick<Review, 'reviewer_job_id' | 'verdict' | 'summary' | 'completed_at'>>): void {
@@ -1951,7 +1982,7 @@ export function getTemplateModelStats(): TemplateModelStat[] {
     WHERE j.status IN ('done','failed') AND j.debate_id IS NULL AND j.original_job_id IS NULL AND j.review_parent_job_id IS NULL
     GROUP BY j.template_id, j.model HAVING total >= 1
   `).all();
-  return rows.map((r: any) => cast<TemplateModelStat>(r));
+  return rows.map(r => cast<TemplateModelStat>(r));
 }
 
 // ─── Budget ───────────────────────────────────────────────────────────────────
@@ -1980,7 +2011,7 @@ export function getDiscussionById(id: string): Discussion | null {
         AND (SELECT requires_reply FROM discussion_messages WHERE discussion_id = d.id ORDER BY created_at DESC LIMIT 1) = 1
       ) THEN 1 ELSE 0 END AS needs_reply
     FROM discussions d WHERE d.id = ?
-  `).get(id) as any;
+  `).get(id) as DbRow | undefined;
   if (!row) return null;
   const d = cast<Discussion>(row); d.needs_reply = !!row.needs_reply; return d;
 }
@@ -1998,11 +2029,11 @@ export function listDiscussions(status?: DiscussionStatus): Discussion[] {
     ORDER BY d.updated_at DESC
   `;
   const rows = status ? db.prepare(sql).all(status) : db.prepare(sql).all();
-  return rows.map((r: any) => { const d = cast<Discussion>(r); d.needs_reply = !!r.needs_reply; return d; });
+  return rows.map((r: DbRow) => { const d = cast<Discussion>(r); d.needs_reply = !!r.needs_reply; return d; });
 }
 
 export function updateDiscussion(id: string, updates: Partial<Pick<Discussion, 'status' | 'topic' | 'priority'>>): void {
-  const sets: string[] = ['updated_at = ?']; const vals: any[] = [Date.now()];
+  const sets: string[] = ['updated_at = ?']; const vals: (string | number | null)[] = [Date.now()];
   if (updates.status !== undefined) { sets.push('status = ?'); vals.push(updates.status); }
   if (updates.topic !== undefined) { sets.push('topic = ?'); vals.push(updates.topic); }
   if (updates.priority !== undefined) { sets.push('priority = ?'); vals.push(updates.priority); }
@@ -2015,14 +2046,14 @@ export function insertDiscussionMessage(msg: { id: string; discussion_id: string
   const requiresReply = msg.requires_reply !== false ? 1 : 0;
   db.prepare('INSERT INTO discussion_messages (id, discussion_id, role, content, requires_reply, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(msg.id, msg.discussion_id, msg.role, msg.content, requiresReply, now);
   db.prepare('UPDATE discussions SET updated_at = ? WHERE id = ?').run(now, msg.discussion_id);
-  const row = cast<any>(db.prepare('SELECT * FROM discussion_messages WHERE id = ?').get(msg.id)!);
-  row.requires_reply = !!row.requires_reply;
-  return row as DiscussionMessage;
+  const dm = cast<DiscussionMessage>(db.prepare('SELECT * FROM discussion_messages WHERE id = ?').get(msg.id)!);
+  dm.requires_reply = !!dm.requires_reply;
+  return dm;
 }
 
 export function getDiscussionMessages(discussionId: string): DiscussionMessage[] {
-  return getDb().prepare('SELECT * FROM discussion_messages WHERE discussion_id = ? ORDER BY created_at ASC').all(discussionId).map((r: any) => {
-    const m = cast<any>(r); m.requires_reply = !!m.requires_reply; return m as DiscussionMessage;
+  return getDb().prepare('SELECT * FROM discussion_messages WHERE discussion_id = ? ORDER BY created_at ASC').all(discussionId).map(r => {
+    const m = cast<DiscussionMessage>(r); m.requires_reply = !!m.requires_reply; return m;
   });
 }
 
@@ -2042,7 +2073,7 @@ export function getDiscussionsWithNewUserReplies(_agentId: string): Discussion[]
           AND dm.created_at > ?
       )
     ORDER BY d.updated_at DESC
-  `).all(cutoff).map((r: any) => cast<Discussion>(r));
+  `).all(cutoff).map(r => cast<Discussion>(r));
 }
 
 // ─── Proposals ────────────────────────────────────────────────────────────────
@@ -2066,7 +2097,7 @@ export function getProposalById(id: string): Proposal | null {
         ELSE 0
       END AS needs_reply
     FROM proposals p WHERE p.id = ?
-  `).get(id) as any;
+  `).get(id) as DbRow | undefined;
   if (!row) return null;
   const p = cast<Proposal>(row); p.needs_reply = !!row.needs_reply; return p;
 }
@@ -2085,14 +2116,14 @@ export function listProposals(status?: ProposalStatus): Proposal[] {
   `;
   if (status) {
     const rows = db.prepare(`SELECT p.*, ${needsReplySql} FROM proposals p WHERE p.status = ? ORDER BY p.confidence DESC, p.updated_at DESC`).all(status);
-    return rows.map((r: any) => { const p = cast<Proposal>(r); p.needs_reply = !!r.needs_reply; return p; });
+    return rows.map((r: DbRow) => { const p = cast<Proposal>(r); p.needs_reply = !!r.needs_reply; return p; });
   }
   const rows = db.prepare(`SELECT p.*, ${needsReplySql} FROM proposals p ORDER BY CASE p.status WHEN 'pending' THEN 0 WHEN 'discussing' THEN 1 WHEN 'approved' THEN 2 WHEN 'in_progress' THEN 3 WHEN 'failed' THEN 4 WHEN 'done' THEN 5 WHEN 'rejected' THEN 6 END, p.confidence DESC, p.updated_at DESC`).all();
-  return rows.map((r: any) => { const p = cast<Proposal>(r); p.needs_reply = !!r.needs_reply; return p; });
+  return rows.map((r: DbRow) => { const p = cast<Proposal>(r); p.needs_reply = !!r.needs_reply; return p; });
 }
 
 export function updateProposal(id: string, updates: Partial<Pick<Proposal, 'status' | 'execution_job_id' | 'title' | 'summary' | 'rationale' | 'implementation_plan'>>): void {
-  const sets: string[] = ['updated_at = ?']; const vals: any[] = [Date.now()];
+  const sets: string[] = ['updated_at = ?']; const vals: (string | number | null)[] = [Date.now()];
   if (updates.status !== undefined) { sets.push('status = ?'); vals.push(updates.status); }
   if (updates.execution_job_id !== undefined) { sets.push('execution_job_id = ?'); vals.push(updates.execution_job_id); }
   if (updates.title !== undefined) { sets.push('title = ?'); vals.push(updates.title); }
@@ -2116,11 +2147,11 @@ export function insertProposalMessage(msg: { id: string; proposal_id: string; ro
 }
 
 export function getProposalMessages(proposalId: string): ProposalMessage[] {
-  return getDb().prepare('SELECT * FROM proposal_messages WHERE proposal_id = ? ORDER BY created_at ASC').all(proposalId).map((r: any) => cast<ProposalMessage>(r));
+  return getDb().prepare('SELECT * FROM proposal_messages WHERE proposal_id = ? ORDER BY created_at ASC').all(proposalId).map(r => cast<ProposalMessage>(r));
 }
 
 export function getProposalsWithNewUserReplies(agentId: string): Proposal[] {
-  return getDb().prepare(`SELECT p.* FROM proposals p WHERE p.status IN ('pending', 'discussing') AND p.agent_id = ? AND EXISTS (SELECT 1 FROM proposal_messages pm WHERE pm.proposal_id = p.id AND pm.role = 'user' AND pm.created_at = (SELECT MAX(created_at) FROM proposal_messages WHERE proposal_id = p.id)) ORDER BY p.updated_at DESC`).all(agentId).map((r: any) => cast<Proposal>(r));
+  return getDb().prepare(`SELECT p.* FROM proposals p WHERE p.status IN ('pending', 'discussing') AND p.agent_id = ? AND EXISTS (SELECT 1 FROM proposal_messages pm WHERE pm.proposal_id = p.id AND pm.role = 'user' AND pm.created_at = (SELECT MAX(created_at) FROM proposal_messages WHERE proposal_id = p.id)) ORDER BY p.updated_at DESC`).all(agentId).map(r => cast<Proposal>(r));
 }
 
 // ─── PR Reviews ───────────────────────────────────────────────────────────────
@@ -2129,13 +2160,13 @@ export function insertPrReview(review: {
   id: string; pr_number: number; pr_url: string; pr_title: string;
   pr_author: string | null; repo: string; summary: string;
   comments: string; status?: string; github_review_id?: string | null;
-}): any {
+}): PrReview {
   const db = getDb(); const now = Date.now();
   db.prepare('INSERT INTO pr_reviews (id, pr_number, pr_url, pr_title, pr_author, repo, summary, comments, status, github_review_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(review.id, review.pr_number, review.pr_url, review.pr_title, review.pr_author, review.repo, review.summary, review.comments, review.status ?? 'draft', review.github_review_id ?? null, now, now);
   return getPrReviewById(review.id)!;
 }
 
-export function listPrReviews(): any[] {
+export function listPrReviews(): PrReview[] {
   const rows = getDb().prepare(`
     SELECT pr.*,
       CASE WHEN EXISTS (
@@ -2145,21 +2176,21 @@ export function listPrReviews(): any[] {
       ) THEN 1 ELSE 0 END AS needs_reply
     FROM pr_reviews pr WHERE pr.status != 'dismissed' ORDER BY pr.created_at DESC
   `).all();
-  return rows.map((r: any) => { const p = cast<any>(r); p.needs_reply = !!r.needs_reply; return p; });
+  return rows.map((r: DbRow) => { const p = cast<PrReview>(r); p.needs_reply = !!r.needs_reply; return p; });
 }
 
-export function getPrReviewById(id: string): any | null {
-  const row = getDb().prepare('SELECT * FROM pr_reviews WHERE id = ?').get(id) as any;
-  return row ? cast<any>(row) : null;
+export function getPrReviewById(id: string): PrReview | null {
+  const row = getDb().prepare('SELECT * FROM pr_reviews WHERE id = ?').get(id) as DbRow | undefined;
+  return row ? cast<PrReview>(row) : null;
 }
 
-export function getPrReviewByPrNumber(prNumber: number, repo: string): any | null {
-  const row = getDb().prepare('SELECT * FROM pr_reviews WHERE pr_number = ? AND repo = ? ORDER BY created_at DESC LIMIT 1').get(prNumber, repo) as any;
-  return row ? cast<any>(row) : null;
+export function getPrReviewByPrNumber(prNumber: number, repo: string): PrReview | null {
+  const row = getDb().prepare('SELECT * FROM pr_reviews WHERE pr_number = ? AND repo = ? ORDER BY created_at DESC LIMIT 1').get(prNumber, repo) as DbRow | undefined;
+  return row ? cast<PrReview>(row) : null;
 }
 
 export function updatePrReview(id: string, updates: Partial<{ summary: string; comments: string; status: string; github_review_id: string | null }>): void {
-  const sets: string[] = ['updated_at = ?']; const vals: any[] = [Date.now()];
+  const sets: string[] = ['updated_at = ?']; const vals: (string | number | null)[] = [Date.now()];
   if (updates.summary !== undefined) { sets.push('summary = ?'); vals.push(updates.summary); }
   if (updates.comments !== undefined) { sets.push('comments = ?'); vals.push(updates.comments); }
   if (updates.status !== undefined) { sets.push('status = ?'); vals.push(updates.status); }
@@ -2168,24 +2199,24 @@ export function updatePrReview(id: string, updates: Partial<{ summary: string; c
   getDb().prepare(`UPDATE pr_reviews SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
 }
 
-export function insertPrReviewMessage(msg: { id: string; review_id: string; role: 'eye' | 'user'; content: string }): any {
+export function insertPrReviewMessage(msg: { id: string; review_id: string; role: 'eye' | 'user'; content: string }): PrReviewMessage {
   const db = getDb(); const now = Date.now();
   db.prepare('INSERT INTO pr_review_messages (id, review_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)').run(msg.id, msg.review_id, msg.role, msg.content, now);
   db.prepare('UPDATE pr_reviews SET updated_at = ? WHERE id = ?').run(now, msg.review_id);
-  return cast<any>(db.prepare('SELECT * FROM pr_review_messages WHERE id = ?').get(msg.id)!);
+  return cast<PrReviewMessage>(db.prepare('SELECT * FROM pr_review_messages WHERE id = ?').get(msg.id)!);
 }
 
-export function getPrReviewMessages(reviewId: string): any[] {
-  return getDb().prepare('SELECT * FROM pr_review_messages WHERE review_id = ? ORDER BY created_at ASC').all(reviewId).map((r: any) => cast<any>(r));
+export function getPrReviewMessages(reviewId: string): PrReviewMessage[] {
+  return getDb().prepare('SELECT * FROM pr_review_messages WHERE review_id = ? ORDER BY created_at ASC').all(reviewId).map(r => cast<PrReviewMessage>(r));
 }
 
-export function getPrReviewsWithNewUserReplies(): any[] {
+export function getPrReviewsWithNewUserReplies(): PrReview[] {
   return getDb().prepare(`
     SELECT pr.* FROM pr_reviews pr WHERE pr.status = 'draft' AND EXISTS (
       SELECT 1 FROM pr_review_messages m WHERE m.review_id = pr.id AND m.role = 'user'
         AND m.created_at = (SELECT MAX(created_at) FROM pr_review_messages WHERE review_id = pr.id)
     ) ORDER BY pr.updated_at DESC
-  `).all().map((r: any) => cast<any>(r));
+  `).all().map(r => cast<PrReview>(r));
 }
 
 // ─── Workflows ────────────────────────────────────────────────────────────────
@@ -2222,7 +2253,7 @@ export function getWorkflowById(id: string): Workflow | null {
 export function listWorkflows(): Workflow[] {
   const db = getDb();
   const rows = db.prepare('SELECT * FROM workflows ORDER BY created_at DESC').all();
-  return rows.map((r: any) => cast<Workflow>(r));
+  return rows.map(r => cast<Workflow>(r));
 }
 
 export function updateWorkflow(id: string, fields: Partial<Pick<Workflow, 'current_cycle' | 'current_phase' | 'status' | 'milestones_total' | 'milestones_done' | 'worktree_path' | 'worktree_branch' | 'blocked_reason' | 'pr_url' | 'stop_mode_assess' | 'stop_value_assess' | 'stop_mode_review' | 'stop_value_review' | 'stop_mode_implement' | 'stop_value_implement'>>): Workflow | null {
@@ -2241,7 +2272,7 @@ export function updateWorkflow(id: string, fields: Partial<Pick<Workflow, 'curre
 export function getJobsForWorkflow(workflowId: string): Job[] {
   const db = getDb();
   const rows = db.prepare('SELECT * FROM jobs WHERE workflow_id = ? ORDER BY workflow_cycle ASC, created_at ASC').all(workflowId);
-  return rows.map((r: any) => cast<Job>(r));
+  return rows.map(r => cast<Job>(r));
 }
 
 /**
@@ -2379,13 +2410,13 @@ export function listResilienceEvents(opts?: { type?: string; limit?: number }): 
   const db = getDb();
   const limit = opts?.limit ?? 100;
   if (opts?.type) {
-    return (db.prepare(
+    return db.prepare(
       'SELECT * FROM resilience_events WHERE event_type = ? ORDER BY created_at DESC LIMIT ?'
-    ).all(opts.type, limit) as any[]).map(r => cast<ResilienceEvent>(r));
+    ).all(opts.type, limit).map(r => cast<ResilienceEvent>(r));
   }
-  return (db.prepare(
+  return db.prepare(
     'SELECT * FROM resilience_events ORDER BY created_at DESC LIMIT ?'
-  ).all(limit) as any[]).map(r => cast<ResilienceEvent>(r));
+  ).all(limit).map(r => cast<ResilienceEvent>(r));
 }
 
 /** Check if any non-terminal job has work_dir set to the given path. */
