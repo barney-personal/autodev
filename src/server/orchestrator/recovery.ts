@@ -12,6 +12,7 @@ import { isCodexModel, isAutoExitJob } from '../../shared/types.js';
 import { handleRetry } from './RetryManager.js';
 import { claimRecovery } from './RecoveryLedger.js';
 import { nudgeQueue } from './WorkQueueManager.js';
+import { logResilienceEvent } from './ResilienceLogger.js';
 
 function isPidAlive(pid: number): boolean {
   try {
@@ -127,6 +128,7 @@ export function runRecovery(): void {
             } catch (err) { console.error(`[recovery] handleRetry error for job ${agent.job_id}:`, err); Sentry.captureException(err); }
           }
 
+          logResilienceEvent('agent_recovered', 'agent', agent.id, { type: 'codex', outcome: finalStatus, job_id: agent.job_id });
           if (finalStatus === 'done') codexRecovered++;
           else codexFailed++;
         }
@@ -174,6 +176,7 @@ export function runRecovery(): void {
               if (freshJob) handleRetry(freshJob, agent.id);
             } catch (err) { console.error(`[recovery] handleRetry error for job ${agent.job_id}:`, err); Sentry.captureException(err); }
 
+            logResilienceEvent('agent_recovered', 'agent', agent.id, { type: 'tmux_automated', outcome: 'failed', reason: 'mcp_session_lost', job_id: agent.job_id });
             tmuxFailed++;
           } else {
             // Interactive or debate-stage: reattach and let the user/process continue.
@@ -223,6 +226,7 @@ export function runRecovery(): void {
             });
           }
 
+          logResilienceEvent('agent_recovered', 'agent', agent.id, { type: 'tmux', outcome: finalStatus, job_id: agent.job_id });
           if (finalStatus === 'done') {
             const doneJob = queries.getJobById(agent.job_id);
             if (doneJob) {
@@ -260,6 +264,14 @@ export function runRecovery(): void {
   if (tmuxRecovered > 0) console.log(`[recovery] recovered ${tmuxRecovered} completed tmux agents`);
   if (tmuxFailed > 0) console.log(`[recovery] failed ${tmuxFailed} dead tmux agents`);
 
+  const totalRecovered = codexReattached + codexRecovered + tmuxReattached + tmuxRecovered + codexFailed + tmuxFailed;
+  if (totalRecovered > 0) {
+    logResilienceEvent('startup_recovery', 'system', 'recovery', {
+      codex: { reattached: codexReattached, recovered: codexRecovered, failed: codexFailed },
+      tmux: { reattached: tmuxReattached, recovered: tmuxRecovered, failed: tmuxFailed },
+    });
+  }
+
   // Gap detector: find running workflows whose current-phase job is done but no next phase was spawned.
   // This happens when the server restarts between finish_job and onJobCompleted.
   reconcileRunningWorkflows();
@@ -272,7 +284,13 @@ export function startWorkflowGapDetector(): void {
   if (_gapDetectorTimer) return;
   // Run every 60 seconds so stuck workflows recover within a minute of getting stuck.
   _gapDetectorTimer = setInterval(() => {
-    try { reconcileRunningWorkflows(); } catch (err) { console.error('[workflow-gap] tick error:', err); Sentry.captureException(err); }
+    try {
+      reconcileRunningWorkflows();
+    } catch (err) {
+      console.error('[workflow-gap] tick error:', err);
+      logResilienceEvent('gap_detector_error', 'system', 'gap_detector', { error: String(err) });
+      Sentry.captureException(err);
+    }
   }, 60_000);
 }
 

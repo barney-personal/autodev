@@ -19,6 +19,7 @@ import localConfigRouter from './localConfig.js';
 import modelsRouter from './models.js';
 import healthRouter from './health.js';
 import eventsRouter from './events.js';
+import resilienceEventsRouter from './resilienceEvents.js';
 
 const router = Router();
 
@@ -43,5 +44,6 @@ router.use('/knowledge-base', knowledgeBaseRouter);
 router.use('/eye', eyeRouter);
 router.use('/local-config', localConfigRouter);
 router.use('/models', modelsRouter);
+router.use('/resilience-events', resilienceEventsRouter);
 
 export default router;

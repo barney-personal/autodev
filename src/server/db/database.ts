@@ -495,6 +495,19 @@ export function initDb(dbPath: string): DatabaseSync {
     db.exec('PRAGMA wal_autocheckpoint = 1000'); // checkpoint every 1000 pages (~4MB)
   } catch { /* WAL checkpoint may fail if DB is freshly created */ }
 
+  // ── Resilience Events ──────────────────────────────────────────────────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS resilience_events (
+      id          TEXT PRIMARY KEY,
+      event_type  TEXT NOT NULL,
+      entity_type TEXT NOT NULL,
+      entity_id   TEXT NOT NULL,
+      details     TEXT,
+      created_at  INTEGER NOT NULL
+    )
+  `);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_resilience_events_type_time ON resilience_events(event_type, created_at)');
+
   // ── Performance indexes ────────────────────────────────────────────────────
   db.exec('CREATE INDEX IF NOT EXISTS idx_agents_job_id ON agents(job_id)');
   db.exec("CREATE INDEX IF NOT EXISTS idx_jobs_context_eye ON jobs(status) WHERE json_extract(context, '$.eye') = 1");

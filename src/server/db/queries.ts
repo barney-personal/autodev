@@ -2343,6 +2343,44 @@ export function getWorkflowMetrics(workflowId: string): import('../../shared/typ
   };
 }
 
+// ─── Resilience Events ──────────────────────────────────────────────────────
+
+export interface ResilienceEvent {
+  id: string;
+  event_type: string;
+  entity_type: string;
+  entity_id: string;
+  details: string | null;
+  created_at: number;
+}
+
+export function insertResilienceEvent(event: {
+  id: string;
+  event_type: string;
+  entity_type: string;
+  entity_id: string;
+  details?: string | null;
+  created_at: number;
+}): void {
+  const db = getDb();
+  db.prepare(
+    'INSERT INTO resilience_events (id, event_type, entity_type, entity_id, details, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+  ).run(event.id, event.event_type, event.entity_type, event.entity_id, event.details ?? null, event.created_at);
+}
+
+export function listResilienceEvents(opts?: { type?: string; limit?: number }): ResilienceEvent[] {
+  const db = getDb();
+  const limit = opts?.limit ?? 100;
+  if (opts?.type) {
+    return (db.prepare(
+      'SELECT * FROM resilience_events WHERE event_type = ? ORDER BY created_at DESC LIMIT ?'
+    ).all(opts.type, limit) as any[]).map(r => cast<ResilienceEvent>(r));
+  }
+  return (db.prepare(
+    'SELECT * FROM resilience_events ORDER BY created_at DESC LIMIT ?'
+  ).all(limit) as any[]).map(r => cast<ResilienceEvent>(r));
+}
+
 /** Check if any non-terminal job has work_dir set to the given path. */
 export function isWorkDirInUse(dirPath: string): boolean {
   const db = getDb();
