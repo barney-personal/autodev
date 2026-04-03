@@ -12,6 +12,8 @@ export interface InlineWorkflowContext {
   recentDiff?: string;
   /** Compact `git diff --stat` from merge-base — shows files changed so far in the worktree. */
   diffSummary?: string;
+  /** Prior review feedback (fix milestones from earlier cycles) for reviewer context. */
+  reviewHistory?: string;
 }
 
 // Back-compat for older tests/imports.
@@ -312,7 +314,13 @@ ${workflow.task}
 ## Working Directory
 ${workflow.work_dir ?? '(not specified)'}
 
-${hasInline ? '' : readContextSection}${planReviewSection}${codeReviewSection}
+${hasInline ? '' : readContextSection}${planReviewSection}${codeReviewSection}${!isFirstReview && cycle > 2 && inlineContext?.reviewHistory ? `
+### Prior Review Feedback
+
+Previous reviews flagged these issues. Check whether they have been addressed:
+
+${inlineContext.reviewHistory}
+` : ''}
 ## Step ${hasInline ? 2 : 3}: Update the Plan
 
 Rewrite the plan to reflect your review:

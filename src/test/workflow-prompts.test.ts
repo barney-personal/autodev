@@ -354,3 +354,52 @@ describe('buildReviewPrompt milestone checklist integration (M11/5C)', () => {
     expect(prompt).not.toContain('### Milestone Review Checklist');
   });
 });
+
+// ─── Review history (M12/5D) ────────────────────────────────────────────────
+
+describe('buildReviewPrompt prior review feedback (M12/5D)', () => {
+  it('includes prior review feedback for cycle > 2', () => {
+    const wf = makeWorkflow();
+    const ctx: InlineContext = {
+      plan: '- [x] M1\n- [ ] **M2: Do thing**',
+      contract: 'contract',
+      worklogs: [],
+      reviewHistory: '**cycle-1:**\n- [ ] **Fix: Missing validation** — input not checked',
+    };
+    const prompt = buildReviewPrompt(wf, 3, ctx);
+    expect(prompt).toContain('### Prior Review Feedback');
+    expect(prompt).toContain('Missing validation');
+  });
+
+  it('does NOT include review history for cycle 2 (only one prior review)', () => {
+    const wf = makeWorkflow();
+    const ctx: InlineContext = {
+      plan: '- [x] M1\n- [ ] **M2: Do thing**',
+      worklogs: [],
+      reviewHistory: '**cycle-1:**\n- [ ] **Fix: Something**',
+    };
+    const prompt = buildReviewPrompt(wf, 2, ctx);
+    expect(prompt).not.toContain('### Prior Review Feedback');
+  });
+
+  it('does NOT include review history for cycle 1', () => {
+    const wf = makeWorkflow();
+    const ctx: InlineContext = {
+      plan: '- [ ] **M1: Do thing**',
+      worklogs: [],
+      reviewHistory: 'some feedback',
+    };
+    const prompt = buildReviewPrompt(wf, 1, ctx);
+    expect(prompt).not.toContain('### Prior Review Feedback');
+  });
+
+  it('omits review history section when no feedback exists', () => {
+    const wf = makeWorkflow();
+    const ctx: InlineContext = {
+      plan: '- [x] M1\n- [ ] **M2: Do thing**',
+      worklogs: [],
+    };
+    const prompt = buildReviewPrompt(wf, 3, ctx);
+    expect(prompt).not.toContain('### Prior Review Feedback');
+  });
+});

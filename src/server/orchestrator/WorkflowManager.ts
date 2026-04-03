@@ -215,6 +215,18 @@ function _onJobCompleted(job: Job): void {
           milestones_total: milestones.total,
           milestones_done: milestones.done,
         });
+        // M12/5D: Capture fix milestones added by reviewer as review feedback
+        if (planNote?.value) {
+          const fixLines = planNote.value.split('\n')
+            .filter(line => /^- \[ \] \*\*Fix/.test(line));
+          if (fixLines.length > 0) {
+            queries.upsertNote(
+              `workflow/${workflow.id}/review-feedback/cycle-${job.workflow_cycle ?? workflow.current_cycle}`,
+              fixLines.join('\n'),
+              null,
+            );
+          }
+        }
         const updated = queries.getWorkflowById(workflow.id)!;
         if (milestones.total > 0 && meetsCompletionThreshold(milestones, updated.completion_threshold)) {
           console.log(`[workflow ${workflow.id}] milestones meet completion threshold (${milestones.done}/${milestones.total}, threshold ${updated.completion_threshold}) after review — marking complete`);
@@ -679,12 +691,19 @@ export function preReadWorkflowContext(workflowId: string): InlineWorkflowContex
     } catch { /* worktree may not have commits yet — skip */ }
   }
 
+  // M12/5D: Collect prior review feedback for reviewer context
+  const reviewFeedbackNotes = queries.listNotes(`workflow/${workflowId}/review-feedback/`);
+  const reviewHistory = reviewFeedbackNotes.length > 0
+    ? reviewFeedbackNotes.map(n => `**${n.key.split('/').pop()}:**\n${n.value}`).join('\n\n')
+    : undefined;
+
   return {
     plan: plan?.value ?? undefined,
     contract: contract?.value ?? undefined,
     worklogs: worklogNotes.map(n => ({ key: n.key, value: n.value })),
     recentDiff: recentDiff ?? undefined,
     diffSummary,
+    reviewHistory,
   };
 }
 
