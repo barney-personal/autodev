@@ -94,18 +94,13 @@ describe('WorkflowManager: diminishing returns detector', () => {
       milestones_done: 3,
     });
 
-    // Plan: 4/10 done (only 1 progress this cycle, but sustained low across 3 cycles)
+    // Plan: 4/10 done, pre-implement also 4 → delta = 0 this cycle
     upsertNote(`workflow/${workflow.id}/plan`,
       '- [x] M1\n- [x] M2\n- [x] M3\n- [x] M4\n- [ ] M5\n- [ ] M6\n- [ ] M7\n- [ ] M8\n- [ ] M9\n- [ ] M10', null);
-    // Pre-implement snapshot: 3 done, now 4 → delta = 1 this cycle
-    upsertNote(`workflow/${workflow.id}/pre-implement-milestones/5`, '3', null);
+    upsertNote(`workflow/${workflow.id}/pre-implement-milestones/5`, '4', null);
     // Previous cycles had 0 progress each
     upsertNote(`workflow/${workflow.id}/cycle-progress/3`, '0', null);
     upsertNote(`workflow/${workflow.id}/cycle-progress/4`, '0', null);
-    // cycle 5 will be written by the code as delta=1 → average = (1+0+0)/3 = 0.33...
-    // That's > 0.3, so let's make cycle 3 and 4 both 0, and this cycle also 0
-    // Redo: pre-implement = 4, plan has 4 done → delta = 0
-    upsertNote(`workflow/${workflow.id}/pre-implement-milestones/5`, '4', null);
 
     const job = await insertTestJob({
       workflow_id: workflow.id,
@@ -336,5 +331,44 @@ describe('WorkflowManager: diminishing returns detector', () => {
     const updated = getWorkflowById(workflow.id)!;
     expect(updated.status).not.toBe('blocked');
     expect(updated.current_cycle).toBe(6);
+  });
+
+  it('does NOT trigger when rolling 3-cycle average is exactly 0.33 (strict < 0.3)', async () => {
+    const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    const { upsertNote, getWorkflowById } = await import('../server/db/queries.js');
+
+    const project = await insertTestProject();
+    const workflow = await insertTestWorkflow({
+      project_id: project.id,
+      status: 'running',
+      current_phase: 'implement',
+      current_cycle: 5,
+      max_cycles: 10,
+      milestones_total: 10,
+      milestones_done: 4,
+    });
+
+    // Plan: 5/10 done, pre-implement was 4 → delta = 1 this cycle
+    upsertNote(`workflow/${workflow.id}/plan`,
+      '- [x] M1\n- [x] M2\n- [x] M3\n- [x] M4\n- [x] M5\n- [ ] M6\n- [ ] M7\n- [ ] M8\n- [ ] M9\n- [ ] M10', null);
+    upsertNote(`workflow/${workflow.id}/pre-implement-milestones/5`, '4', null);
+    // Previous cycles: 0, 0 → rolling average = (1 + 0 + 0) / 3 = 0.333...
+    upsertNote(`workflow/${workflow.id}/cycle-progress/3`, '0', null);
+    upsertNote(`workflow/${workflow.id}/cycle-progress/4`, '0', null);
+
+    const job = await insertTestJob({
+      workflow_id: workflow.id,
+      workflow_cycle: 5,
+      workflow_phase: 'implement',
+      status: 'done',
+    });
+
+    onJobCompleted(job);
+
+    // Average 0.333 > 0.3 → strict less-than check should NOT block
+    const updated = getWorkflowById(workflow.id)!;
+    expect(updated.status).not.toBe('blocked');
+    expect(updated.current_cycle).toBe(6);
+    expect(updated.blocked_reason ?? '').not.toContain('Diminishing returns');
   });
 });
