@@ -1365,9 +1365,13 @@ function countCommitsAgainstBaseRef(cwd: string, baseRef: string): number | null
     execSync(`git rev-parse --verify ${JSON.stringify(baseRef)}`, {
       cwd, stdio: 'pipe', timeout: 5000,
     });
-  } catch {
-    // ref doesn't exist — caller should try next candidate
-    return null;
+  } catch (err) {
+    // Classify: missing ref → try next candidate; transient error → propagate
+    const msg = String((err as { message?: string } | null)?.message ?? '');
+    if (msg.includes('Needed a single revision') || msg.includes('not a valid object name') || msg.includes('unknown revision')) {
+      return null;
+    }
+    throw err;
   }
 
   // ref exists — any rev-list failure is unexpected, let it propagate

@@ -683,6 +683,25 @@ describe('countBranchCommits: safe fallback chain (Fix-C4b)', () => {
     expect(getPrCreationOutcome(wf, null)).toBe('no_publishable_commits');
   });
 
+  it('re-throws transient rev-parse errors instead of treating them as missing ref (Fix-C20a)', async () => {
+    vi.mocked(execSync).mockImplementation((cmd: any, opts?: any) => {
+      execSyncCalls.push({ cmd, opts });
+      if (typeof cmd !== 'string') return Buffer.from('');
+      if (cmd === 'git symbolic-ref refs/remotes/origin/HEAD') {
+        return Buffer.from('refs/remotes/origin/main\n');
+      }
+      // rev-parse --verify throws a transient error (timeout, index.lock, permission)
+      if (cmd === 'git rev-parse --verify "origin/main"') {
+        throw new Error('Command timed out');
+      }
+      return Buffer.from('');
+    });
+
+    const { countBranchCommits } = await import('../server/orchestrator/WorkflowManager.js');
+
+    expect(() => countBranchCommits('/tmp/wt')).toThrow('Command timed out');
+  });
+
   it('re-throws rev-list errors when rev-parse succeeds (Fix-C10a)', async () => {
     vi.mocked(execSync).mockImplementation((cmd: any, opts?: any) => {
       execSyncCalls.push({ cmd, opts });
