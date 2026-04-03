@@ -47,6 +47,12 @@ vi.mock('../server/orchestrator/FailureClassifier.js', () => ({
   _resetWarnedUnclassifiedForTest: vi.fn(),
 }));
 
+// Mock Sentry instrument
+vi.mock('../server/instrument.js', () => ({
+  captureWithContext: vi.fn(),
+  Sentry: { captureException: vi.fn() },
+}));
+
 vi.mock('child_process', () => ({
   exec: vi.fn(),
   execSync: vi.fn((cmd: string) => {
