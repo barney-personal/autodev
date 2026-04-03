@@ -724,6 +724,86 @@ describe('countBranchCommits: safe fallback chain (Fix-C4b)', () => {
 
     expect(() => countBranchCommits('/tmp/wt')).toThrow('fatal: bad object abc1234');
   });
+
+  it('returns 0 when both candidates throw "not a valid object name" (Fix-C21b)', async () => {
+    vi.mocked(execSync).mockImplementation((cmd: any, opts?: any) => {
+      execSyncCalls.push({ cmd, opts });
+      if (typeof cmd !== 'string') return Buffer.from('');
+      if (cmd === 'git symbolic-ref refs/remotes/origin/HEAD') {
+        return Buffer.from('refs/remotes/origin/main\n');
+      }
+      if (cmd === 'git rev-parse --verify "origin/main"') {
+        throw new Error('fatal: not a valid object name origin/main');
+      }
+      if (cmd === 'git rev-parse --verify "origin/HEAD"') {
+        throw new Error('fatal: not a valid object name origin/HEAD');
+      }
+      return Buffer.from('');
+    });
+
+    const { countBranchCommits } = await import('../server/orchestrator/WorkflowManager.js');
+
+    expect(countBranchCommits('/tmp/wt')).toBe(0);
+    expect(execSyncCalls.map(c => c.cmd)).toEqual([
+      'git symbolic-ref refs/remotes/origin/HEAD',
+      'git rev-parse --verify "origin/main"',
+      'git rev-parse --verify "origin/HEAD"',
+    ]);
+  });
+
+  it('returns 0 when both candidates throw "unknown revision" (Fix-C21b)', async () => {
+    vi.mocked(execSync).mockImplementation((cmd: any, opts?: any) => {
+      execSyncCalls.push({ cmd, opts });
+      if (typeof cmd !== 'string') return Buffer.from('');
+      if (cmd === 'git symbolic-ref refs/remotes/origin/HEAD') {
+        return Buffer.from('refs/remotes/origin/main\n');
+      }
+      if (cmd === 'git rev-parse --verify "origin/main"') {
+        throw new Error('fatal: unknown revision or path not in working tree');
+      }
+      if (cmd === 'git rev-parse --verify "origin/HEAD"') {
+        throw new Error('fatal: unknown revision or path not in working tree');
+      }
+      return Buffer.from('');
+    });
+
+    const { countBranchCommits } = await import('../server/orchestrator/WorkflowManager.js');
+
+    expect(countBranchCommits('/tmp/wt')).toBe(0);
+    expect(execSyncCalls.map(c => c.cmd)).toEqual([
+      'git symbolic-ref refs/remotes/origin/HEAD',
+      'git rev-parse --verify "origin/main"',
+      'git rev-parse --verify "origin/HEAD"',
+    ]);
+  });
+
+  it('returns 0 when raw string "not a valid object name" is thrown (Fix-C21a)', async () => {
+    vi.mocked(execSync).mockImplementation((cmd: any, opts?: any) => {
+      execSyncCalls.push({ cmd, opts });
+      if (typeof cmd !== 'string') return Buffer.from('');
+      if (cmd === 'git symbolic-ref refs/remotes/origin/HEAD') {
+        return Buffer.from('refs/remotes/origin/main\n');
+      }
+      if (cmd === 'git rev-parse --verify "origin/main"') {
+        // Raw string throw (no .message property) — tests the ?? err fallback
+        throw 'fatal: not a valid object name origin/main';
+      }
+      if (cmd === 'git rev-parse --verify "origin/HEAD"') {
+        throw 'fatal: not a valid object name origin/HEAD';
+      }
+      return Buffer.from('');
+    });
+
+    const { countBranchCommits } = await import('../server/orchestrator/WorkflowManager.js');
+
+    // Without the ?? err fallback, this would throw because the classifier sees ''
+    expect(countBranchCommits('/tmp/wt')).toBe(0);
+    expect(execSyncCalls.map(c => c.cmd)).toEqual([
+      'git symbolic-ref refs/remotes/origin/HEAD',
+      'git rev-parse --verify "origin/main"',
+      'git rev-parse --verify "origin/HEAD"',
+    ]);
+  });
 });
 
 describe('Fix-C11a: transient rev-parse errors propagate to callers via countBranchCommits', () => {

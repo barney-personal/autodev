@@ -1367,7 +1367,7 @@ function countCommitsAgainstBaseRef(cwd: string, baseRef: string): number | null
     });
   } catch (err) {
     // Classify: missing ref → try next candidate; transient error → propagate
-    const msg = String((err as { message?: string } | null)?.message ?? '');
+    const msg = String((err as { message?: string } | null)?.message ?? err ?? '');
     if (msg.includes('Needed a single revision') || msg.includes('not a valid object name') || msg.includes('unknown revision')) {
       return null;
     }
