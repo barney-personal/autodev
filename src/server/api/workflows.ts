@@ -218,17 +218,17 @@ router.post('/:id/wrap-up', (req, res) => {
     return;
   }
 
-  // Worktree metadata missing — can't create PR. Mark as cancelled with a
-  // clear message rather than blocking in an unrecoverable state.
-  if (!workflow.worktree_path) {
+  // Fix-C6b: If worktree metadata is missing but milestones were completed,
+  // block instead of silently cancelling — the work may be recoverable.
+  if (!workflow.worktree_path && workflow.milestones_done > 0) {
     queries.updateWorkflow(workflow.id, {
-      status: 'cancelled',
+      status: 'blocked',
       current_phase: 'idle' as WorkflowPhase,
-      blocked_reason: `Wrapped up without PR — worktree metadata was missing (${workflow.milestones_done}/${workflow.milestones_total} milestones completed). Commits were lost when the worktree was cleaned up.`,
+      blocked_reason: `Wrap-up failed — worktree metadata missing but ${workflow.milestones_done}/${workflow.milestones_total} milestones completed. Commits may be recoverable from the main checkout.`,
     });
     const finalWorkflow = queries.getWorkflowById(workflow.id);
     if (finalWorkflow) socket.emitWorkflowUpdate(finalWorkflow);
-    res.json({ workflow: finalWorkflow, pr_url: null, outcome: 'missing_worktree' });
+    res.status(409).json({ workflow: finalWorkflow, pr_url: null, outcome: 'missing_worktree_with_progress' });
     return;
   }
 
