@@ -1,7 +1,7 @@
 import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
-import { Sentry } from '../instrument.js';
+import { captureWithContext } from '../instrument.js';
 import * as queries from '../db/queries.js';
 
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000;  // 5 minutes
@@ -10,7 +10,7 @@ let _timer: NodeJS.Timeout | null = null;
 export function startWorktreeCleanup(): void {
   if (_timer) return;
   console.log('[worktree-cleanup] started');
-  _timer = setInterval(() => { try { tick(); } catch (err) { console.error('[worktree-cleanup] tick error:', err); Sentry.captureException(err); } }, CLEANUP_INTERVAL_MS);
+  _timer = setInterval(() => { try { tick(); } catch (err) { console.error('[worktree-cleanup] tick error:', err); captureWithContext(err, { component: 'WorktreeCleanup' }); } }, CLEANUP_INTERVAL_MS);
 }
 
 export function stopWorktreeCleanup(): void {

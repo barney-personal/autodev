@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { Sentry } from '../instrument.js';
+import { captureWithContext } from '../instrument.js';
 import * as queries from '../db/queries.js';
 import type { Job, KBEntry } from '../../shared/types.js';
 
@@ -53,7 +53,7 @@ export async function triageLearnings(agentId: string, job: Job): Promise<void> 
     classifications = await classifyLearnings(learnings, candidates, job.title, workDir);
   } catch (err) {
     console.error(`[memory-triage] API call failed for agent ${agentId}, storing all as project-scoped:`, err);
-    Sentry.captureException(err);
+    captureWithContext(err, { agent_id: agentId, job_id: job.id, component: 'MemoryTriager' });
     classifications = learnings.map((_, i) => ({ index: i, classification: 'project' as const }));
   }
 

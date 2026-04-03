@@ -8,7 +8,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { Sentry } from '../instrument.js';
+import { captureWithContext } from '../instrument.js';
 import { getDb } from '../db/database.js';
 
 const BACKUP_INTERVAL_MS = 30 * 60 * 1000; // every 30 minutes
@@ -28,7 +28,7 @@ export function startDbBackup(dbPath: string): void {
   _timer = setInterval(() => {
     try { runBackup(); } catch (err) {
       console.error('[db-backup] error:', err);
-      Sentry.captureException(err);
+      captureWithContext(err, { component: 'DbBackup' });
     }
   }, BACKUP_INTERVAL_MS);
   _timer.unref();

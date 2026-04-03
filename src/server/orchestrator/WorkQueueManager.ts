@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import { execSync } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
-import { Sentry } from '../instrument.js';
+import { captureWithContext } from '../instrument.js';
 import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
 import { runAgent } from './AgentRunner.js';
@@ -85,8 +85,8 @@ export function startWorkQueue(): void {
   if (_running) return;
   _running = true;
   console.log('[queue] WorkQueueManager started');
-  _timer = setInterval(() => { try { tick().catch(console.error); } catch (err) { console.error('[queue] tick error:', err); Sentry.captureException(err); } }, POLL_INTERVAL_MS);
-  try { tick().catch(console.error); } catch (err) { console.error('[queue] initial tick error:', err); Sentry.captureException(err); }
+  _timer = setInterval(() => { try { tick().catch(console.error); } catch (err) { console.error('[queue] tick error:', err); captureWithContext(err, { component: 'WorkQueueManager' }); } }, POLL_INTERVAL_MS);
+  try { tick().catch(console.error); } catch (err) { console.error('[queue] initial tick error:', err); captureWithContext(err, { component: 'WorkQueueManager' }); }
 }
 
 export function stopWorkQueue(): void {
@@ -206,7 +206,7 @@ async function tick(): Promise<void> {
     } catch (err: any) {
       _totalFailed++;
       console.error(`[queue] dispatch failed for job ${job.id}:`, err);
-      Sentry.captureException(err);
+      captureWithContext(err, { job_id: job.id, component: 'WorkQueueManager' });
       queries.updateJobStatus(job.id, 'failed');
       // If an agent row was already inserted, mark it as failed so it doesn't
       // consume a concurrency slot or mislead workflow state.

@@ -12,7 +12,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
-import { Sentry } from '../instrument.js';
+import { captureWithContext } from '../instrument.js';
 import * as queries from '../db/queries.js';
 
 const TICK_INTERVAL_MS = 60_000; // check every 60s
@@ -42,9 +42,9 @@ export function startResourceMonitor(): void {
   if (_timer) return;
   console.log('[resource] ResourceMonitor started');
   // Run once immediately
-  try { tick(); } catch (err) { console.error('[resource] initial tick error:', err); Sentry.captureException(err); }
+  try { tick(); } catch (err) { console.error('[resource] initial tick error:', err); captureWithContext(err, { component: 'ResourceMonitor' }); }
   _timer = setInterval(() => {
-    try { tick(); } catch (err) { console.error('[resource] tick error:', err); Sentry.captureException(err); }
+    try { tick(); } catch (err) { console.error('[resource] tick error:', err); captureWithContext(err, { component: 'ResourceMonitor' }); }
   }, TICK_INTERVAL_MS);
 }
 

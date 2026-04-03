@@ -6,7 +6,7 @@
  */
 import { execSync, execFileSync } from 'child_process';
 import * as fs from 'fs';
-import { Sentry } from '../instrument.js';
+import { captureWithContext } from '../instrument.js';
 import * as queries from '../db/queries.js';
 import type { Job } from '../../shared/types.js';
 
@@ -92,7 +92,7 @@ export async function createPrForJob(job: Job): Promise<string | null> {
         await new Promise(r => setTimeout(r, PUSH_RETRY_DELAY));
       } else {
         console.error(`[pr-creator] push failed permanently for job ${job.id}:`, err.message);
-        Sentry.captureException(err);
+        captureWithContext(err, { job_id: job.id, component: 'PrCreator' });
         return null;
       }
     }
@@ -127,7 +127,7 @@ export async function createPrForJob(job: Job): Promise<string | null> {
       } catch { /* can't find existing PR — give up */ }
     }
     console.error(`[pr-creator] gh pr create failed for job ${job.id}:`, stderr);
-    Sentry.captureException(err);
+    captureWithContext(err, { job_id: job.id, component: 'PrCreator' });
     return null;
   }
 }

@@ -3,7 +3,7 @@ import type { IPty } from 'node-pty';
 import { execFileSync, execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
-import { Sentry } from '../instrument.js';
+import { captureWithContext } from '../instrument.js';
 import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
 import { SYSTEM_PROMPT, HOOK_SETTINGS, handleJobCompletion, cancelledAgents, startTailing, stopTailing, readClaudeMd, buildMemorySection } from './AgentRunner.js';
@@ -377,7 +377,7 @@ export function startInteractiveAgent({ agentId, job, cols = 100, rows = 50, res
 
   } catch (err: any) {
     console.error(`[pty ${agentId}] failed to create tmux session:`, err.message);
-    Sentry.captureException(err);
+    captureWithContext(err, { agent_id: agentId, job_id: job.id, component: 'PtyManager' });
     queries.updateAgent(agentId, { status: 'failed', error_message: err.message, finished_at: Date.now() });
     queries.updateJobStatus(job.id, 'failed');
 
@@ -435,7 +435,7 @@ export function startInteractiveAgent({ agentId, job, cols = 100, rows = 50, res
       attachPty(agentId, job, cols, rows);
     } catch (err: any) {
       console.error(`[pty ${agentId}] error in post-start setup:`, err.message);
-      Sentry.captureException(err);
+      captureWithContext(err, { agent_id: agentId, job_id: job.id, component: 'PtyManager' });
       queries.updateAgent(agentId, { status: 'failed', error_message: err.message, finished_at: Date.now() });
       queries.updateJobStatus(job.id, 'failed');
       const updated = queries.getAgentWithJob(agentId);
@@ -564,7 +564,7 @@ export async function attachPty(agentId: string, job: Job, cols = 100, rows = 50
         console.log(`[pty ${agentId}] tmux session ended (detected via fallback poll)`);
         handleJobCompletion(agentId, job, 'done').catch(err2 => {
           console.error(`[pty ${agentId}] handleJobCompletion error:`, err2);
-          Sentry.captureException(err2);
+          captureWithContext(err2, { agent_id: agentId, job_id: job.id, component: 'PtyManager' });
         });
       }, 5000);
     } else if (!isAutoExitJob(job)) {
@@ -597,7 +597,7 @@ export async function attachPty(agentId: string, job: Job, cols = 100, rows = 50
       } catch { /* ignore write errors */ }
     } catch (err) {
       console.error(`[pty ${agentId}] onData error:`, err);
-      Sentry.captureException(err);
+      captureWithContext(err, { agent_id: agentId, component: 'PtyManager' });
     }
   });
 
@@ -641,12 +641,12 @@ export async function attachPty(agentId: string, job: Job, cols = 100, rows = 50
         queries.updateAgent(agentId, updateFields);
         handleJobCompletion(agentId, job, status).catch(err => {
           console.error(`[pty ${agentId}] handleJobCompletion error:`, err);
-          Sentry.captureException(err);
+          captureWithContext(err, { agent_id: agentId, job_id: job.id, component: 'PtyManager' });
         });
       }
     } catch (err) {
       console.error(`[pty ${agentId}] onExit error:`, err);
-      Sentry.captureException(err);
+      captureWithContext(err, { agent_id: agentId, component: 'PtyManager' });
     }
   });
 }
