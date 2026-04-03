@@ -1263,7 +1263,13 @@ export function pushAndCreatePr(workflow: Workflow, isDraft: boolean): string | 
       { cwd: worktree_path, stdio: 'pipe', timeout: 10000 }
     ).toString().trim();
     hasCommits = parseInt(n, 10) > 0;
-  } catch { /* not a git repo or no remote — skip PR */ }
+  } catch (err) {
+    // Safe default: assume commits exist so we attempt the push rather than silently
+    // skipping PR creation on transient git errors (index.lock, timeout, etc.).
+    // A wasted push attempt is far better than silently losing a PR.
+    console.warn(`[workflow ${workflow.id}] rev-list failed, assuming commits exist:`, err);
+    hasCommits = true;
+  }
 
   if (!hasCommits || !worktree_branch) {
     console.log(`[workflow ${workflow.id}] no commits on branch — skipping PR`);

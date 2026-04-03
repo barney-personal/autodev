@@ -510,3 +510,69 @@ describe('getPrCreationOutcome: git error handling (Fix-C7b)', () => {
     expect(outcome).toBe('created');
   });
 });
+
+describe('pushAndCreatePr: rev-list error handling (Fix-C8a)', () => {
+  beforeEach(async () => {
+    execSyncCalls.length = 0;
+    await setupTestDb();
+  });
+
+  afterEach(async () => {
+    await cleanupTestDb();
+    vi.restoreAllMocks();
+  });
+
+  it('still attempts push and PR creation when rev-list throws a transient error', async () => {
+    const mockedExecSync = vi.mocked(execSync);
+    mockedExecSync.mockImplementation((cmd: any, opts?: any) => {
+      execSyncCalls.push({ cmd, opts });
+      if (typeof cmd === 'string') {
+        if (cmd.includes('rev-parse --abbrev-ref HEAD')) return Buffer.from('workflow/test-branch\n');
+        // rev-list throws a transient git error
+        if (cmd.includes('rev-list --count')) throw new Error('fatal: .git/index.lock: File exists');
+        if (cmd.startsWith('git push')) return Buffer.from('');
+        if (cmd.includes('gh pr create')) return Buffer.from('https://github.com/test/repo/pull/77\n');
+      }
+      return Buffer.from('');
+    });
+
+    const { pushAndCreatePr } = await import('../server/orchestrator/WorkflowManager.js');
+    const wf = makeWorkflow();
+
+    const prUrl = pushAndCreatePr(wf, false);
+
+    // PR should be created despite rev-list failure (safe default: assume commits exist)
+    expect(prUrl).toBe('https://github.com/test/repo/pull/77');
+
+    // Push was attempted
+    const pushCall = execSyncCalls.find(c => typeof c.cmd === 'string' && c.cmd.startsWith('git push'));
+    expect(pushCall).toBeDefined();
+
+    // PR creation was attempted
+    const prCreateCall = execSyncCalls.find(c => typeof c.cmd === 'string' && c.cmd.includes('gh pr create'));
+    expect(prCreateCall).toBeDefined();
+  });
+
+  it('returns null when rev-list throws and worktree_branch is missing', async () => {
+    const mockedExecSync = vi.mocked(execSync);
+    mockedExecSync.mockImplementation((cmd: any, opts?: any) => {
+      execSyncCalls.push({ cmd, opts });
+      if (typeof cmd === 'string') {
+        if (cmd.includes('rev-list --count')) throw new Error('fatal: timeout');
+      }
+      return Buffer.from('');
+    });
+
+    const { pushAndCreatePr } = await import('../server/orchestrator/WorkflowManager.js');
+    // No worktree_branch — even with hasCommits=true, the !worktree_branch guard returns null
+    const wf = makeWorkflow({ worktree_branch: null });
+
+    const prUrl = pushAndCreatePr(wf, false);
+
+    expect(prUrl).toBeNull();
+
+    // Push should NOT have been attempted (returned early)
+    const pushCall = execSyncCalls.find(c => typeof c.cmd === 'string' && c.cmd.startsWith('git push'));
+    expect(pushCall).toBeUndefined();
+  });
+});
