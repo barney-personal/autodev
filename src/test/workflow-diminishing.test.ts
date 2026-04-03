@@ -313,6 +313,8 @@ describe('WorkflowManager: diminishing returns detector', () => {
     // Previous cycles had some progress
     upsertNote(`workflow/${workflow.id}/cycle-progress/3`, '1', null);
     upsertNote(`workflow/${workflow.id}/cycle-progress/4`, '1', null);
+    // Seed zero-progress counter at 1 to verify restructuring leaves it unchanged (Fix-C7a)
+    upsertNote(`workflow/${workflow.id}/zero-progress-count`, '1', null);
 
     const job = await insertTestJob({
       workflow_id: workflow.id,
@@ -333,9 +335,9 @@ describe('WorkflowManager: diminishing returns detector', () => {
     expect(updated.status).not.toBe('blocked');
     expect(updated.current_cycle).toBe(6);
 
-    // Zero-progress counter should NOT have incremented (reviewer restructuring, not genuine zero-progress)
+    // Zero-progress counter should be preserved at 1 (restructuring is neutral, not a reset)
     const zpNote = getNote(`workflow/${workflow.id}/zero-progress-count`);
-    expect(zpNote?.value ?? '0').toBe('0');
+    expect(zpNote?.value).toBe('1');
   });
 
   it('skips cycle-progress note on reviewer restructuring so diminishing returns does not false-trigger', async () => {

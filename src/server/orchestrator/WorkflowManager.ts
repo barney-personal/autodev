@@ -264,7 +264,10 @@ function _onJobCompleted(job: Job): void {
               queries.upsertNote(`workflow/${workflow.id}/cycle-progress/${updated.current_cycle}`, String(delta), null);
             }
 
-            if (delta === 0 && milestones.done >= preImplDone) {
+            if (delta > 0) {
+              // Actual progress was made — reset counter
+              queries.upsertNote(zeroProgressKey, '0', null);
+            } else if (milestones.done >= preImplDone) {
               // No progress this cycle (genuine zero-progress, not reviewer restructuring)
               const prevCount = parseInt(queries.getNote(zeroProgressKey)?.value ?? '0', 10);
               const newCount = prevCount + 1;
@@ -277,10 +280,8 @@ function _onJobCompleted(job: Job): void {
               }
               queries.upsertNote(zeroProgressKey, String(newCount), null);
               console.log(`[workflow ${workflow.id}] zero-progress implement cycle ${newCount}/${MAX_ZERO_PROGRESS} (${milestones.done}/${milestones.total})`);
-            } else {
-              // Progress was made — reset counter
-              queries.upsertNote(zeroProgressKey, '0', null);
             }
+            // else: milestones.done < preImplDone (reviewer restructuring) — leave counter unchanged
 
             // Diminishing returns detector: if rolling 3-cycle average < 0.3, block.
             // This catches sustained slow progress (0.1-0.3/cycle) that zero-progress misses.
