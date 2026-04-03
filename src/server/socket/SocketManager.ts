@@ -27,18 +27,30 @@ export function getIo(): SocketIoServer<ClientToServerEvents, ServerToClientEven
 }
 
 export function emitSnapshot(snapshot: QueueSnapshot): void {
-  getIo().emit('queue:snapshot', snapshot);
+  try {
+    getIo().emit('queue:snapshot', snapshot);
+  } catch (err) {
+    console.error('[socket] emitSnapshot error:', err);
+  }
 }
 
 export function emitAgentNew(agent: AgentWithJob): void {
   const payload = { agent };
-  getIo().emit('agent:new', payload);
+  try {
+    getIo().emit('agent:new', payload);
+  } catch (err) {
+    console.error('[socket] emitAgentNew error:', err);
+  }
   pushEvent('agent:new', payload);
 }
 
 export function emitAgentUpdate(agent: AgentWithJob): void {
   const payload = { agent };
-  getIo().emit('agent:update', payload);
+  try {
+    getIo().emit('agent:update', payload);
+  } catch (err) {
+    console.error('[socket] emitAgentUpdate error:', err);
+  }
   pushEvent('agent:update', payload);
 }
 
@@ -47,93 +59,222 @@ export function emitAgentUpdate(agent: AgentWithJob): void {
 const MAX_OUTPUT_EVENT_BYTES = 512 * 1024;
 
 export function emitAgentOutput(agentId: string, line: AgentOutput): void {
-  // Guard against oversized output events that would block Socket.io
-  if (line.content && line.content.length > MAX_OUTPUT_EVENT_BYTES) {
-    const truncated = {
-      ...line,
-      content: line.content.slice(0, MAX_OUTPUT_EVENT_BYTES) + '\n[TRUNCATED: output exceeded 512KB limit]',
-    };
-    getIo().emit('agent:output', { agent_id: agentId, line: truncated });
-    return;
+  try {
+    // Guard against oversized output events that would block Socket.io
+    if (line.content && line.content.length > MAX_OUTPUT_EVENT_BYTES) {
+      const truncated = {
+        ...line,
+        content: line.content.slice(0, MAX_OUTPUT_EVENT_BYTES) + '\n[TRUNCATED: output exceeded 512KB limit]',
+      };
+      getIo().emit('agent:output', { agent_id: agentId, line: truncated });
+      return;
+    }
+    getIo().emit('agent:output', { agent_id: agentId, line });
+  } catch (err) {
+    console.error('[socket] emitAgentOutput error:', err);
   }
-  getIo().emit('agent:output', { agent_id: agentId, line });
 }
 
 export function emitQuestionNew(question: Question): void {
-  getIo().emit('question:new', { question });
+  try {
+    getIo().emit('question:new', { question });
+  } catch (err) {
+    console.error('[socket] emitQuestionNew error:', err);
+  }
 }
 
 export function emitQuestionAnswered(question: Question): void {
-  getIo().emit('question:answered', { question });
+  try {
+    getIo().emit('question:answered', { question });
+  } catch (err) {
+    console.error('[socket] emitQuestionAnswered error:', err);
+  }
 }
 
 export function emitLockAcquired(lock: FileLock): void {
   const payload = { lock };
-  getIo().emit('lock:acquired', payload);
+  try {
+    getIo().emit('lock:acquired', payload);
+  } catch (err) {
+    console.error('[socket] emitLockAcquired error:', err);
+  }
   pushEvent('lock:acquired', payload);
 }
 
 export function emitLockReleased(lockId: string, filePath: string): void {
   const payload = { lock_id: lockId, file_path: filePath };
-  getIo().emit('lock:released', payload);
+  try {
+    getIo().emit('lock:released', payload);
+  } catch (err) {
+    console.error('[socket] emitLockReleased error:', err);
+  }
   pushEvent('lock:released', payload);
 }
 
 export function emitProjectNew(project: import('../../shared/types.js').Project): void {
-  getIo().emit('project:new', { project });
+  try {
+    getIo().emit('project:new', { project });
+  } catch (err) {
+    console.error('[socket] emitProjectNew error:', err);
+  }
 }
 
 export function emitJobNew(job: Job): void {
   const payload = { job };
-  getIo().emit('job:new', payload);
+  try {
+    getIo().emit('job:new', payload);
+  } catch (err) {
+    console.error('[socket] emitJobNew error:', err);
+  }
   pushEvent('job:new', payload);
 }
 
 export function emitJobUpdate(job: Job): void {
   const payload = { job };
-  getIo().emit('job:update', payload);
+  try {
+    getIo().emit('job:update', payload);
+  } catch (err) {
+    console.error('[socket] emitJobUpdate error:', err);
+  }
   pushEvent('job:update', payload);
 }
 
 export function emitPtyData(agentId: string, data: string): void {
-  getIo().emit('pty:data', { agent_id: agentId, data });
+  try {
+    getIo().emit('pty:data', { agent_id: agentId, data });
+  } catch (err) {
+    console.error('[socket] emitPtyData error:', err);
+  }
 }
 
 export function emitPtyClosed(agentId: string): void {
-  getIo().emit('pty:closed', { agent_id: agentId });
+  try {
+    getIo().emit('pty:closed', { agent_id: agentId });
+  } catch (err) {
+    console.error('[socket] emitPtyClosed error:', err);
+  }
 }
 
 export function emitDebateNew(debate: Debate): void {
-  getIo().emit('debate:new', { debate });
+  try {
+    getIo().emit('debate:new', { debate });
+  } catch (err) {
+    console.error('[socket] emitDebateNew error:', err);
+  }
 }
 
 export function emitDebateUpdate(debate: Debate): void {
-  getIo().emit('debate:update', { debate });
+  try {
+    getIo().emit('debate:update', { debate });
+  } catch (err) {
+    console.error('[socket] emitDebateUpdate error:', err);
+  }
 }
 
 export function emitWorkflowNew(workflow: Workflow): void {
   const payload = { workflow };
-  getIo().emit('workflow:new', payload);
+  try {
+    getIo().emit('workflow:new', payload);
+  } catch (err) {
+    console.error('[socket] emitWorkflowNew error:', err);
+  }
   pushEvent('workflow:new', payload);
 }
 
 export function emitWorkflowUpdate(workflow: Workflow): void {
   const payload = { workflow };
-  getIo().emit('workflow:update', payload);
+  try {
+    getIo().emit('workflow:update', payload);
+  } catch (err) {
+    console.error('[socket] emitWorkflowUpdate error:', err);
+  }
   pushEvent('workflow:update', payload);
 }
 
 export function emitWarningNew(warning: AgentWarning): void {
-  getIo().emit('warning:new', { warning });
+  try {
+    getIo().emit('warning:new', { warning });
+  } catch (err) {
+    console.error('[socket] emitWarningNew error:', err);
+  }
 }
 
-export function emitDiscussionNew(discussion: Discussion, message: DiscussionMessage): void { getIo().emit('eye:discussion:new', { discussion, message }); }
-export function emitDiscussionMessage(message: DiscussionMessage): void { getIo().emit('eye:discussion:message', { message }); }
-export function emitDiscussionUpdate(discussion: Discussion): void { getIo().emit('eye:discussion:update', { discussion }); }
-export function emitProposalNew(proposal: Proposal): void { getIo().emit('eye:proposal:new', { proposal }); }
-export function emitProposalUpdate(proposal: Proposal): void { getIo().emit('eye:proposal:update', { proposal }); }
-export function emitProposalMessage(message: ProposalMessage): void { getIo().emit('eye:proposal:message', { message }); }
-export function emitPrNew(pr: Pr): void { getIo().emit('eye:pr:new', { pr }); }
-export function emitPrReviewNew(review: PrReview): void { getIo().emit('eye:pr-review:new', { review }); }
-export function emitPrReviewUpdate(review: PrReview): void { getIo().emit('eye:pr-review:update', { review }); }
-export function emitPrReviewMessage(message: PrReviewMessage): void { getIo().emit('eye:pr-review:message', { message }); }
+export function emitDiscussionNew(discussion: Discussion, message: DiscussionMessage): void {
+  try {
+    getIo().emit('eye:discussion:new', { discussion, message });
+  } catch (err) {
+    console.error('[socket] emitDiscussionNew error:', err);
+  }
+}
+
+export function emitDiscussionMessage(message: DiscussionMessage): void {
+  try {
+    getIo().emit('eye:discussion:message', { message });
+  } catch (err) {
+    console.error('[socket] emitDiscussionMessage error:', err);
+  }
+}
+
+export function emitDiscussionUpdate(discussion: Discussion): void {
+  try {
+    getIo().emit('eye:discussion:update', { discussion });
+  } catch (err) {
+    console.error('[socket] emitDiscussionUpdate error:', err);
+  }
+}
+
+export function emitProposalNew(proposal: Proposal): void {
+  try {
+    getIo().emit('eye:proposal:new', { proposal });
+  } catch (err) {
+    console.error('[socket] emitProposalNew error:', err);
+  }
+}
+
+export function emitProposalUpdate(proposal: Proposal): void {
+  try {
+    getIo().emit('eye:proposal:update', { proposal });
+  } catch (err) {
+    console.error('[socket] emitProposalUpdate error:', err);
+  }
+}
+
+export function emitProposalMessage(message: ProposalMessage): void {
+  try {
+    getIo().emit('eye:proposal:message', { message });
+  } catch (err) {
+    console.error('[socket] emitProposalMessage error:', err);
+  }
+}
+
+export function emitPrNew(pr: Pr): void {
+  try {
+    getIo().emit('eye:pr:new', { pr });
+  } catch (err) {
+    console.error('[socket] emitPrNew error:', err);
+  }
+}
+
+export function emitPrReviewNew(review: PrReview): void {
+  try {
+    getIo().emit('eye:pr-review:new', { review });
+  } catch (err) {
+    console.error('[socket] emitPrReviewNew error:', err);
+  }
+}
+
+export function emitPrReviewUpdate(review: PrReview): void {
+  try {
+    getIo().emit('eye:pr-review:update', { review });
+  } catch (err) {
+    console.error('[socket] emitPrReviewUpdate error:', err);
+  }
+}
+
+export function emitPrReviewMessage(message: PrReviewMessage): void {
+  try {
+    getIo().emit('eye:pr-review:message', { message });
+  } catch (err) {
+    console.error('[socket] emitPrReviewMessage error:', err);
+  }
+}

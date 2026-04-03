@@ -270,6 +270,31 @@ export async function resolveModel(job: Job): Promise<string | null> {
   }
 }
 
+/**
+ * Pre-load all `ratelimit:*` notes from the DB into the in-memory cooldown Map.
+ * Call on server startup so that rate-limit state survives restarts without
+ * waiting for a lazy DB fallback on first access.
+ */
+export function rehydrateCooldownState(): void {
+  const notes = queries.listNotes('ratelimit:');
+  let count = 0;
+  const now = Date.now();
+  for (const note of notes) {
+    const exp = parseInt(note.value, 10);
+    if (!isNaN(exp) && exp > now) {
+      // Strip the 'ratelimit:' prefix for model keys, keep full key for provider keys
+      const mapKey = note.key.startsWith('ratelimit:provider:')
+        ? note.key  // provider keys use full 'ratelimit:provider:X' as map key
+        : note.key.replace(/^ratelimit:/, '');  // model keys use just the model name
+      _rateLimitCooldowns.set(mapKey, exp);
+      count++;
+    }
+  }
+  if (count > 0) {
+    console.log(`[classifier] rehydrated ${count} active rate-limit cooldown(s) from DB`);
+  }
+}
+
 export function _resetForTest(): void {
   _rateLimitCooldowns.clear();
   // Treat codex as auth-available in tests — avoids a disk read for ~/.codex/auth.json

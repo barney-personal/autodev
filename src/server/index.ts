@@ -17,6 +17,7 @@ import { startWorktreeCleanup, stopWorktreeCleanup } from './orchestrator/Worktr
 import { startKBConsolidator, stopKBConsolidator } from './orchestrator/KBConsolidator.js';
 import { startGitHubPoller, stopGitHubPoller } from './integrations/GitHubPoller.js';
 import { runRecovery, startWorkflowGapDetector, stopWorkflowGapDetector } from './orchestrator/recovery.js';
+import { rehydrateCooldownState } from './orchestrator/ModelClassifier.js';
 import { startResourceMonitor, stopResourceMonitor, setQueueControls } from './orchestrator/ResourceMonitor.js';
 import { startDbBackup, stopDbBackup, runBackupNow } from './orchestrator/DbBackup.js';
 import { writeInput, resizePty, resizeAndSnapshot, saveSnapshot, isTmuxSessionAlive } from './orchestrator/PtyManager.js';
@@ -52,6 +53,9 @@ async function main() {
 
   // Populate FTS index for any existing output rows not yet indexed
   queries.rebuildFts();
+
+  // Rehydrate rate-limit cooldown state from DB so cooldowns survive restarts
+  rehydrateCooldownState();
 
   // 2. Main Express app
   const app = express();
