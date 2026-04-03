@@ -1063,9 +1063,25 @@ export function resumeWorkflow(
       try {
         execSync('git worktree prune', { cwd: current.work_dir, stdio: 'pipe', timeout: 10000 });
       } catch { /* prune failure is non-fatal */ }
-      execSync(`git worktree add ${JSON.stringify(worktreePath)} -b ${JSON.stringify(branchName)}`, {
-        cwd: current.work_dir, timeout: 30000, stdio: 'pipe',
-      });
+      // Check if the branch already exists (common after DB recovery — git branch survives even
+      // when worktree registration and DB metadata are lost). Re-attach the existing branch
+      // instead of creating a new one with -b, which would fail with "branch already exists".
+      let branchExists = false;
+      try {
+        execSync(`git rev-parse --verify refs/heads/${branchName}`, {
+          cwd: current.work_dir, stdio: 'pipe', timeout: 10000,
+        });
+        branchExists = true;
+      } catch { /* branch doesn't exist — will create with -b */ }
+      if (branchExists) {
+        execSync(`git worktree add ${JSON.stringify(worktreePath)} ${JSON.stringify(branchName)}`, {
+          cwd: current.work_dir, timeout: 30000, stdio: 'pipe',
+        });
+      } else {
+        execSync(`git worktree add ${JSON.stringify(worktreePath)} -b ${JSON.stringify(branchName)}`, {
+          cwd: current.work_dir, timeout: 30000, stdio: 'pipe',
+        });
+      }
       queries.updateWorkflow(current.id, { worktree_path: worktreePath, worktree_branch: branchName });
       console.log(`[workflow ${current.id}] restored worktree at ${worktreePath} (branch: ${branchName}) during resume`);
     } catch (err: any) {

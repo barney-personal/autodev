@@ -148,6 +148,48 @@ describe('WorkflowManager: resumeWorkflow worktree restoration', () => {
     expect(allJobs.filter(j => j.workflow_id === workflow.id)).toHaveLength(0);
   });
 
+  it('re-attaches existing branch without -b when branch survived DB recovery', async () => {
+    const { resumeWorkflow } = await import('../server/orchestrator/WorkflowManager.js');
+    const queries = await import('../server/db/queries.js');
+
+    const project = await insertTestProject();
+    const workflow = await insertTestWorkflow({
+      project_id: project.id,
+      status: 'blocked',
+      current_phase: 'implement',
+      current_cycle: 1,
+      use_worktree: 1,
+    });
+    queries.upsertNote(`workflow/${workflow.id}/plan`, '- [ ] M1\n- [ ] M2', null);
+    queries.upsertNote(`workflow/${workflow.id}/contract`, '# contract', null);
+
+    // rev-parse --verify succeeds → branch exists; worktree add without -b should succeed
+    execSyncMock.mockImplementation((cmd: string) => {
+      if (typeof cmd === 'string' && cmd.includes('rev-parse --verify refs/heads/')) {
+        return Buffer.from('abc1234\n'); // branch exists
+      }
+      if (typeof cmd === 'string' && cmd.includes('rev-parse --abbrev-ref HEAD')) {
+        return Buffer.from('expected-branch\n');
+      }
+      return Buffer.from('');
+    });
+
+    const job = resumeWorkflow(workflow);
+
+    const after = queries.getWorkflowById(workflow.id);
+    expect(after!.worktree_path).toBeTruthy();
+    expect(after!.worktree_branch).toBeTruthy();
+    expect(after!.status).toBe('running');
+
+    // Verify git worktree add was called WITHOUT -b
+    const worktreeAddCalls = execSyncMock.mock.calls.filter(
+      (c: any[]) => typeof c[0] === 'string' && c[0].includes('git worktree add'),
+    );
+    expect(worktreeAddCalls.length).toBe(1);
+    const addCmd = worktreeAddCalls[0][0] as string;
+    expect(addCmd).not.toContain(' -b ');
+  });
+
   it('does not attempt worktree restoration when use_worktree=0', async () => {
     const { resumeWorkflow } = await import('../server/orchestrator/WorkflowManager.js');
     const queries = await import('../server/db/queries.js');
