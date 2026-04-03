@@ -102,6 +102,24 @@ export function WorkflowDetailModal({ workflow, agents, onClose, onWorkflowUpdat
     } finally { setActing(false); }
   };
 
+  const handleWrapUp = async () => {
+    if (!confirm('Wrap up this workflow? This will stop all work and create a draft PR with what\'s been done so far.')) return;
+    setActing(true);
+    try {
+      const res = await fetch(`/api/autonomous-agent-runs/${workflow.id}/wrap-up`, { method: 'POST' });
+      if (res.ok) {
+        const data = await res.json();
+        onWorkflowUpdate(data.workflow);
+        await fetchDetail();
+      } else if (res.status === 409) {
+        const data = await res.json();
+        if (data.workflow) onWorkflowUpdate(data.workflow);
+        alert(`Draft PR creation failed. ${data.outcome === 'missing_worktree_with_progress' ? 'The worktree is missing but publishable commits exist — see blocked reason for details.' : 'The worktree has been preserved — see blocked reason for details.'}`);
+        await fetchDetail();
+      }
+    } finally { setActing(false); }
+  };
+
   const handleResume = async () => {
     setActing(true);
     try {
@@ -159,6 +177,11 @@ export function WorkflowDetailModal({ workflow, agents, onClose, onWorkflowUpdat
             {workflow.status === 'blocked' && (
               <button className="btn btn-primary" onClick={handleResume} disabled={acting}>
                 Resume Run
+              </button>
+            )}
+            {(workflow.status === 'running' || workflow.status === 'blocked') && (
+              <button className="btn" style={{ background: '#b45309', color: '#fff', border: 'none' }} onClick={handleWrapUp} disabled={acting}>
+                Wrap Up &amp; PR
               </button>
             )}
             {(workflow.status === 'running' || workflow.status === 'blocked') && (
