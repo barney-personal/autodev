@@ -170,6 +170,38 @@ describe('WorkflowManager: resumeWorkflow worktree restoration', () => {
     );
   });
 
+  it('blocks resume without creating a job when use_worktree=1 but worktree_path is still null', async () => {
+    const { resumeWorkflow } = await import('../server/orchestrator/WorkflowManager.js');
+    const queries = await import('../server/db/queries.js');
+
+    const project = await insertTestProject();
+    const workflow = await insertTestWorkflow({
+      project_id: project.id,
+      status: 'blocked',
+      current_phase: 'review',
+      current_cycle: 2,
+      use_worktree: 1,
+    });
+    queries.upsertNote(`workflow/${workflow.id}/plan`, '- [ ] M1\n- [ ] M2', null);
+    queries.upsertNote(`workflow/${workflow.id}/contract`, '# contract', null);
+
+    // Simulate corrupted recovery metadata: resume can't restore because work_dir is missing.
+    queries.updateWorkflow(workflow.id, { work_dir: null, worktree_path: null, worktree_branch: null });
+
+    expect(() => resumeWorkflow(workflow)).toThrow(
+      'Worktree required (use_worktree=1) but worktree_path is null',
+    );
+
+    const after = queries.getWorkflowById(workflow.id);
+    expect(after!.status).toBe('blocked');
+    expect(after!.worktree_path).toBeNull();
+    expect(after!.blocked_reason).toContain('Worktree required (use_worktree=1) but worktree_path is null');
+    expect(after!.blocked_reason).toContain('review');
+
+    const allJobs = queries.listJobs();
+    expect(allJobs.filter(j => j.workflow_id === workflow.id)).toHaveLength(0);
+  });
+
   it('re-attaches existing branch without -b when branch survived DB recovery', async () => {
     const { resumeWorkflow } = await import('../server/orchestrator/WorkflowManager.js');
     const queries = await import('../server/db/queries.js');

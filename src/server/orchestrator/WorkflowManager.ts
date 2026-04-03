@@ -718,6 +718,21 @@ export function preReadWorkflowContext(workflowId: string): InlineWorkflowContex
   };
 }
 
+function blockIfMissingRequiredWorktree(
+  workflow: Workflow,
+  phase: WorkflowPhase,
+  opts: { throwOnBlock?: boolean } = {},
+): boolean {
+  if (workflow.use_worktree && !workflow.worktree_path) {
+    const reason = `Worktree required (use_worktree=1) but worktree_path is null — cannot spawn ${phase} job`;
+    console.log(`[workflow ${workflow.id}] ${reason} — marking blocked`);
+    updateAndEmit(workflow.id, { status: 'blocked', current_phase: phase, blocked_reason: reason });
+    if (opts.throwOnBlock) throw new Error(reason);
+    return true;
+  }
+  return false;
+}
+
 function spawnPhaseJob(workflow: Workflow, phase: WorkflowPhase, cycle: number, modelOverride?: string): void {
   const phaseLabels: Record<string, string> = { assess: 'Assess', review: 'Review', implement: 'Implement' };
   const label = phaseLabels[phase] ?? phase;
@@ -767,10 +782,7 @@ function spawnPhaseJob(workflow: Workflow, phase: WorkflowPhase, cycle: number, 
   model = getWorkflowFallbackModel(workflow, phase, model) ?? model;
 
   // Safety guard: block if use_worktree=1 but worktree_path is null (e.g. after DB recovery)
-  if (workflow.use_worktree && !workflow.worktree_path) {
-    const reason = `Worktree required (use_worktree=1) but worktree_path is null — cannot spawn ${phase} job`;
-    console.log(`[workflow ${workflow.id}] ${reason} — marking blocked`);
-    updateAndEmit(workflow.id, { status: 'blocked', current_phase: phase, blocked_reason: reason });
+  if (blockIfMissingRequiredWorktree(workflow, phase)) {
     return;
   }
 
@@ -1122,6 +1134,16 @@ export function resumeWorkflow(
     }
   }
 
+  const resumeState = queries.getWorkflowById(workflow.id)!;
+
+  // Use target phase/cycle if provided, otherwise resume the blocked phase
+  const phase = options.phase ?? (resumeState.current_phase === 'idle' ? 'assess' : resumeState.current_phase);
+  const cycle = options.cycle ?? resumeState.current_cycle;
+
+  // resumeWorkflow inserts the resumed phase job directly, so it must apply the
+  // same worktree guard as spawnPhaseJob before status changes or job creation.
+  blockIfMissingRequiredWorktree(resumeState, phase, { throwOnBlock: true });
+
   updateAndEmit(workflow.id, { status: 'running', blocked_reason: null });
   // Reset zero-progress counter so resumed workflows get a fresh budget
   queries.upsertNote(`workflow/${workflow.id}/zero-progress-count`, '0', null);
@@ -1131,11 +1153,6 @@ export function resumeWorkflow(
     // Also clear replan-attempted so resumed cycles get a fresh re-plan budget
     queries.deleteNote(`workflow/${workflow.id}/replan-attempted/${c}`);
   }
-  const updated = queries.getWorkflowById(workflow.id)!;
-
-  // Use target phase/cycle if provided, otherwise resume the blocked phase
-  const phase = options.phase ?? (updated.current_phase === 'idle' ? 'assess' : updated.current_phase);
-  const cycle = options.cycle ?? updated.current_cycle;
 
   // Update workflow state to reflect the target phase/cycle
   if (options.phase || options.cycle) {
@@ -1145,6 +1162,8 @@ export function resumeWorkflow(
     });
     console.log(`[workflow ${workflow.id}] partial recovery: resuming from ${phase} cycle ${cycle}`);
   }
+
+  const updated = queries.getWorkflowById(workflow.id)!;
 
   let model: string;
   let maxTurns: number;
