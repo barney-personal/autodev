@@ -38,8 +38,8 @@ export function onJobCompleted(job: Job, { force = false }: { force?: boolean } 
   try {
     _onJobCompleted(job);
   } catch (err) {
-    console.error(`[workflow] error handling job completion for job ${job.id}:`, err);
-    Sentry.captureException(err);
+    console.error(`[workflow] error handling job completion for job ${job.id} (workflow=${job.workflow_id}, phase=${job.workflow_phase}, cycle=${job.workflow_cycle}):`, err);
+    Sentry.captureException(err, { tags: { workflow_id: job.workflow_id ?? undefined, phase: job.workflow_phase ?? undefined, cycle: job.workflow_cycle != null ? String(job.workflow_cycle) : undefined } });
   }
 }
 
@@ -325,7 +325,11 @@ function spawnRepairJob(
     workflow_phase: phase,
   });
 
-  socket.emitJobNew(job);
+  try {
+    socket.emitJobNew(job);
+  } catch (emitErr) {
+    console.warn(`[workflow ${workflow.id}] socket.emitJobNew failed for repair job ${job.id.slice(0, 8)}:`, emitErr);
+  }
   updateAndEmit(workflow.id, { current_phase: phase, current_cycle: cycle, status: 'running' });
   console.log(`[workflow ${workflow.id}] spawned ${phase} repair job ${job.id.slice(0, 8)} for missing ${missingArtifacts.join(', ')}`);
   return true;
@@ -437,10 +441,15 @@ function spawnPhaseJob(workflow: Workflow, phase: WorkflowPhase, cycle: number, 
     workflow_phase: phase,
   });
 
-  socket.emitJobNew(job);
-  nudgeQueue();
+  try {
+    socket.emitJobNew(job);
+    nudgeQueue();
+  } catch (emitErr) {
+    // Socket/queue notification failure is non-fatal — the queue's 2s poll will find the job
+    console.warn(`[workflow ${workflow.id}] socket.emitJobNew or nudgeQueue failed for job ${job.id.slice(0, 8)}:`, emitErr);
+  }
 
-  // Update workflow state
+  // Update workflow state — must always run even if socket emit failed
   updateAndEmit(workflow.id, {
     current_phase: phase,
     current_cycle: cycle,
