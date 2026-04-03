@@ -21,6 +21,15 @@ import {
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
 
+// Mock fs.existsSync so verifyWorktreeHealth's directory/.git checks pass by default.
+vi.mock(import('fs'), async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    existsSync: vi.fn(() => true),
+  };
+});
+
 vi.mock('../server/socket/SocketManager.js', () => createSocketMock());
 
 vi.mock('../server/orchestrator/WorkflowPrompts.js', () => ({
@@ -52,6 +61,12 @@ vi.mock('../server/orchestrator/FailureClassifier.js', () => ({
 vi.mock('child_process', () => ({
   exec: vi.fn(),
   execSync: vi.fn((cmd: string) => {
+    if (typeof cmd === 'string' && cmd.includes('--is-inside-work-tree')) {
+      return Buffer.from('true\n');
+    }
+    if (typeof cmd === 'string' && cmd.includes('rev-parse HEAD') && !cmd.includes('--abbrev-ref')) {
+      return Buffer.from('abc123\n');
+    }
     if (typeof cmd === 'string' && cmd.includes('rev-parse --abbrev-ref HEAD')) {
       return Buffer.from('expected-branch\n');
     }
