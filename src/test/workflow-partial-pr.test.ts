@@ -840,19 +840,27 @@ describe('Fix-C11a: transient rev-parse errors propagate to callers via countBra
   }
 
   it('pushAndCreatePr still attempts PR when rev-parse throws transient error (safe default: hasCommits=true)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     mockTransientRevParseFailure();
 
     const { pushAndCreatePr } = await import('../server/orchestrator/WorkflowManager.js');
-    const wf = makeWorkflow();
+    // work_dir differs from worktree_path so cwd assertions are meaningful
+    const wf = makeWorkflow({ work_dir: '/tmp/other' });
 
     const prUrl = pushAndCreatePr(wf, false);
 
     // PR should be created — transient error triggers safe default (hasCommits = true)
     expect(prUrl).toBe('https://github.com/test/repo/pull/99');
 
-    // Push was attempted
+    // symbolic-ref was called with worktree_path as cwd, not work_dir (Fix-C13a)
+    const symRefCall = execSyncCalls.find(c => typeof c.cmd === 'string' && c.cmd.includes('symbolic-ref'));
+    expect(symRefCall).toBeDefined();
+    expect(symRefCall!.opts?.cwd).toBe('/tmp/wt');
+
+    // Push was attempted with worktree_path as cwd (Fix-C13a)
     const pushCall = execSyncCalls.find(c => typeof c.cmd === 'string' && c.cmd.startsWith('git push'));
     expect(pushCall).toBeDefined();
+    expect(pushCall!.opts?.cwd).toBe('/tmp/wt');
 
     // PR creation was attempted
     const prCreateCall = execSyncCalls.find(c => typeof c.cmd === 'string' && c.cmd.includes('gh pr create'));
@@ -861,13 +869,21 @@ describe('Fix-C11a: transient rev-parse errors propagate to callers via countBra
     // Transient error propagates immediately — origin/HEAD fallback was NOT attempted (Fix-C12a)
     const originHeadCall = execSyncCalls.find(c => typeof c.cmd === 'string' && c.cmd === 'git rev-parse --verify "origin/HEAD"');
     expect(originHeadCall).toBeUndefined();
+
+    // Safe-default logging contract verified (Fix-C12b)
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('rev-list failed'),
+      expect.anything(),
+    );
   });
 
   it('getPrCreationOutcome returns failed_with_publishable_commits when rev-parse throws transient error', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     mockTransientRevParseFailure();
 
     const { getPrCreationOutcome } = await import('../server/orchestrator/WorkflowManager.js');
-    const wf = makeWorkflow({ worktree_path: '/tmp/wt', work_dir: '/tmp/test' });
+    // work_dir differs from worktree_path so cwd assertions are meaningful
+    const wf = makeWorkflow({ worktree_path: '/tmp/wt', work_dir: '/tmp/other' });
 
     const outcome = getPrCreationOutcome(wf, null);
 
@@ -875,8 +891,19 @@ describe('Fix-C11a: transient rev-parse errors propagate to callers via countBra
     // which returns 'failed_with_publishable_commits' (preserves worktree)
     expect(outcome).toBe('failed_with_publishable_commits');
 
+    // symbolic-ref was called with worktree_path as cwd, not work_dir (Fix-C13a)
+    const symRefCall = execSyncCalls.find(c => typeof c.cmd === 'string' && c.cmd.includes('symbolic-ref'));
+    expect(symRefCall).toBeDefined();
+    expect(symRefCall!.opts?.cwd).toBe('/tmp/wt');
+
     // Transient error propagates immediately — origin/HEAD fallback was NOT attempted (Fix-C12a)
     const originHeadCall = execSyncCalls.find(c => typeof c.cmd === 'string' && c.cmd === 'git rev-parse --verify "origin/HEAD"');
     expect(originHeadCall).toBeUndefined();
+
+    // Safe-default logging contract verified (Fix-C12b)
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('getPrCreationOutcome'),
+      expect.stringContaining('Permission denied'),
+    );
   });
 });
