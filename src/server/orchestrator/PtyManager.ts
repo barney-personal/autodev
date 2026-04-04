@@ -60,11 +60,45 @@ const MAX_PTY_SESSIONS = Number(process.env.MAX_PTY_SESSIONS ?? 50);
 const PTY_SPAWN_MAX_RETRIES = 3;
 const PTY_SPAWN_BASE_DELAY_MS = 2000;
 
+// Resource exhaustion backoff — escalates exponentially on repeated PTY failures
+let _resourceBackoffMs = 0;
+let _lastResourceErrorTime = 0;
+const RESOURCE_BACKOFF_BASE = 30_000;
+const RESOURCE_BACKOFF_MAX = 300_000; // 5 minutes max
+
+function getResourceBackoff(): number {
+  return _resourceBackoffMs;
+}
+
+function escalateResourceBackoff(): void {
+  _resourceBackoffMs = _resourceBackoffMs === 0
+    ? RESOURCE_BACKOFF_BASE
+    : Math.min(_resourceBackoffMs * 2, RESOURCE_BACKOFF_MAX);
+}
+
+function resetResourceBackoff(): void {
+  _resourceBackoffMs = 0;
+}
+
 function checkPtyResourceAvailability(): { ok: boolean; reason?: string } {
   const active = _ptys.size;
   if (active >= MAX_PTY_SESSIONS) {
     return { ok: false, reason: `Active PTY sessions (${active}) at limit (${MAX_PTY_SESSIONS})` };
   }
+
+  // Backoff check — don't spawn if we recently hit resource exhaustion
+  if (_resourceBackoffMs > 0 && Date.now() - _lastResourceErrorTime < _resourceBackoffMs) {
+    return { ok: false, reason: `Resource backoff active (${Math.ceil((_resourceBackoffMs - (Date.now() - _lastResourceErrorTime)) / 1000)}s remaining)` };
+  }
+
+  // System-level PTY probe — try to open a PTY to verify the system can allocate one
+  try {
+    const fd = fs.openSync('/dev/ptmx', 'r');
+    fs.closeSync(fd);
+  } catch {
+    return { ok: false, reason: 'System PTY exhaustion detected (/dev/ptmx unavailable)' };
+  }
+
   return { ok: true };
 }
 
@@ -207,6 +241,28 @@ export function getSnapshot(agentId: string): string | null {
   }
 }
 
+function cleanupStaleTmuxSessions(): void {
+  try {
+    const output = execFileSync(TMUX, ['list-sessions', '-F', '#{session_name}'], { stdio: 'pipe' }).toString();
+    const sessions = output.trim().split('\n').filter(s => s.startsWith('orchestrator-'));
+
+    // Get all currently running agent IDs from the in-memory PTY map
+    const activeAgentIds = new Set(_ptys.keys());
+
+    for (const session of sessions) {
+      const agentId = session.replace('orchestrator-', '');
+      if (!activeAgentIds.has(agentId)) {
+        try {
+          execFileSync(TMUX, ['kill-session', '-t', session], { stdio: 'pipe' });
+          console.log(`[pty] cleaned up stale tmux session: ${session}`);
+        } catch { /* already gone */ }
+      }
+    }
+  } catch {
+    // tmux not running or no sessions — fine
+  }
+}
+
 export interface StartInteractiveOptions {
   agentId: string;
   job: Job;
@@ -322,6 +378,9 @@ export function startInteractiveAgent({ agentId, job, cols = 100, rows = 50, res
   ].join('\n') + '\n';
   fs.writeFileSync(script, scriptLines, { mode: 0o755 });
 
+  // Clean up orphaned tmux sessions to reclaim PTY resources before spawning
+  cleanupStaleTmuxSessions();
+
   // Resource pre-check — avoid spawn-fail loops when system is exhausted
   const resourceCheck = checkPtyResourceAvailability();
   if (!resourceCheck.ok) {
@@ -365,6 +424,9 @@ export function startInteractiveAgent({ agentId, job, cols = 100, rows = 50, res
       })(),
     });
 
+    // Session created successfully — reset resource backoff
+    resetResourceBackoff();
+
     // Set large scrollback so capture-pane -S - returns full history
     try {
       execFileSync(TMUX, ['set-option', '-t', sessionName(agentId), 'history-limit', '50000'], { stdio: 'pipe' });
@@ -381,11 +443,12 @@ export function startInteractiveAgent({ agentId, job, cols = 100, rows = 50, res
     queries.updateAgent(agentId, { status: 'failed', error_message: err.message, finished_at: Date.now() });
     queries.updateJobStatus(job.id, 'failed');
 
-    // Detect resource exhaustion errors and add a cooldown to prevent tight retry loops
-    const isResourceError = /posix_spawnp|EMFILE|ENFILE|EAGAIN|resource/i.test(err.message);
+    // Detect resource exhaustion errors and escalate backoff to prevent tight retry loops
+    const isResourceError = /posix_spawnp|EMFILE|ENFILE|EAGAIN|resource|Device not configured|fork failed/i.test(err.message);
     if (isResourceError) {
-      const RESOURCE_COOLDOWN_MS = 30_000;
-      console.warn(`[pty ${agentId}] resource exhaustion detected — cooling down for ${RESOURCE_COOLDOWN_MS / 1000}s`);
+      _lastResourceErrorTime = Date.now();
+      escalateResourceBackoff();
+      console.warn(`[pty ${agentId}] resource exhaustion detected — backoff now ${_resourceBackoffMs / 1000}s`);
     }
 
     const updated = queries.getAgentWithJob(agentId);

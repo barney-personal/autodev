@@ -297,12 +297,29 @@ The implementer just completed cycle ${cycle - 1}. You must review the actual co
    - Code style and consistency with the surrounding codebase
    - Security: injection, unvalidated inputs, secrets in code
    - Performance: N+1 queries, unnecessary re-renders, blocking operations
-4. **You must find at least 2 concrete issues** with the implementation. Look for correctness bugs, missing edge cases, insufficient test coverage, error handling gaps, or deviations from the milestone's acceptance criteria. For every issue found, add a new unchecked milestone to the plan:
+4. **Review for genuine issues** — look for correctness bugs, missing edge cases, test gaps, or deviations from the milestone's acceptance criteria. If you find real issues, add fix milestones:
    \`- [ ] **Fix: <short title>** — <specific description of what needs to change and why>\`
-   If you genuinely cannot find 2 issues, you must explicitly explain with specific evidence why the implementation is exceptional — citing exact code, test coverage, and how every acceptance criterion is met. "Looks good" is never sufficient.
+   Only add milestones for issues that would cause bugs, data loss, or user-visible problems. Do NOT add milestones for stylistic preferences, speculative hardening, or "nice to have" improvements. If the implementation meets its acceptance criteria and tests pass, approve it and move on — the goal is forward progress, not perfection.
 
-These fix milestones will be implemented in the next cycle. Be specific — vague feedback like "improve error handling" is not actionable.
+If you do add fix milestones, be specific — vague feedback like "improve error handling" is not actionable.
 `;
+
+  // Cycle awareness — help the reviewer understand budget constraints
+  const cyclesRemaining = workflow.max_cycles - cycle;
+  const milestonesRemaining = workflow.milestones_total - workflow.milestones_done;
+  const cycleAwareness = `
+## Scope Awareness
+- **Cycle:** ${cycle} of ${workflow.max_cycles} (${cyclesRemaining} remaining)
+- **Milestones:** ${workflow.milestones_done} done, ${milestonesRemaining} unchecked
+- **Efficiency:** Each new milestone you add costs ~1 cycle. Adding ${milestonesRemaining > cyclesRemaining ? 'more milestones will exceed the cycle budget' : 'milestones is fine if justified'}.
+- **Priority:** Focus on completing existing milestones. Only add new ones for genuine bugs that would break functionality.
+`;
+
+  // Scope guard — warn when plan has grown excessively
+  const originalMilestoneEstimate = 11; // A reasonable baseline — most plans start with 8-15 milestones
+  const scopeGuard = workflow.milestones_total > originalMilestoneEstimate * 2
+    ? `\n**\u26a0\ufe0f SCOPE WARNING:** The plan has grown from ~${originalMilestoneEstimate} to ${workflow.milestones_total} milestones. Stop adding milestones unless they fix critical bugs. Focus on completing the remaining work within the cycle budget.\n`
+    : '';
 
   return `# Autonomous Agent Run: Review Phase (Cycle ${cycle})
 
@@ -335,8 +352,7 @@ Rewrite the plan to reflect your review:
 - Each milestone must be achievable in a single implementation cycle
 
 Write the updated plan back: \`write_note("${planKey}", <updated plan>)\`
-
-## Rules
+${cycleAwareness}${scopeGuard}## Rules
 - Do NOT implement anything — review and planning only.
 - If the implementation was poor quality, add multiple specific fix milestones rather than vague notes.
 - The implementer reads your plan directly — be precise and actionable.${workflow.worktree_branch ? `

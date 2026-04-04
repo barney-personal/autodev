@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { execSync } from 'child_process';
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync, readFileSync, statSync } from 'fs';
 import path from 'path';
 import { captureWithContext, Sentry } from '../instrument.js';
 import * as queries from '../db/queries.js';
@@ -57,9 +57,46 @@ function _onJobCompleted(job: Job): void {
     return;
   }
 
-  // If the phase job failed, try to auto-retry with a fallback model before blocking.
-  // Rate limits are transient — Codex can take over when Claude is down.
+  // If the phase job failed, check if it was an infrastructure failure (never started).
+  // PTY exhaustion, tmux fork failures, etc. produce jobs with zero turns, zero cost,
+  // and empty/missing log files. Don't count these as real cycles.
   if (job.status === 'failed') {
+    const phase = job.workflow_phase as WorkflowPhase;
+    const cycle = job.workflow_cycle ?? workflow.current_cycle;
+
+    // Detect "failed before start": agent never did any work
+    const agents = queries.getAgentsWithJobByJobId(job.id);
+    const lastAgent = agents[0]; // sorted by started_at DESC
+    if (lastAgent) {
+      const hasNoTurns = !lastAgent.num_turns || lastAgent.num_turns === 0;
+      const hasNoCost = !lastAgent.cost_usd || lastAgent.cost_usd === 0;
+      let hasNoLogOutput = false;
+      try {
+        const logPath = path.join(process.cwd(), 'data', 'agent-logs', `${lastAgent.id}.ndjson`);
+        if (!existsSync(logPath)) {
+          hasNoLogOutput = true;
+        } else {
+          const stat = statSync(logPath);
+          hasNoLogOutput = stat.size === 0;
+        }
+      } catch {
+        hasNoLogOutput = true;
+      }
+
+      if (hasNoTurns && hasNoCost && hasNoLogOutput) {
+        console.log(`[workflow ${workflow.id}] job ${job.id.slice(0, 8)} failed before starting (infrastructure failure) — not counting as cycle`);
+        logResilienceEvent(
+          'infrastructure_failure_no_cycle_increment',
+          'workflow',
+          workflow.id,
+          { job_id: job.id, agent_id: lastAgent.id, phase, cycle, reason: 'Agent had 0 turns, 0 cost, no log output' },
+        );
+        // Re-spawn the same phase at the same cycle number without incrementing
+        spawnPhaseJob(queries.getWorkflowById(workflow.id)!, phase, cycle);
+        return;
+      }
+    }
+
     const currentModel = job.model ?? workflow.implementer_model;
     const failureKind = classifyJobFailure(job.id);
     if (isFallbackEligibleFailure(failureKind)) {
@@ -70,8 +107,6 @@ function _onJobCompleted(job: Job): void {
       }
       const fallbackModel = getWorkflowFallbackModel(workflow, job.workflow_phase as WorkflowPhase, currentModel);
       if (fallbackModel && fallbackModel !== currentModel) {
-        const phase = job.workflow_phase as WorkflowPhase;
-        const cycle = job.workflow_cycle ?? workflow.current_cycle;
         const recoveryKey = `workflow/${workflow.id}/recovery/${phase}/cycle-${cycle}/model-fallback`;
         if (queries.getNote(recoveryKey)) {
           console.log(`[workflow ${workflow.id}] phase '${phase}' model-fallback already spawned (idempotency key exists) — skipping duplicate`);
@@ -92,8 +127,6 @@ function _onJobCompleted(job: Job): void {
     }
     // Transient CLI crashes (e.g. Codex stdin hang) — retry same model, not a provider issue.
     if (isSameModelRetryEligible(failureKind)) {
-      const phase = job.workflow_phase as WorkflowPhase;
-      const cycle = job.workflow_cycle ?? workflow.current_cycle;
       const attemptsKey = `workflow/${workflow.id}/cli-retry/${phase}/cycle-${cycle}`;
       const attempts = parseInt(queries.getNote(attemptsKey)?.value ?? '0', 10);
       const MAX_CLI_RETRIES = 3;

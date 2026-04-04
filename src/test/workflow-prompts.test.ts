@@ -177,7 +177,7 @@ describe('buildReviewPrompt adversarial quality bar', () => {
       expect(stepHeaders[i]).toBe(i + 1);
     }
   });
-  it('cycle 2+ (code review) requires at least 2 concrete issues', () => {
+  it('cycle 2+ (code review) reviews for genuine issues without inflating milestones', () => {
     const wf = makeWorkflow();
     const ctx: InlineContext = {
       plan: '# Plan\n\n- [x] M1\n- [ ] M2: Next thing',
@@ -186,19 +186,22 @@ describe('buildReviewPrompt adversarial quality bar', () => {
 
     const prompt = buildReviewPrompt(wf, 2, ctx);
 
-    // Should have adversarial code review language
-    expect(prompt).toContain('You must find at least 2 concrete issues');
-    expect(prompt).toContain('"Looks good" is never sufficient');
+    // Should have non-inflating code review language
+    expect(prompt).toContain('Review for genuine issues');
+    expect(prompt).toContain('the goal is forward progress, not perfection');
+
+    // Should NOT have the old adversarial "must find 2 issues" language
+    expect(prompt).not.toContain('You must find at least 2 concrete issues');
 
     // Should NOT have plan review quality bar (that's cycle 1 only)
     expect(prompt).not.toContain('Review Quality Bar');
   });
 
-  it('cycle 2+ without inline context also includes adversarial language', () => {
+  it('cycle 2+ without inline context also includes genuine-issues language', () => {
     const wf = makeWorkflow();
     const prompt = buildReviewPrompt(wf, 2);
 
-    expect(prompt).toContain('You must find at least 2 concrete issues');
+    expect(prompt).toContain('Review for genuine issues');
     expect(prompt).toContain('Code Review (MOST IMPORTANT)');
   });
 });
