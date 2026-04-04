@@ -1040,7 +1040,10 @@ export function startWorkflow(workflow: Workflow): Job | null {
         .replace(/^-|-$/g, '')
         .slice(0, 40);
       const branchName = `workflow/${slug}-${shortId}`;
-      const worktreePath = path.resolve(workflow.work_dir, '..', '.orchestrator-worktrees', `wf-${shortId}`);
+      // Namespace worktrees by repo directory name to avoid mixing worktrees
+      // from different repos when they share a parent directory.
+      const repoName = path.basename(workflow.work_dir);
+      const worktreePath = path.resolve(workflow.work_dir, '..', '.orchestrator-worktrees', repoName, `wf-${shortId}`);
       mkdirSync(path.dirname(worktreePath), { recursive: true });
       execSync(`git worktree add ${JSON.stringify(worktreePath)} -b ${JSON.stringify(branchName)}`, {
         cwd: workflow.work_dir,
@@ -1128,7 +1131,8 @@ export function resumeWorkflow(
       .replace(/^-|-$/g, '')
       .slice(0, 40);
     const branchName = `workflow/${slug}-${shortId}`;
-    const worktreePath = path.resolve(current.work_dir, '..', '.orchestrator-worktrees', `wf-${shortId}`);
+    const repoName = path.basename(current.work_dir);
+    const worktreePath = path.resolve(current.work_dir, '..', '.orchestrator-worktrees', repoName, `wf-${shortId}`);
     try {
       mkdirSync(path.dirname(worktreePath), { recursive: true });
       // Prune stale worktree registrations before attempting to add

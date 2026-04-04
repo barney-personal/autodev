@@ -136,15 +136,16 @@ async function tick(): Promise<void> {
     const job = queries.getNextQueuedJob();
     if (!job || _classifying.has(job.id)) break;
 
-    // Concurrent workflow throttle: only one workflow phase job runs at a time.
-    // Multiple simultaneous workflows cause tmux/PTY exhaustion. If this job is
-    // a workflow phase and another workflow phase is already running, defer it.
+    // Concurrent workflow throttle: limit simultaneous workflow phase jobs to
+    // prevent tmux/PTY exhaustion. The PTY cleanup and backoff fixes handle
+    // resource recovery, so we can safely allow a few concurrent jobs.
+    const MAX_CONCURRENT_WORKFLOW_PHASES = 3;
     if (job.workflow_id && job.workflow_phase) {
       const runningWorkflowPhaseJobs = queries.listJobs('assigned')
         .concat(queries.listJobs('running'))
         .filter(j => j.workflow_id && j.workflow_phase && j.id !== job.id);
-      if (runningWorkflowPhaseJobs.length > 0) {
-        // Skip — another workflow phase is running. Will be picked up on next tick.
+      if (runningWorkflowPhaseJobs.length >= MAX_CONCURRENT_WORKFLOW_PHASES) {
+        // Skip — at capacity. Will be picked up on next tick.
         break;
       }
     }
