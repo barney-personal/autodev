@@ -72,10 +72,10 @@ function runBackup(): void {
         try {
           fs.unlinkSync(path.join(backupDir, old));
           console.log(`[db-backup] pruned old backup: ${old}`);
-        } catch { /* ignore */ }
+        } catch (err) { console.debug('[db-backup] failed to delete old backup:', old, err); }
       }
     }
-  } catch { /* ignore pruning errors */ }
+  } catch (err) { console.debug('[db-backup] pruning error (non-fatal, main backup succeeded):', err); }
 }
 
 /** Run a backup immediately (for shutdown or manual trigger) */

@@ -32,7 +32,9 @@ function readState(job: Job): RecoveryState | null {
   if (!raw) return null;
   try {
     return JSON.parse(raw) as RecoveryState;
-  } catch {
+  } catch (err) {
+    // Malformed recovery note — treat as missing state so the caller resets cleanly
+    console.debug('[recovery-ledger] malformed recovery state JSON, treating as no state:', err);
     return null;
   }
 }

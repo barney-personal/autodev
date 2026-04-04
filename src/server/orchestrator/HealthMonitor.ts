@@ -80,13 +80,13 @@ function tick(): void {
             // Agent resumed activity — dismiss stale stall warning
             queries.dismissWarningsByType(agent.id, 'stalled');
             const agentWithJob = queries.getAgentWithJob(agent.id);
-            if (agentWithJob) try { socket.emitAgentUpdate(agentWithJob); } catch { /* ignore */ }
+            if (agentWithJob) try { socket.emitAgentUpdate(agentWithJob); } catch (err) { console.debug('[health] socket emit failed after dismissing stall warning (agent resumed):', err); }
           }
         } else if (queries.hasUndismissedWarning(agent.id, 'stalled')) {
           // Activity is recent — dismiss any stale stall warning
           queries.dismissWarningsByType(agent.id, 'stalled');
           const agentWithJob = queries.getAgentWithJob(agent.id);
-          if (agentWithJob) try { socket.emitAgentUpdate(agentWithJob); } catch { /* ignore */ }
+          if (agentWithJob) try { socket.emitAgentUpdate(agentWithJob); } catch (err) { console.debug('[health] socket emit failed after dismissing stall warning (activity detected):', err); }
         }
       }
     }
@@ -235,14 +235,14 @@ function killAgentGracefully(agentId: string, reason: string): void {
   // Emit updates
   const agentWithJob = queries.getAgentWithJob(agentId);
   if (agentWithJob) {
-    try { socket.emitAgentUpdate(agentWithJob); } catch { /* ignore */ }
+    try { socket.emitAgentUpdate(agentWithJob); } catch (err) { console.debug('[health] socket emit failed for agent update after graceful kill:', err); }
   }
   const updatedJob = queries.getJobById(agent.job_id);
   if (updatedJob) {
-    try { socket.emitJobUpdate(updatedJob); } catch { /* ignore */ }
+    try { socket.emitJobUpdate(updatedJob); } catch (err) { console.debug('[health] socket emit failed for job update after graceful kill:', err); }
     // Trigger workflow/debate handlers so phases advance immediately
-    try { debateOnJobCompleted(updatedJob); } catch { /* ignore */ }
-    try { workflowOnJobCompleted(updatedJob); } catch { /* ignore */ }
+    try { debateOnJobCompleted(updatedJob); } catch (err) { console.debug('[health] debateOnJobCompleted error after graceful kill:', err); }
+    try { workflowOnJobCompleted(updatedJob); } catch (err) { console.debug('[health] workflowOnJobCompleted error after graceful kill:', err); }
   }
 
   console.log(`[health] agent ${agentId.slice(0, 6)} stopped: ${reason}`);
@@ -277,6 +277,7 @@ function extractCostFromTmux(agentId: string): number | null {
 
     return maxCost;
   } catch {
+    // tmux command failed or session not found — cost scraping is best-effort
     return null;
   }
 }
@@ -322,11 +323,11 @@ function emitWarning(agentId: string, type: string, message: string): void {
   });
   try {
     socket.emitWarningNew(warning);
-  } catch { /* socket may not be ready */ }
+  } catch (err) { console.debug('[health] socket emit failed for emitWarningNew (socket may not be ready):', err); }
   // Also refresh the agent card so the badge appears
   const agentWithJob = queries.getAgentWithJob(agentId);
   if (agentWithJob) {
-    try { socket.emitAgentUpdate(agentWithJob); } catch { /* ignore */ }
+    try { socket.emitAgentUpdate(agentWithJob); } catch (err) { console.debug('[health] socket emit failed for agent card update in emitWarning:', err); }
   }
   console.log(`[health] warning for agent ${agentId.slice(0, 6)}: [${type}] ${message}`);
 }

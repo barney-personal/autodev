@@ -59,8 +59,9 @@ export function pushEvent(eventName: string, payload: any): void {
         'DELETE FROM event_queue WHERE id IN (SELECT id FROM event_queue ORDER BY id ASC LIMIT ?)'
       ).run(excess);
     }
-  } catch {
+  } catch (err) {
     // Don't let event queue errors break the main flow
+    console.warn('[EventQueue] pushEvent failed (event dropped):', err);
   }
 }
 
@@ -82,7 +83,8 @@ export function getEventsSince(sinceMs: number): Array<{ event_name: string; pay
       payload: JSON.parse(r.payload),
       created_at: r.created_at,
     }));
-  } catch {
+  } catch (err) {
+    console.debug('[EventQueue] getEventsSince failed, returning empty:', err);
     return [];
   }
 }
@@ -97,7 +99,8 @@ export function pruneEvents(): void {
     const db = getDb();
     const cutoff = Date.now() - MAX_AGE_MS;
     db.prepare('DELETE FROM event_queue WHERE created_at < ?').run(cutoff);
-  } catch {
+  } catch (err) {
     // Don't throw during cleanup
+    console.warn('[EventQueue] pruneEvents failed:', err);
   }
 }

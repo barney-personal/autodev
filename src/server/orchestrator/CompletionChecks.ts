@@ -13,6 +13,7 @@ export function runCompletionChecks(job: Job, agent: Agent): string | null {
   try {
     checks = JSON.parse(job.completion_checks);
   } catch {
+    // malformed JSON in completion_checks field — treat as no checks configured
     return null;
   }
   if (!Array.isArray(checks) || checks.length === 0) return null;
@@ -51,7 +52,7 @@ function checkForErrorEvents(agentId: string): boolean {
     try {
       const ev = JSON.parse(row.content);
       if (ev.type === 'error') return true;
-    } catch { /* skip */ }
+    } catch { /* non-JSON output row — not an event object, skip */ }
   }
   return false;
 }

@@ -13,6 +13,8 @@ export function isNiceAvailable(): boolean {
     });
     _niceAvailable = true;
   } catch {
+    /* execFileSync exits non-zero when `nice` is absent or the lookup command fails —
+       treat as unavailable so callers fall back to plain spawn without priority adjustment */
     _niceAvailable = false;
   }
   return _niceAvailable;

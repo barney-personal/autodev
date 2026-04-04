@@ -24,7 +24,7 @@ export const SPECIALIZATIONS: SpecializationMeta[] = [
 export function getEyeTargets(): EyeTarget[] {
   const note = queries.getNote('setting:eyeTargets');
   if (!note?.value) return [];
-  try { return JSON.parse(note.value); } catch { return []; }
+  try { return JSON.parse(note.value); } catch (err) { console.debug('[EyeConfig] getEyeTargets: malformed JSON in setting:eyeTargets, returning []:', err); return []; }
 }
 
 export const EYE_PROMPT = `You are Eye, an autonomous engineering agent that runs continuously to improve the codebase.
@@ -275,7 +275,8 @@ export function buildEyePrompt(): string {
       try {
         const evt = JSON.parse(n.value);
         return `- ${evt.reason} (${evt.at})`;
-      } catch {
+      } catch (err) {
+        console.debug('[EyeConfig] buildEyePrompt: malformed JSON in wake event, using raw value:', err);
         return `- ${n.value}`;
       }
     });
@@ -291,7 +292,7 @@ export function buildEyePrompt(): string {
 
 /** Returns true if the given job context marks this as an Eye job. */
 export function isEyeJob(context: string | null | undefined): boolean {
-  try { return !!(context && JSON.parse(context).eye); } catch { return false; }
+  try { return !!(context && JSON.parse(context).eye); } catch (err) { console.debug('[EyeConfig] isEyeJob: malformed context JSON, returning false:', err); return false; }
 }
 
 // ─── Adaptive Eye Interval ──────────────────────────────────────────────────

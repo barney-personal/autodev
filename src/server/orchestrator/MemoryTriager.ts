@@ -35,7 +35,9 @@ export async function triageLearnings(agentId: string, job: Job): Promise<void> 
       queries.deleteNote(noteKey);
       return;
     }
-  } catch {
+  } catch (err) {
+    /* malformed learnings-note JSON — note is corrupt; delete it so it does not accumulate and bail out */
+    console.debug(`[memory-triage] learnings note for agent ${agentId} has malformed JSON — deleting corrupt note:`, err);
     queries.deleteNote(noteKey);
     return;
   }
@@ -126,7 +128,7 @@ function findCandidateMatches(learnings: Learning[], projectId: string | null): 
           excerpt: r.content.slice(0, 200),
         });
       }
-    } catch { /* FTS error — skip */ }
+    } catch { /* FTS lookup failed for this learning title — candidate enrichment is best-effort; triage proceeds without it */ }
   }
 
   return candidates.slice(0, 30); // cap context size
