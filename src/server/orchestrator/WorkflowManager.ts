@@ -6,7 +6,7 @@ import { captureWithContext, Sentry } from '../instrument.js';
 import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
 import type { Job, Workflow, WorkflowPhase, StopMode } from '../../shared/types.js';
-import { effectiveMaxTurns } from '../../shared/types.js';
+import { effectiveMaxTurns, isCodexModel } from '../../shared/types.js';
 import { buildAssessPrompt, buildReviewPrompt, buildImplementPrompt, buildWorkflowRepairPrompt, type InlineWorkflowContext } from './WorkflowPrompts.js';
 import { getAvailableModel, getFallbackModel, getAlternateProviderModel, getModelProvider, markModelRateLimited, markProviderRateLimited } from './ModelClassifier.js';
 import { classifyJobFailure, isFallbackEligibleFailure, isSameModelRetryEligible, shouldMarkProviderUnavailable } from './FailureClassifier.js';
@@ -195,6 +195,11 @@ function _onJobCompleted(job: Job): void {
         }
 
         if (missingArtifacts.length > 0) {
+          // Detect whether the agent never called write_note at all (likely MCP incompatibility)
+          // vs. wrote a bad plan (fixable by repair). This context aids diagnosis.
+          if (!planNote && !contractNote) {
+            console.warn(`[workflow ${workflow.id}] assess agent completed without writing plan or contract — model may not support MCP write_note reliably`);
+          }
           if (spawnRepairJob(workflow, 'assess', job.workflow_cycle ?? 0, missingArtifacts)) return;
           const assessReason = `Assess phase completed but missing ${missingArtifacts.join(', ')}`;
           console.log(`[workflow ${workflow.id}] ${assessReason} — marking blocked`);
@@ -684,7 +689,11 @@ function spawnRepairJob(
 
   const level = REPAIR_LEVELS[existingAttempts];
   queries.upsertNote(attemptsKey, String(existingAttempts + 1), null);
-  const model = phase === 'review' ? workflow.reviewer_model : workflow.implementer_model;
+  let model = phase === 'review' ? workflow.reviewer_model : workflow.implementer_model;
+  if (isCodexModel(model)) {
+    console.log(`[workflow ${workflow.id}] repair job requires reliable MCP — falling back from Codex to Claude`);
+    model = 'claude-sonnet-4-6';
+  }
   const stopMode = phase === 'review' ? workflow.stop_mode_review : workflow.stop_mode_assess;
   const stopValue = phase === 'review' ? workflow.stop_value_review : workflow.stop_value_assess;
   const baseTurns = effectiveMaxTurns(stopMode, stopValue);
@@ -794,6 +803,10 @@ function spawnPhaseJob(workflow: Workflow, phase: WorkflowPhase, cycle: number, 
   switch (phase) {
     case 'assess':
       model = workflow.implementer_model;
+      if (isCodexModel(model)) {
+        console.log(`[workflow ${workflow.id}] assess phase requires reliable MCP — falling back from Codex to Claude`);
+        model = 'claude-sonnet-4-6';
+      }
       maxTurns = workflow.max_turns_assess;
       stopMode = workflow.stop_mode_assess;
       stopValue = workflow.stop_value_assess;
@@ -1073,13 +1086,19 @@ export function startWorkflow(workflow: Workflow): Job | null {
   }
 
   const prompt = buildAssessPrompt(activeWorkflow);
+  let assessModel = activeWorkflow.implementer_model;
+  if (isCodexModel(assessModel)) {
+    console.log(`[workflow ${activeWorkflow.id}] assess phase requires reliable MCP — falling back from Codex to Claude`);
+    assessModel = 'claude-sonnet-4-6';
+  }
+  assessModel = getWorkflowFallbackModel(activeWorkflow, 'assess', assessModel) ?? assessModel;
   const job = queries.insertJob({
     id: randomUUID(),
     title: `[Workflow C0] Assess`,
     description: prompt,
     context: null,
     priority: 0,
-    model: getWorkflowFallbackModel(activeWorkflow, 'assess', activeWorkflow.implementer_model) ?? activeWorkflow.implementer_model,
+    model: assessModel,
     template_id: activeWorkflow.template_id,
     work_dir: activeWorkflow.worktree_path ?? activeWorkflow.work_dir,
     max_turns: effectiveMaxTurns(activeWorkflow.stop_mode_assess, activeWorkflow.stop_value_assess),

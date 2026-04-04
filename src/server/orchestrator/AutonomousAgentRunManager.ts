@@ -6,6 +6,7 @@ import type {
   CreateAutonomousAgentRunResponse,
   Workflow,
 } from '../../shared/types.js';
+import { isCodexModel } from '../../shared/types.js';
 
 export function createAutonomousAgentRun(
   body: CreateAutonomousAgentRunRequest,
@@ -60,6 +61,9 @@ export function createAutonomousAgentRun(
     created_at: now,
     updated_at: now,
   };
+  if (isCodexModel(workflow.implementer_model)) {
+    console.warn(`[workflow] Codex model '${workflow.implementer_model}' selected as implementer — assess phase will auto-fallback to Claude for MCP compatibility`);
+  }
   queries.insertWorkflow(workflow);
 
   const assessJob = startWorkflow(workflow);
