@@ -5,7 +5,7 @@ import { reattachAgent, getLogPath } from './AgentRunner.js';
 import { execFileSync } from 'child_process';
 import { isTmuxSessionAlive, attachPty } from './PtyManager.js';
 import { onJobCompleted as debateOnJobCompleted } from './DebateManager.js';
-import { onJobCompleted as workflowOnJobCompleted, reconcileRunningWorkflows } from './WorkflowManager.js';
+import { onJobCompleted as workflowOnJobCompleted, reconcileRunningWorkflows, reconcileBlockedPRs } from './WorkflowManager.js';
 import { orphanedWaits } from '../mcp/McpServer.js';
 import type { ClaudeStreamEvent } from '../../shared/types.js';
 import { isCodexModel, isAutoExitJob } from '../../shared/types.js';
@@ -275,6 +275,11 @@ export function runRecovery(): void {
   // Gap detector: find running workflows whose current-phase job is done but no next phase was spawned.
   // This happens when the server restarts between finish_job and onJobCompleted.
   reconcileRunningWorkflows();
+
+  // Fire-and-forget: retry PR creation for workflows blocked on PR failure.
+  reconcileBlockedPRs().catch(err =>
+    console.error('[recovery] reconcileBlockedPRs error:', err),
+  );
 }
 
 let _gapDetectorTimer: NodeJS.Timeout | null = null;

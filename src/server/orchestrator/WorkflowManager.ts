@@ -263,7 +263,7 @@ function _onJobCompleted(job: Job): void {
         if (milestones.total > 0 && meetsCompletionThreshold(milestones, updated.completion_threshold)) {
           console.log(`[workflow ${workflow.id}] milestones meet completion threshold (${milestones.done}/${milestones.total}, threshold ${updated.completion_threshold}) after review — marking complete`);
           updateAndEmit(workflow.id, { status: 'complete', current_phase: 'idle' as WorkflowPhase });
-          finalizeWorkflow(queries.getWorkflowById(workflow.id)!);
+          finalizeWorkflow(queries.getWorkflowById(workflow.id)!).catch(err => console.error(`[workflow ${workflow.id}] finalizeWorkflow error:`, err));
         } else {
           spawnPhaseJob(updated, 'implement', updated.current_cycle);
         }
@@ -289,7 +289,7 @@ function _onJobCompleted(job: Job): void {
         if (milestones.total > 0 && meetsCompletionThreshold(milestones, updated.completion_threshold)) {
           console.log(`[workflow ${workflow.id}] milestones meet completion threshold (${milestones.done}/${milestones.total}, threshold ${updated.completion_threshold}) — marking complete`);
           updateAndEmit(workflow.id, { status: 'complete', current_phase: 'idle' as WorkflowPhase });
-          finalizeWorkflow(queries.getWorkflowById(workflow.id)!);
+          finalizeWorkflow(queries.getWorkflowById(workflow.id)!).catch(err => console.error(`[workflow ${workflow.id}] finalizeWorkflow error:`, err));
         } else if (updated.current_cycle >= updated.max_cycles) {
           // Max cycles reached but milestones remain — block instead of completing.
           // Marking as "complete" with unchecked milestones is misleading and prevents
@@ -1563,7 +1563,7 @@ export function pushAndCreatePr(workflow: Workflow, isDraft: boolean): string | 
     // Check if a PR already exists before trying to create one
     try {
       const existingUrl = execSync(
-        `gh pr view --json url -q .url --head ${JSON.stringify(worktree_branch)}`,
+        `gh pr view ${JSON.stringify(worktree_branch)} --json url -q .url`,
         { cwd: worktree_path, stdio: 'pipe', timeout: 15000 }
       ).toString().trim();
       if (existingUrl) {
@@ -1590,7 +1590,7 @@ export function pushAndCreatePr(workflow: Workflow, isDraft: boolean): string | 
     if (stderr.includes('already exists')) {
       try {
         const existing = execSync(
-          `gh pr view --json url -q .url --head ${JSON.stringify(worktree_branch)}`,
+          `gh pr view ${JSON.stringify(worktree_branch)} --json url -q .url`,
           { cwd: worktree_path, stdio: 'pipe', timeout: 15000 }
         ).toString().trim();
         if (existing) {
@@ -1684,31 +1684,117 @@ export function getPrCreationOutcome(workflow: Workflow, prUrl: string | null): 
   return hasPublishableCommits ? 'failed_with_publishable_commits' : 'no_publishable_commits';
 }
 
+const _FINALIZE_MAX_ATTEMPTS = 3;
+const _FINALIZE_RETRY_DELAY_MS = 30_000;
+
 /**
  * Called when a workflow completes successfully.
  * Pushes the worktree branch, opens a GitHub PR, then removes the local worktree.
+ * Retries up to 3 times (30s apart) on transient failures. After all attempts,
+ * falls back to `gh pr view` to detect a PR that may already exist.
  * If PR creation fails but the branch has publishable commits, the worktree is
  * preserved so the PR can be retried manually or on resume.
  */
-export function finalizeWorkflow(workflow: Workflow): void {
+export async function finalizeWorkflow(workflow: Workflow): Promise<void> {
   // M13/6B: Release file claims on workflow completion
   queries.releaseWorkflowClaims(workflow.id);
   if (!workflow.worktree_path || !workflow.work_dir) return;
 
-  const prUrl = pushAndCreatePr(workflow, false);
+  let prUrl: string | null = null;
+
+  for (let attempt = 1; attempt <= _FINALIZE_MAX_ATTEMPTS; attempt++) {
+    prUrl = pushAndCreatePr(workflow, false);
+    if (prUrl) break;
+
+    if (attempt < _FINALIZE_MAX_ATTEMPTS) {
+      // Only retry when there are publishable commits — retrying without commits is pointless
+      let hasCommits = true; // safe default
+      try {
+        hasCommits = countBranchCommits(workflow.worktree_path) > 0;
+      } catch { /* safe default: assume commits exist */ }
+
+      if (!hasCommits || !workflow.worktree_branch) break;
+
+      console.log(`[workflow ${workflow.id}] PR creation attempt ${attempt} failed — retrying in 30s`);
+      await new Promise<void>(resolve => setTimeout(resolve, _FINALIZE_RETRY_DELAY_MS));
+      // Re-push branch before next attempt to ensure remote is up to date
+      try {
+        execSync(`git push -u origin ${JSON.stringify(workflow.worktree_branch)}`, {
+          cwd: workflow.worktree_path, stdio: 'pipe', timeout: 30000,
+        });
+      } catch (pushErr: any) {
+        console.warn(`[workflow ${workflow.id}] pre-retry push failed:`, pushErr?.message ?? pushErr);
+      }
+    }
+  }
+
+  // After all attempts, fall back to gh pr view in case the PR already exists remotely
+  if (!prUrl && workflow.worktree_branch && workflow.worktree_path) {
+    try {
+      const existing = execSync(
+        `gh pr view ${JSON.stringify(workflow.worktree_branch)} --json url -q .url`,
+        { cwd: workflow.worktree_path, stdio: 'pipe', timeout: 15000 },
+      ).toString().trim();
+      if (existing) {
+        prUrl = existing;
+        updateAndEmit(workflow.id, { pr_url: existing });
+        console.log(`[workflow ${workflow.id}] found existing PR via fallback lookup: ${existing}`);
+      }
+    } catch { /* no existing PR found */ }
+  }
+
   const prOutcome = getPrCreationOutcome(workflow, prUrl);
 
   if (prOutcome === 'created') {
-    // PR created successfully — safe to remove worktree
+    // PR created (or found) successfully — safe to remove worktree
     _removeWorktree(workflow);
   } else if (prOutcome === 'failed_with_publishable_commits') {
-    console.warn(`[workflow ${workflow.id}] PR creation failed — worktree preserved at ${workflow.worktree_path} for retry`);
+    console.warn(`[workflow ${workflow.id}] PR creation failed after ${_FINALIZE_MAX_ATTEMPTS} attempts — worktree preserved at ${workflow.worktree_path} for retry`);
     updateAndEmit(workflow.id, {
       status: 'blocked',
       blocked_reason: `PR creation failed — worktree preserved for retry at ${workflow.worktree_path}`,
     });
   } else {
     _removeWorktree(workflow);
+  }
+}
+
+/**
+ * On startup, find workflows blocked due to PR creation failure and retry PR creation.
+ * Skips workflows missing required worktree fields with a warning log.
+ * Recovered workflows become 'complete' with pr_url set and worktree removed.
+ * Unrecoverable workflows stay blocked with their worktrees preserved.
+ */
+export async function reconcileBlockedPRs(): Promise<void> {
+  const blocked = queries.listWorkflows().filter(
+    wf => wf.status === 'blocked'
+      && typeof wf.blocked_reason === 'string'
+      && wf.blocked_reason.includes('PR creation failed'),
+  );
+
+  if (blocked.length === 0) return;
+  console.log(`[reconcile-blocked-prs] found ${blocked.length} workflow(s) blocked on PR creation — retrying`);
+
+  for (const workflow of blocked) {
+    if (!workflow.worktree_path || !workflow.worktree_branch || !workflow.work_dir) {
+      console.warn(
+        `[reconcile-blocked-prs] workflow ${workflow.id} is missing worktree fields (path=${workflow.worktree_path ?? 'null'}, branch=${workflow.worktree_branch ?? 'null'}, work_dir=${workflow.work_dir ?? 'null'}) — skipping`,
+      );
+      continue;
+    }
+
+    try {
+      const prUrl = pushAndCreatePr(workflow, false);
+      if (prUrl) {
+        updateAndEmit(workflow.id, { status: 'complete', blocked_reason: null, pr_url: prUrl });
+        _removeWorktree(workflow);
+        console.log(`[reconcile-blocked-prs] recovered workflow ${workflow.id} → ${prUrl}`);
+      } else {
+        console.warn(`[reconcile-blocked-prs] PR creation still failing for workflow ${workflow.id} — leaving blocked`);
+      }
+    } catch (err: any) {
+      console.warn(`[reconcile-blocked-prs] error retrying PR for workflow ${workflow.id}:`, err?.message ?? err);
+    }
   }
 }
 
