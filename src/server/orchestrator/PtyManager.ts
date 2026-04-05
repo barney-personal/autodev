@@ -10,6 +10,7 @@ import { SYSTEM_PROMPT, HOOK_SETTINGS, handleJobCompletion, cancelledAgents, sta
 import type { Job } from '../../shared/types.js';
 import { isCodexModel, codexModelName, isAutoExitJob } from '../../shared/types.js';
 import { wrapExecLineWithNice } from './ProcessPriority.js';
+import { logResilienceEvent } from './ResilienceLogger.js';
 
 const CLAUDE = process.env.CLAUDE_BIN ?? 'claude';
 const CODEX = process.env.CODEX_BIN ?? 'codex';
@@ -53,6 +54,7 @@ const _ptys = new Map<string, IPty>();
 // Rolling buffer of raw PTY output per agent (capped at 2000 chunks to bound memory)
 const _ptyBuffers = new Map<string, string[]>();
 const _pendingResizes = new Map<string, { cols: number; rows: number }>();
+const _standaloneExitPolls = new Map<string, NodeJS.Timeout>();
 const PTY_BUFFER_MAX = 2000;
 
 // PTY spawn resilience constants
@@ -181,6 +183,10 @@ function sessionName(agentId: string): string {
   return `orchestrator-${agentId}`;
 }
 
+function isStandalonePrintJob(job: Pick<Job, 'is_interactive' | 'debate_role' | 'workflow_phase'>): boolean {
+  return !job.is_interactive && !isAutoExitJob(job);
+}
+
 function scriptPath(agentId: string): string {
   return path.join(SCRIPTS_DIR, `${agentId}.sh`);
 }
@@ -206,8 +212,9 @@ function detectRateLimitInNdjson(agentId: string): string | null {
   const ndjsonPath = path.join(PTY_LOG_DIR, `${agentId}.ndjson`);
   try {
     if (!fs.existsSync(ndjsonPath)) return null;
-    const content = fs.readFileSync(ndjsonPath, 'utf8');
-    for (const line of content.split('\n')) {
+    const lines = fs.readFileSync(ndjsonPath, 'utf8').split('\n').filter(Boolean);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i];
       if (!line.includes('rate_limit')) continue;
       try {
         const ev = JSON.parse(line);
@@ -221,6 +228,114 @@ function detectRateLimitInNdjson(agentId: string): string | null {
     }
   } catch { /* file read error, skip */ }
   return null;
+}
+
+function statusFromNdjson(agentId: string): { status: 'done' | 'failed'; errorMessage: string | null; source: 'result' | 'rate_limit' } | null {
+  const ndjsonPath = path.join(PTY_LOG_DIR, `${agentId}.ndjson`);
+  try {
+    if (!fs.existsSync(ndjsonPath)) return null;
+    const lines = fs.readFileSync(ndjsonPath, 'utf8').split('\n').filter(Boolean);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try {
+        const ev = JSON.parse(lines[i]);
+        if (ev.type === 'result') {
+          return {
+            status: ev.is_error ? 'failed' : 'done',
+            errorMessage: ev.is_error
+              ? (typeof ev.result === 'string' ? ev.result : (typeof ev.error === 'string' ? ev.error : 'Claude result event reported an error'))
+              : null,
+            source: 'result',
+          };
+        }
+        if (ev.type === 'rate_limit_event' && ev.rate_limit_info?.status === 'rejected') {
+          return {
+            status: 'failed',
+            errorMessage: detectRateLimitInNdjson(agentId),
+            source: 'rate_limit',
+          };
+        }
+      } catch { /* skip malformed lines */ }
+    }
+  } catch { /* file may not exist yet */ }
+  return null;
+}
+
+function checkCommitsSince(baseSha: string | null, workDir: string | null): boolean {
+  if (!baseSha || !workDir) return false;
+  try {
+    const count = execSync(
+      `git rev-list --count HEAD ${JSON.stringify(`^${baseSha}`)}`,
+      { cwd: workDir, stdio: 'pipe', timeout: 10000 }
+    ).toString().trim();
+    return parseInt(count, 10) > 0;
+  } catch {
+    return false;
+  }
+}
+
+type StandalonePrintResolution = {
+  status: 'done' | 'failed';
+  source: 'result' | 'rate_limit' | 'commits' | 'no_terminal_evidence';
+  errorMessage: string | null;
+  detail: string;
+};
+
+export function resolveStandalonePrintJobOutcome(agentId: string, job: Pick<Job, 'id' | 'title' | 'work_dir' | 'is_interactive' | 'debate_role' | 'workflow_phase'>): StandalonePrintResolution {
+  const ndjsonStatus = statusFromNdjson(agentId);
+  if (ndjsonStatus) {
+    return {
+      status: ndjsonStatus.status,
+      source: ndjsonStatus.source,
+      errorMessage: ndjsonStatus.errorMessage,
+      detail: `resolved from ndjson ${ndjsonStatus.source} event`,
+    };
+  }
+
+  const agent = queries.getAgentById(agentId);
+  if (checkCommitsSince(agent?.base_sha ?? null, job.work_dir ?? null)) {
+    return {
+      status: 'done',
+      source: 'commits',
+      errorMessage: null,
+      detail: `no final ndjson result; git commits exist since base_sha ${agent?.base_sha?.slice(0, 8) ?? 'unknown'}`,
+    };
+  }
+
+  return {
+    status: 'failed',
+    source: 'no_terminal_evidence',
+    errorMessage: 'Agent session ended without a final result event or new commits.',
+    detail: 'no final ndjson result/rate-limit event and no commits since base_sha',
+  };
+}
+
+function logStandalonePrintResolution(
+  agentId: string,
+  job: Pick<Job, 'id' | 'title'>,
+  trigger: string,
+  resolution: StandalonePrintResolution,
+): void {
+  const suffix = resolution.errorMessage ? ` — ${resolution.errorMessage}` : '';
+  console.log(
+    `[pty ${agentId}] standalone print job ${job.id.slice(0, 8)} resolved ${resolution.status} ` +
+    `via ${resolution.source} after ${trigger}: ${resolution.detail}${suffix}`,
+  );
+  logResilienceEvent('standalone_print_resolution', 'agent', agentId, {
+    job_id: job.id,
+    job_title: job.title,
+    trigger,
+    status: resolution.status,
+    source: resolution.source,
+    detail: resolution.detail,
+    error_message: resolution.errorMessage,
+  });
+}
+
+function stopStandaloneExitPoll(agentId: string): void {
+  const poll = _standaloneExitPolls.get(agentId);
+  if (!poll) return;
+  clearInterval(poll);
+  _standaloneExitPolls.delete(agentId);
 }
 
 function getSnapshotPath(agentId: string): string {
@@ -576,6 +691,51 @@ function flushDebateNdjson(agentId: string): void {
   } catch { /* no ndjson file or read error — skip silently */ }
 }
 
+async function finalizeStandalonePrintJob(agentId: string, job: Job, trigger: string): Promise<void> {
+  stopStandaloneExitPoll(agentId);
+  stopTailing(agentId);
+  flushDebateNdjson(agentId);
+
+  const agentRec = queries.getAgentById(agentId);
+  const TERMINAL = ['done', 'failed', 'cancelled'];
+  if (agentRec && TERMINAL.includes(agentRec.status)) return;
+  if (cancelledAgents.has(agentId)) {
+    cancelledAgents.delete(agentId);
+    return;
+  }
+
+  const resolution = resolveStandalonePrintJobOutcome(agentId, job);
+  logStandalonePrintResolution(agentId, job, trigger, resolution);
+
+  const updateFields: Parameters<typeof queries.updateAgent>[1] = {
+    status: resolution.status,
+    finished_at: Date.now(),
+  };
+  if (resolution.errorMessage) updateFields.error_message = resolution.errorMessage;
+  queries.updateAgent(agentId, updateFields);
+
+  await handleJobCompletion(agentId, job, resolution.status);
+}
+
+function monitorStandalonePrintJobExit(agentId: string, job: Job): void {
+  if (_standaloneExitPolls.has(agentId)) return;
+
+  const tick = () => {
+    if (isTmuxSessionAlive(agentId)) return;
+    void finalizeStandalonePrintJob(agentId, job, 'tmux_session_gone').catch(err => {
+      console.error(`[pty ${agentId}] standalone exit finalization error:`, err);
+      captureWithContext(err, { agent_id: agentId, job_id: job.id, component: 'PtyManager' });
+    });
+  };
+
+  tick();
+  if (!isTmuxSessionAlive(agentId)) return;
+
+  const poll = setInterval(tick, 5000);
+  poll.unref();
+  _standaloneExitPolls.set(agentId, poll);
+}
+
 export async function attachPty(agentId: string, job: Job, cols = 100, rows = 50): Promise<void> {
   if (_ptys.has(agentId)) return; // already attached
 
@@ -592,6 +752,12 @@ export async function attachPty(agentId: string, job: Job, cols = 100, rows = 50
     cols = pendingSize.cols;
     rows = pendingSize.rows;
     _pendingResizes.delete(agentId);
+  }
+
+  if (isStandalonePrintJob(job)) {
+    console.log(`[pty ${agentId}] standalone non-interactive job using ndjson tail + tmux-exit polling`);
+    monitorStandalonePrintJobExit(agentId, job);
+    return;
   }
 
   if (!isTmuxSessionAlive(agentId)) {
@@ -654,20 +820,18 @@ export async function attachPty(agentId: string, job: Job, cols = 100, rows = 50
       const exitPoll = setInterval(() => {
         if (isTmuxSessionAlive(agentId)) return;
         clearInterval(exitPoll);
-        const agentRec = queries.getAgentById(agentId);
-        const TERMINAL = ['done', 'failed', 'cancelled'];
-        if (agentRec && TERMINAL.includes(agentRec.status)) return;
         console.log(`[pty ${agentId}] tmux session ended (detected via fallback poll)`);
-        handleJobCompletion(agentId, job, 'done').catch(err2 => {
+        finalizeStandalonePrintJob(agentId, job, 'pty_attach_fallback_poll').catch(err2 => {
           console.error(`[pty ${agentId}] handleJobCompletion error:`, err2);
           captureWithContext(err2, { agent_id: agentId, job_id: job.id, component: 'PtyManager' });
         });
       }, 5000);
+      exitPoll.unref();
     } else if (!isAutoExitJob(job)) {
-      queries.updateAgent(agentId, { status: 'failed', error_message: err.message, finished_at: Date.now() });
-      queries.updateJobStatus(job.id, 'failed');
-      const updated = queries.getAgentWithJob(agentId);
-      if (updated) socket.emitAgentUpdate(updated);
+      finalizeStandalonePrintJob(agentId, job, 'pty_attach_exhausted_and_tmux_gone').catch(err2 => {
+        console.error(`[pty ${agentId}] standalone completion fallback error:`, err2);
+        captureWithContext(err2, { agent_id: agentId, job_id: job.id, component: 'PtyManager' });
+      });
     }
     return;
   }
@@ -802,6 +966,7 @@ export function disconnectAgent(agentId: string): void {
   // Delete buffer first so the onData guard prevents writes during teardown
   _ptyBuffers.delete(agentId);
   _pendingResizes.delete(agentId);
+  stopStandaloneExitPoll(agentId);
   closePtyLogFd(agentId);
 
   // Capture a clean snapshot before killing the session
@@ -825,7 +990,7 @@ export function disconnectAgent(agentId: string): void {
 }
 
 export function disconnectAll(): string[] {
-  const ids = Array.from(_ptys.keys());
+  const ids = Array.from(new Set([..._ptys.keys(), ..._standaloneExitPolls.keys()]));
   for (const agentId of ids) {
     disconnectAgent(agentId);
   }
@@ -881,4 +1046,48 @@ function buildInteractivePrompt(job: Job): string {
   prompt += buildMemorySection(job);
 
   return prompt;
+}
+
+export function _statusFromNdjsonForTest(agentId: string): 'done' | 'failed' | null {
+  return statusFromNdjson(agentId)?.status ?? null;
+}
+
+export function _checkCommitsSinceForTest(baseSha: string | null, workDir: string | null): boolean {
+  return checkCommitsSince(baseSha, workDir);
+}
+
+export function _getSessionNameForTest(agentId: string): string {
+  return sessionName(agentId);
+}
+
+export function _checkPtyResourceAvailabilityForTest(): { ok: boolean; reason?: string } {
+  return checkPtyResourceAvailability();
+}
+
+export function _getResourceBackoffForTest(): number {
+  return getResourceBackoff();
+}
+
+export function _escalateResourceBackoffForTest(): void {
+  escalateResourceBackoff();
+}
+
+export function _resetResourceBackoffForTest(): void {
+  resetResourceBackoff();
+}
+
+export function _cleanupStaleTmuxSessionsForTest(): void {
+  cleanupStaleTmuxSessions();
+}
+
+export function _resolveStandalonePrintJobOutcomeForTest(agentId: string, job: Pick<Job, 'id' | 'title' | 'work_dir' | 'is_interactive' | 'debate_role' | 'workflow_phase'>): StandalonePrintResolution {
+  return resolveStandalonePrintJobOutcome(agentId, job);
+}
+
+export function _resetPtyManagerStateForTest(): void {
+  disconnectAll();
+  resetResourceBackoff();
+  _ptyBuffers.clear();
+  _pendingResizes.clear();
+  for (const agentId of Array.from(_ptyLogFds.keys())) closePtyLogFd(agentId);
 }

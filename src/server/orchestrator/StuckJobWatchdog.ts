@@ -26,7 +26,7 @@ import { runAgent, getLogPath } from './AgentRunner.js';
 import { onJobCompleted as debateOnJobCompleted } from './DebateManager.js';
 import { onJobCompleted as workflowOnJobCompleted } from './WorkflowManager.js';
 import { getFileLockRegistry } from './FileLockRegistry.js';
-import { isTmuxSessionAlive, startInteractiveAgent, saveSnapshot } from './PtyManager.js';
+import { isTmuxSessionAlive, startInteractiveAgent, saveSnapshot, resolveStandalonePrintJobOutcome } from './PtyManager.js';
 import { handleRetry } from './RetryManager.js';
 import { orphanedWaits, disconnectedAgents, hasActiveTransport } from '../mcp/McpServer.js';
 import { isCodexModel, isAutoExitJob } from '../../shared/types.js';
@@ -242,17 +242,30 @@ function check(): void {
       // Tmux-based agent: session ended without finish_job being called.
       // Interactive or debate-stage → done; other non-interactive → failed.
       const isDebateStage = job ? isAutoExitJob(job) : false;
-      const finalStatus = (job?.is_interactive || isDebateStage) ? 'done' : 'failed';
+      const isStandalonePrint = !!job && !job.is_interactive && !isDebateStage;
+      const standaloneResolution = isStandalonePrint && job ? resolveStandalonePrintJobOutcome(agent.id, job) : null;
+      const finalStatus = standaloneResolution?.status ?? ((job?.is_interactive || isDebateStage) ? 'done' : 'failed');
       console.log(
-        `[watchdog] agent ${agent.id} (tmux-based) — session gone, marking ${finalStatus}`
+        `[watchdog] agent ${agent.id} (tmux-based) — session gone, marking ${finalStatus}` +
+        (standaloneResolution ? ` (${standaloneResolution.source})` : '')
       );
 
       queries.updateAgent(agent.id, {
         status: finalStatus,
-        error_message: finalStatus === 'failed' ? 'Agent session ended without calling finish_job.' : null,
+        error_message: standaloneResolution?.errorMessage
+          ?? (finalStatus === 'failed' ? 'Agent session ended without calling finish_job.' : null),
         finished_at: Date.now(),
       });
       queries.updateJobStatus(agent.job_id, finalStatus);
+
+      if (standaloneResolution) {
+        logResilienceEvent('watchdog_terminal_resolution', 'agent', agent.id, {
+          job_id: agent.job_id,
+          status: standaloneResolution.status,
+          source: standaloneResolution.source,
+          detail: standaloneResolution.detail,
+        });
+      }
     }
 
     getFileLockRegistry().releaseAll(agent.id);
@@ -834,4 +847,15 @@ export function _resetMilestoneSnapshotsForTest(): void {
 /** Exposed for tests — read-only access to snapshot map. */
 export function _getMilestoneSnapshotsForTest(): Map<string, { milestonesDone: number; checkedAt: number }> {
   return _milestoneSnapshots;
+}
+
+export function _invokeWatchdogCheckForTest(): void {
+  check();
+}
+
+export function _resetWatchdogStateForTest(): void {
+  stopWatchdog();
+  _milestoneSnapshots.clear();
+  orphanedWaits.clear();
+  disconnectedAgents.clear();
 }

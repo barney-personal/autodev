@@ -3,7 +3,7 @@ import { captureWithContext } from '../instrument.js';
 import * as queries from '../db/queries.js';
 import { reattachAgent, getLogPath } from './AgentRunner.js';
 import { execFileSync } from 'child_process';
-import { isTmuxSessionAlive, attachPty } from './PtyManager.js';
+import { isTmuxSessionAlive, attachPty, resolveStandalonePrintJobOutcome } from './PtyManager.js';
 import { onJobCompleted as debateOnJobCompleted } from './DebateManager.js';
 import { onJobCompleted as workflowOnJobCompleted, reconcileRunningWorkflows, reconcileBlockedPRs } from './WorkflowManager.js';
 import { orphanedWaits } from '../mcp/McpServer.js';
@@ -136,8 +136,18 @@ export function runRecovery(): void {
         // Tmux-based path (all Claude agents, interactive or not)
         if (isTmuxSessionAlive(agent.id)) {
           const isDebateStage = isAutoExitJob(job);
+          const isStandalonePrint = !job.is_interactive && !isDebateStage;
 
-          if (!job.is_interactive && !isDebateStage) {
+          if (isStandalonePrint) {
+            console.log(`[recovery] re-monitoring standalone print job ${agent.id} after restart`);
+            attachPty(agent.id, job);
+            logResilienceEvent('agent_recovered', 'agent', agent.id, {
+              type: 'tmux_standalone_print',
+              outcome: 're_monitored',
+              job_id: agent.job_id,
+            });
+            tmuxReattached++;
+          } else if (!job.is_interactive && !isDebateStage) {
             // Non-interactive automated agent (e.g. Eye, verification agents).
             // The in-memory MCP session is gone after restart and Claude Code won't
             // auto-reinitialize, so the agent can't call finish_job or any other MCP tool.
@@ -206,12 +216,18 @@ export function runRecovery(): void {
         } else {
           // Interactive or debate-stage → done; other non-interactive → failed (no finish_job called)
           const isDebateStage = isAutoExitJob(job);
-          const finalStatus = (job.is_interactive || isDebateStage) ? 'done' : 'failed';
-          console.log(`[recovery] tmux agent ${agent.id} — session gone, marking ${finalStatus}`);
+          const isStandalonePrint = !job.is_interactive && !isDebateStage;
+          const standaloneResolution = isStandalonePrint ? resolveStandalonePrintJobOutcome(agent.id, job) : null;
+          const finalStatus = standaloneResolution?.status ?? ((job.is_interactive || isDebateStage) ? 'done' : 'failed');
+          console.log(
+            `[recovery] tmux agent ${agent.id} — session gone, marking ${finalStatus}` +
+            (standaloneResolution ? ` (${standaloneResolution.source})` : '')
+          );
 
           queries.updateAgent(agent.id, {
             status: finalStatus,
-            error_message: finalStatus === 'failed' ? 'Agent session not found on restart.' : null,
+            error_message: standaloneResolution?.errorMessage
+              ?? (finalStatus === 'failed' ? 'Agent session not found on restart.' : null),
             finished_at: Date.now(),
           });
           queries.updateJobStatus(agent.job_id, finalStatus);
@@ -226,7 +242,13 @@ export function runRecovery(): void {
             });
           }
 
-          logResilienceEvent('agent_recovered', 'agent', agent.id, { type: 'tmux', outcome: finalStatus, job_id: agent.job_id });
+          logResilienceEvent('agent_recovered', 'agent', agent.id, {
+            type: isStandalonePrint ? 'tmux_standalone_print' : 'tmux',
+            outcome: finalStatus,
+            source: standaloneResolution?.source,
+            detail: standaloneResolution?.detail,
+            job_id: agent.job_id,
+          });
           if (finalStatus === 'done') {
             const doneJob = queries.getJobById(agent.job_id);
             if (doneJob) {
