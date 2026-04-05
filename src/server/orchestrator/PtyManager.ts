@@ -50,6 +50,9 @@ export function ensureCodexTrusted(workDir: string): void {
 
 // agentId → active PTY instance
 const _ptys = new Map<string, IPty>();
+// Agents currently spawning (tmux created but PTY not yet attached).
+// Prevents cleanupStaleTmuxSessions from killing sessions that are still starting up.
+const _spawningAgents = new Set<string>();
 
 // Rolling buffer of raw PTY output per agent (capped at 2000 chunks to bound memory)
 const _ptyBuffers = new Map<string, string[]>();
@@ -331,6 +334,23 @@ function logStandalonePrintResolution(
   });
 }
 
+function logPtyLifecycleEvent(
+  eventType: string,
+  agentId: string,
+  job: Pick<Job, 'id' | 'title' | 'model' | 'work_dir'>,
+  details?: Record<string, unknown>,
+): void {
+  logResilienceEvent(eventType, 'agent', agentId, {
+    job_id: job.id,
+    job_title: job.title,
+    model: job.model ?? null,
+    work_dir: job.work_dir ?? null,
+    ndjson_path: path.join(PTY_LOG_DIR, `${agentId}.ndjson`),
+    snapshot_path: getSnapshotPath(agentId),
+    ...details,
+  });
+}
+
 function stopStandaloneExitPoll(agentId: string): void {
   const poll = _standaloneExitPolls.get(agentId);
   if (!poll) return;
@@ -391,12 +411,14 @@ function cleanupStaleTmuxSessions(): void {
 
     for (const session of sessions) {
       const agentId = session.replace('orchestrator-', '');
-      if (!activeAgentIds.has(agentId)) {
-        try {
-          execFileSync(TMUX, ['kill-session', '-t', session], { stdio: 'pipe' });
-          console.log(`[pty] cleaned up stale tmux session: ${session}`);
-        } catch { /* already gone */ }
+      // Skip agents that are actively attached OR still spawning (tmux created, PTY not yet attached)
+      if (activeAgentIds.has(agentId) || _spawningAgents.has(agentId)) {
+        continue;
       }
+      try {
+        execFileSync(TMUX, ['kill-session', '-t', session], { stdio: 'pipe' });
+        console.log(`[pty] cleaned up stale tmux session: ${session}`);
+      } catch { /* already gone */ }
     }
   } catch {
     // tmux not running or no sessions — fine
@@ -534,6 +556,12 @@ export function startInteractiveAgent({ agentId, job, cols = 100, rows = 50, res
   if (!resourceCheck.ok) {
     const msg = `PTY resource check failed: ${resourceCheck.reason}`;
     console.warn(`[pty ${agentId}] ${msg} — marking job failed with cooldown`);
+    logPtyLifecycleEvent('pty_resource_check_failed', agentId, job, {
+      reason: resourceCheck.reason,
+      active_pty_sessions: _ptys.size,
+      resource_backoff_ms: _resourceBackoffMs,
+      max_pty_sessions: MAX_PTY_SESSIONS,
+    });
     queries.updateAgent(agentId, { status: 'failed', error_message: msg, finished_at: Date.now() });
     queries.updateJobStatus(job.id, 'failed');
     const updated = queries.getAgentWithJob(agentId);
@@ -546,6 +574,10 @@ export function startInteractiveAgent({ agentId, job, cols = 100, rows = 50, res
   fs.mkdirSync(PTY_LOG_DIR, { recursive: true });
   try { fs.unlinkSync(getPtyLogPath(agentId)); } catch { /* no previous log */ }
   try { fs.unlinkSync(getSnapshotPath(agentId)); } catch { /* no previous snapshot */ }
+
+  // Mark this agent as spawning so concurrent cleanupStaleTmuxSessions calls
+  // don't kill its tmux session before the PTY is attached to _ptys.
+  _spawningAgents.add(agentId);
 
   try {
     // Kill any existing session with this name
@@ -586,8 +618,15 @@ export function startInteractiveAgent({ agentId, job, cols = 100, rows = 50, res
     } catch { /* ignore — older tmux may not support per-session mouse */ }
 
   } catch (err: any) {
+    _spawningAgents.delete(agentId);
     console.error(`[pty ${agentId}] failed to create tmux session:`, err.message);
     captureWithContext(err, { agent_id: agentId, job_id: job.id, component: 'PtyManager' });
+    logPtyLifecycleEvent('pty_tmux_session_create_failed', agentId, job, {
+      error: err.message,
+      cols,
+      rows,
+      work_dir_exists: fs.existsSync(workDir),
+    });
     queries.updateAgent(agentId, { status: 'failed', error_message: err.message, finished_at: Date.now() });
     queries.updateJobStatus(job.id, 'failed');
 
@@ -597,6 +636,10 @@ export function startInteractiveAgent({ agentId, job, cols = 100, rows = 50, res
       _lastResourceErrorTime = Date.now();
       escalateResourceBackoff();
       console.warn(`[pty ${agentId}] resource exhaustion detected — backoff now ${_resourceBackoffMs / 1000}s`);
+      logPtyLifecycleEvent('pty_resource_backoff_escalated', agentId, job, {
+        error: err.message,
+        backoff_ms: _resourceBackoffMs,
+      });
     }
 
     const updated = queries.getAgentWithJob(agentId);
@@ -641,12 +684,18 @@ export function startInteractiveAgent({ agentId, job, cols = 100, rows = 50, res
       queries.updateAgent(agentId, { status: 'running' });
       const updated = queries.getAgentWithJob(agentId);
       if (updated) socket.emitAgentUpdate(updated);
+      logPtyLifecycleEvent('pty_agent_running', agentId, job, {
+        transport: isStandalonePrintJob(job) ? 'ndjson_tail_poll' : 'pty_attach',
+      });
 
       // Attach node-pty to the tmux session
       attachPty(agentId, job, cols, rows);
     } catch (err: any) {
       console.error(`[pty ${agentId}] error in post-start setup:`, err.message);
       captureWithContext(err, { agent_id: agentId, job_id: job.id, component: 'PtyManager' });
+      logPtyLifecycleEvent('pty_post_start_setup_failed', agentId, job, {
+        error: err.message,
+      });
       queries.updateAgent(agentId, { status: 'failed', error_message: err.message, finished_at: Date.now() });
       queries.updateJobStatus(job.id, 'failed');
       const updated = queries.getAgentWithJob(agentId);
@@ -756,6 +805,9 @@ export async function attachPty(agentId: string, job: Job, cols = 100, rows = 50
 
   if (isStandalonePrintJob(job)) {
     console.log(`[pty ${agentId}] standalone non-interactive job using ndjson tail + tmux-exit polling`);
+    logPtyLifecycleEvent('standalone_print_monitor_started', agentId, job, {
+      mode: 'ndjson_tail_poll',
+    });
     monitorStandalonePrintJobExit(agentId, job);
     return;
   }
@@ -809,6 +861,8 @@ export async function attachPty(agentId: string, job: Job, cols = 100, rows = 50
   }
 
   if (!ptyInstance) {
+    // PTY attach failed — clear spawning flag so cleanup can reclaim the session if needed
+    _spawningAgents.delete(agentId);
     // All retries exhausted — fall back to polling if tmux session is alive
     const err = lastErr!;
     if (isAutoExitJob(job)) {
@@ -816,6 +870,12 @@ export async function attachPty(agentId: string, job: Job, cols = 100, rows = 50
     } else {
       console.warn(`[pty ${agentId}] PTY attach failed after ${PTY_SPAWN_MAX_RETRIES + 1} attempts:`, err.message);
     }
+    logPtyLifecycleEvent('pty_attach_exhausted', agentId, job, {
+      error: err.message,
+      attempts: PTY_SPAWN_MAX_RETRIES + 1,
+      tmux_alive: isTmuxSessionAlive(agentId),
+      fallback: isAutoExitJob(job) ? 'wait_for_tmux_exit_poll' : 'finalize_if_tmux_gone',
+    });
     if (isTmuxSessionAlive(agentId)) {
       const exitPoll = setInterval(() => {
         if (isTmuxSessionAlive(agentId)) return;
@@ -837,8 +897,10 @@ export async function attachPty(agentId: string, job: Job, cols = 100, rows = 50
   }
 
   _ptys.set(agentId, ptyInstance);
+  _spawningAgents.delete(agentId);
   if (!_ptyBuffers.has(agentId)) _ptyBuffers.set(agentId, []);
   console.log(`[pty ${agentId}] attached to tmux session`);
+  logPtyLifecycleEvent('pty_attached', agentId, job, { cols, rows });
 
   ptyInstance.onData((data) => {
     try {
@@ -907,6 +969,12 @@ export async function attachPty(agentId: string, job: Job, cols = 100, rows = 50
         const updateFields: Parameters<typeof queries.updateAgent>[1] = { status, finished_at: Date.now() };
         if (errorMsg) updateFields.error_message = errorMsg;
         queries.updateAgent(agentId, updateFields);
+        logPtyLifecycleEvent('pty_exit_terminal_resolution', agentId, job, {
+          status,
+          error_message: errorMsg,
+          uses_print_mode: usesPrintMode,
+          tmux_alive: false,
+        });
         handleJobCompletion(agentId, job, status).catch(err => {
           console.error(`[pty ${agentId}] handleJobCompletion error:`, err);
           captureWithContext(err, { agent_id: agentId, job_id: job.id, component: 'PtyManager' });
