@@ -741,6 +741,7 @@ function flushDebateNdjson(agentId: string): void {
 }
 
 async function finalizeStandalonePrintJob(agentId: string, job: Job, trigger: string): Promise<void> {
+  _spawningAgents.delete(agentId);
   stopStandaloneExitPoll(agentId);
   stopTailing(agentId);
   flushDebateNdjson(agentId);
@@ -804,6 +805,9 @@ export async function attachPty(agentId: string, job: Job, cols = 100, rows = 50
   }
 
   if (isStandalonePrintJob(job)) {
+    // Standalone print jobs never attach a PTY, so their spawning window ends
+    // once monitoring is active rather than when _ptys is populated.
+    _spawningAgents.delete(agentId);
     console.log(`[pty ${agentId}] standalone non-interactive job using ndjson tail + tmux-exit polling`);
     logPtyLifecycleEvent('standalone_print_monitor_started', agentId, job, {
       mode: 'ndjson_tail_poll',
@@ -1033,6 +1037,7 @@ export async function resizeAndSnapshot(agentId: string, cols: number, rows: num
 export function disconnectAgent(agentId: string): void {
   // Delete buffer first so the onData guard prevents writes during teardown
   _ptyBuffers.delete(agentId);
+  _spawningAgents.delete(agentId);
   _pendingResizes.delete(agentId);
   stopStandaloneExitPoll(agentId);
   closePtyLogFd(agentId);
