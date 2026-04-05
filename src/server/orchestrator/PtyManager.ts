@@ -359,10 +359,12 @@ export function startInteractiveAgent({ agentId, job, cols = 100, rows = 50, res
     `unset SENTRY_DSN`,
     `unset SENTRY_RELEASE`,
     `unset SENTRY_ENVIRONMENT`,
+    // Always cd to the working directory and fail hard if it doesn't exist.
+    // Without this, the agent runs in the wrong directory and can't find files.
+    `cd ${JSON.stringify(workDir)} || { echo "[agent] FATAL: working directory does not exist: ${workDir}" >&2; exit 1; }`,
     // Ensure the correct branch is checked out before the agent runs.
     // Prevents agents from committing to main when working in a worktree.
     ...(expectedBranch ? [
-      `cd ${JSON.stringify(workDir)}`,
       `_current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)`,
       `if [ "$_current_branch" != ${JSON.stringify(expectedBranch)} ]; then`,
       `  git checkout ${JSON.stringify(expectedBranch)} 2>/dev/null || true`,
