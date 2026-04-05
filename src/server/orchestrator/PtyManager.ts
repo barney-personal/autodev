@@ -198,6 +198,31 @@ export function isTmuxSessionAlive(agentId: string): boolean {
   }
 }
 
+/**
+ * Scan the agent's ndjson log for rate_limit_event with status "rejected".
+ * Returns a descriptive error string if found, or null if no rate limit detected.
+ */
+function detectRateLimitInNdjson(agentId: string): string | null {
+  const ndjsonPath = path.join(PTY_LOG_DIR, `${agentId}.ndjson`);
+  try {
+    if (!fs.existsSync(ndjsonPath)) return null;
+    const content = fs.readFileSync(ndjsonPath, 'utf8');
+    for (const line of content.split('\n')) {
+      if (!line.includes('rate_limit')) continue;
+      try {
+        const ev = JSON.parse(line);
+        if (ev.type === 'rate_limit_event' && ev.rate_limit_info?.status === 'rejected') {
+          const info = ev.rate_limit_info;
+          const limitType = info.rateLimitType ?? 'unknown';
+          const resetsAt = info.resetsAt ? new Date(info.resetsAt * 1000).toISOString() : 'unknown';
+          return `Rate limited (${limitType}), resets at ${resetsAt}`;
+        }
+      } catch { /* not valid JSON, skip */ }
+    }
+  } catch { /* file read error, skip */ }
+  return null;
+}
+
 function getSnapshotPath(agentId: string): string {
   return path.join(PTY_LOG_DIR, `${agentId}.snapshot`);
 }
@@ -359,6 +384,11 @@ export function startInteractiveAgent({ agentId, job, cols = 100, rows = 50, res
     `unset SENTRY_DSN`,
     `unset SENTRY_RELEASE`,
     `unset SENTRY_ENVIRONMENT`,
+    // Pass through Anthropic API key so agents use the API instead of OAuth
+    // (avoids hitting CLI per-user rate limits when an API key is available).
+    ...(process.env.ANTHROPIC_API_KEY
+      ? [`export ANTHROPIC_API_KEY=${JSON.stringify(process.env.ANTHROPIC_API_KEY)}`]
+      : []),
     // Always cd to the working directory and fail hard if it doesn't exist.
     // Without this, the agent runs in the wrong directory and can't find files.
     `cd ${JSON.stringify(workDir)} || { echo "[agent] FATAL: working directory does not exist: ${workDir}" >&2; exit 1; }`,
@@ -691,14 +721,23 @@ export async function attachPty(agentId: string, job: Job, cols = 100, rows = 50
         // For interactive agents: user ended the session = done
         // For --print mode agents (debate, workflow, batch): exit naturally = done
         const usesPrintMode = isAutoExitJob(job) || !job.is_interactive;
-        const status = (job.is_interactive || usesPrintMode) ? 'done' : 'failed';
-        const errorMsg = (job.is_interactive || usesPrintMode) ? null : 'Agent session ended without calling finish_job.';
+        let status: 'done' | 'failed' = (job.is_interactive || usesPrintMode) ? 'done' : 'failed';
+        let errorMsg: string | null = (job.is_interactive || usesPrintMode) ? null : 'Agent session ended without calling finish_job.';
 
         // For --print agents, stop the live tailer then flush any lines it missed
         // in the small race window between the last poll and the PTY exit.
         if (usesPrintMode) {
           stopTailing(agentId);
           flushDebateNdjson(agentId);
+        }
+
+        // Check the ndjson log for rate limit rejection — overrides status to failed
+        // so the retry/failure pipeline handles it properly instead of treating it as success.
+        const rateLimitInfo = detectRateLimitInNdjson(agentId);
+        if (rateLimitInfo) {
+          status = 'failed';
+          errorMsg = rateLimitInfo;
+          console.warn(`[pty ${agentId}] rate limit detected: ${rateLimitInfo}`);
         }
 
         const updateFields: Parameters<typeof queries.updateAgent>[1] = { status, finished_at: Date.now() };
