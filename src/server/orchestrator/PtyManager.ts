@@ -445,6 +445,11 @@ export function startInteractiveAgent({ agentId, job, cols = 100, rows = 50, res
     } catch {
       const msg = `work_dir does not exist: ${job.work_dir}`;
       console.warn(`[pty ${agentId}] ${msg} — marking job failed`);
+      captureWithContext(new Error(msg), { agent_id: agentId, job_id: job.id, component: 'PtyManager' });
+      logPtyLifecycleEvent('pty_work_dir_rejected', agentId, job, {
+        reason: 'work_dir_does_not_exist',
+        rejected_path: job.work_dir,
+      });
       queries.updateAgent(agentId, { status: 'failed', error_message: msg, finished_at: Date.now() });
       queries.updateJobStatus(job.id, 'failed');
       const updated = queries.getAgentWithJob(agentId);
