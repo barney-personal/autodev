@@ -1884,6 +1884,37 @@ export function _resetForTest(): void {
   _processedJobs.clear();
 }
 
+const OPERATIONAL_BLOCK_SUBSTRINGS = [
+  'Reached max cycles',
+  'no milestone progress',
+  'Diminishing returns',
+  'PR creation failed',
+  'Draft PR creation failed',
+  'was cancelled',
+  'no fallback model available',
+  'duplicate completion skipped',
+] as const;
+
+const OPERATIONAL_FAILED_KINDS = new Set([
+  'timeout',
+  'mcp_disconnect',
+  'out_of_memory',
+  'disk_full',
+  'context_overflow',
+  'codex_cli_crash',
+]);
+
+function isOperationalBlockedReason(reason: string): boolean {
+  if (OPERATIONAL_BLOCK_SUBSTRINGS.some(pattern => reason.includes(pattern))) {
+    return true;
+  }
+
+  const failedMatch = reason.match(/^Phase '[^']+' job [0-9a-f]{8} failed \(([^)]+)\)$/);
+  if (!failedMatch) return false;
+
+  return OPERATIONAL_FAILED_KINDS.has(failedMatch[1]);
+}
+
 function updateAndEmit(id: string, fields: Parameters<typeof queries.updateWorkflow>[1]): void {
   let previousStatus: string | undefined;
   if (fields.status) {
@@ -1907,15 +1938,9 @@ function updateAndEmit(id: string, fields: Parameters<typeof queries.updateWorkf
   if (fields.status === 'blocked' && previousStatus !== 'blocked') {
     const reason = fields.blocked_reason ?? updated.blocked_reason ?? 'unknown';
     // Operational blocks are expected workflow states — not Sentry exceptions.
-    // Use an allowlist so new block reasons default to being reported.
-    const OPERATIONAL_BLOCK_PATTERNS = [
-      'Reached max cycles',
-      'no milestone progress',
-      'Diminishing returns',
-      'PR creation failed',
-      'Draft PR creation failed',
-    ];
-    const isOperational = OPERATIONAL_BLOCK_PATTERNS.some(p => reason.includes(p));
+    // Use explicit phrases and bounded failed-kind matching so new block reasons
+    // default to being reported instead of being hidden by broad substrings.
+    const isOperational = isOperationalBlockedReason(reason);
     if (!isOperational) {
       const err = new Error(`Workflow blocked: ${updated.title} — ${reason}`);
       err.name = 'WorkflowBlocked';
