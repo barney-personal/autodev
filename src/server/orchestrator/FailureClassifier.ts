@@ -201,7 +201,8 @@ export function isFallbackEligibleFailure(kind: FailureKind): boolean {
 }
 
 export function isSameModelRetryEligible(kind: FailureKind): boolean {
-  return kind === 'codex_cli_crash';
+  return kind === 'codex_cli_crash'
+    || kind === 'timeout';
 }
 
 export function shouldMarkProviderUnavailable(kind: FailureKind): boolean {

@@ -123,7 +123,7 @@ function _onJobCompleted(job: Job): void {
       updateAndEmit(workflow.id, { status: 'blocked', current_phase: job.workflow_phase ?? 'idle', blocked_reason: noFallbackReason });
       return;
     }
-    // Transient CLI crashes (e.g. Codex stdin hang) — retry same model, not a provider issue.
+    // Transient failures (e.g. Codex stdin hang, timeout) — retry same model, not a provider issue.
     if (isSameModelRetryEligible(failureKind)) {
       const attemptsKey = `workflow/${workflow.id}/cli-retry/${phase}/cycle-${cycle}`;
       const attempts = parseInt(queries.getNote(attemptsKey)?.value ?? '0', 10);
