@@ -527,6 +527,20 @@ describe('Event replay API', () => {
 });
 
 describe('Failure classification', () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(async () => {
+    const { _resetWarnedUnclassifiedForTest } = await import('../server/orchestrator/FailureClassifier.js');
+    _resetWarnedUnclassifiedForTest();
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(async () => {
+    warnSpy.mockRestore();
+    const { _resetWarnedUnclassifiedForTest } = await import('../server/orchestrator/FailureClassifier.js');
+    _resetWarnedUnclassifiedForTest();
+  });
+
   it('classifies rate limit errors', async () => {
     const { classifyFailureText } = await import('../server/orchestrator/FailureClassifier.js');
     expect(classifyFailureText('rate_limit_error: too many requests')).toBe('rate_limit');
@@ -585,9 +599,71 @@ describe('Failure classification', () => {
     expect(classifyFailureText('Reading prompt from stdin...')).toBe('codex_cli_crash');
   });
 
-  it('returns task_failure for unrecognized errors', async () => {
-    const { classifyFailureText } = await import('../server/orchestrator/FailureClassifier.js');
+  it('returns unknown without warning for SessionStart hook JSON noise', async () => {
+    const {
+      classifyFailureText,
+      _resetWarnedUnclassifiedForTest,
+    } = await import('../server/orchestrator/FailureClassifier.js');
+
+    const sessionStartPayloads = [
+      '{"type":"system","subtype":"hook_started","hook_id":"8e702a89-2007-4f5c-bc0c-01d83a081886","hook_name":"SessionStart:startup","hook_event":"SessionStart","uuid":"311620d6-0a47-4529-a7c1-867ac092c710"}',
+      '{"type":"system","subtype":"hook_started","hook_event":"SessionStart"}',
+      '{"type":"system","hook_event":"SessionStart","uuid":"cbb00737-eccb-4d42-9222-2edba62d8af9"}',
+    ];
+
+    for (const payload of sessionStartPayloads) {
+      _resetWarnedUnclassifiedForTest();
+      warnSpy.mockClear();
+      expect(classifyFailureText(payload)).toBe('unknown');
+      expect(warnSpy).not.toHaveBeenCalled();
+    }
+  });
+
+  it('returns unknown without warning for whitespace-only input', async () => {
+    const {
+      classifyFailureText,
+      _resetWarnedUnclassifiedForTest,
+    } = await import('../server/orchestrator/FailureClassifier.js');
+
+    for (const input of ['   ', '\n\t  \n', '\t\t']) {
+      _resetWarnedUnclassifiedForTest();
+      warnSpy.mockClear();
+      expect(classifyFailureText(input)).toBe('unknown');
+      expect(warnSpy).not.toHaveBeenCalled();
+    }
+  });
+
+  it('returns unknown without warning for startup MCP tool-list fragments', async () => {
+    const {
+      classifyFailureText,
+      _resetWarnedUnclassifiedForTest,
+    } = await import('../server/orchestrator/FailureClassifier.js');
+
+    const toolListFragments = [
+      'mcp__claude_ai_Granola__list_meetings mcp__claude_ai_Granola__query_granola_meetings mcp__claude_ai_Notion__notion-create-comment mcp__claude_ai_Notion__notion-create-database',
+      'Available tools: mcp__foo__list_jobs, mcp__foo__create_job, mcp__bar__fetch_notes, mcp__baz__read_doc, mcp__qux__search',
+    ];
+
+    for (const fragment of toolListFragments) {
+      _resetWarnedUnclassifiedForTest();
+      warnSpy.mockClear();
+      expect(classifyFailureText(fragment)).toBe('unknown');
+      expect(warnSpy).not.toHaveBeenCalled();
+    }
+  });
+
+  it('returns task_failure and warns once for unrecognized errors', async () => {
+    const {
+      classifyFailureText,
+      _resetWarnedUnclassifiedForTest,
+    } = await import('../server/orchestrator/FailureClassifier.js');
+
+    _resetWarnedUnclassifiedForTest();
+
     expect(classifyFailureText('Something went wrong in the build')).toBe('task_failure');
+    expect(classifyFailureText('Something went wrong in the build')).toBe('task_failure');
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0]?.[0]).toContain('Unclassified failure text');
   });
 
   it('returns unknown for null/empty input', async () => {

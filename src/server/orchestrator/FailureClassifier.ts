@@ -110,29 +110,60 @@ const CODEX_CLI_CRASH_PATTERNS = [
   /\breading prompt from stdin\b/i,
 ];
 
+const SESSIONSTART_EVENT_PATTERN = /"hook_event"\s*:\s*"SessionStart"/i;
+const SESSIONSTART_HOOK_NAME_PATTERN = /"hook_name"\s*:\s*"SessionStart:startup"/i;
+const STARTUP_TOOL_IDENTIFIER_PATTERN = /\bmcp__[\w:-]+\b/g;
+const STARTUP_FAILURE_SIGNAL_PATTERN = /\b(error|errors|failed|failure|exception|timed out|timeout|deadline exceeded|unauthorized|forbidden|overloaded|unavailable|insufficient|billing|payment|invalid|refused|reset|hang up|disconnect|spawn|enoent|enospc|enomem|oom)\b/i;
+
 // Dedup set for unclassified failure warnings — keyed on first 200 chars, capped at 100 entries
 const _warnedUnclassified = new Set<string>();
 const WARN_DEDUP_CAP = 100;
 
+function isSessionStartLifecycleNoise(text: string): boolean {
+  const hasSessionStartEvent = SESSIONSTART_EVENT_PATTERN.test(text);
+  const hasSessionStartHookName = SESSIONSTART_HOOK_NAME_PATTERN.test(text);
+
+  // Match only when we can confirm this is a SessionStart lifecycle event.
+  // Requires explicit "hook_name":"SessionStart:startup" or "hook_event":"SessionStart" —
+  // never match on generic "type":"system" + "subtype":"hook_started" alone,
+  // which would hide failures from non-SessionStart hooks.
+  return hasSessionStartHookName || hasSessionStartEvent;
+}
+
+function isStartupToolListNoise(text: string): boolean {
+  const toolIdentifiers = text.match(STARTUP_TOOL_IDENTIFIER_PATTERN) ?? [];
+  if (toolIdentifiers.length < 3) return false;
+  if (STARTUP_FAILURE_SIGNAL_PATTERN.test(text)) return false;
+
+  const identifierChars = toolIdentifiers.reduce((sum, match) => sum + match.length, 0);
+  return identifierChars / text.length >= 0.35;
+}
+
 export function classifyFailureText(text: string | null | undefined): FailureKind {
   if (!text) return 'unknown';
+  const normalized = text.trim();
+  if (!normalized) return 'unknown';
 
   // Check patterns in order of specificity / priority
-  if (LAUNCH_ENVIRONMENT_PATTERNS.some(pattern => pattern.test(text))) return 'launch_environment';
-  if (RATE_LIMIT_PATTERNS.some(pattern => pattern.test(text))) return 'rate_limit';
-  if (PROVIDER_OVERLOAD_PATTERNS.some(pattern => pattern.test(text))) return 'provider_overload';
-  if (PROVIDER_CAPABILITY_PATTERNS.some(pattern => pattern.test(text))) return 'provider_capability';
-  if (PROVIDER_BILLING_PATTERNS.some(pattern => pattern.test(text))) return 'provider_billing';
-  if (AUTH_PATTERNS.some(pattern => pattern.test(text))) return 'auth_failure';
-  if (OOM_PATTERNS.some(pattern => pattern.test(text))) return 'out_of_memory';
-  if (DISK_FULL_PATTERNS.some(pattern => pattern.test(text))) return 'disk_full';
-  if (CONTEXT_OVERFLOW_PATTERNS.some(pattern => pattern.test(text))) return 'context_overflow';
-  if (MCP_DISCONNECT_PATTERNS.some(pattern => pattern.test(text))) return 'mcp_disconnect';
-  if (TIMEOUT_PATTERNS.some(pattern => pattern.test(text))) return 'timeout';
-  if (CODEX_CLI_CRASH_PATTERNS.some(pattern => pattern.test(text))) return 'codex_cli_crash';
+  if (LAUNCH_ENVIRONMENT_PATTERNS.some(pattern => pattern.test(normalized))) return 'launch_environment';
+  if (RATE_LIMIT_PATTERNS.some(pattern => pattern.test(normalized))) return 'rate_limit';
+  if (PROVIDER_OVERLOAD_PATTERNS.some(pattern => pattern.test(normalized))) return 'provider_overload';
+  if (PROVIDER_CAPABILITY_PATTERNS.some(pattern => pattern.test(normalized))) return 'provider_capability';
+  if (PROVIDER_BILLING_PATTERNS.some(pattern => pattern.test(normalized))) return 'provider_billing';
+  if (AUTH_PATTERNS.some(pattern => pattern.test(normalized))) return 'auth_failure';
+  if (OOM_PATTERNS.some(pattern => pattern.test(normalized))) return 'out_of_memory';
+  if (DISK_FULL_PATTERNS.some(pattern => pattern.test(normalized))) return 'disk_full';
+  if (CONTEXT_OVERFLOW_PATTERNS.some(pattern => pattern.test(normalized))) return 'context_overflow';
+  if (MCP_DISCONNECT_PATTERNS.some(pattern => pattern.test(normalized))) return 'mcp_disconnect';
+  if (TIMEOUT_PATTERNS.some(pattern => pattern.test(normalized))) return 'timeout';
+  if (CODEX_CLI_CRASH_PATTERNS.some(pattern => pattern.test(normalized))) return 'codex_cli_crash';
+
+  if (isSessionStartLifecycleNoise(normalized) || isStartupToolListNoise(normalized)) {
+    return 'unknown';
+  }
 
   // Warn about unclassified failure text so operators can identify new patterns
-  const dedupKey = text.slice(0, 200);
+  const dedupKey = normalized.slice(0, 200);
   if (!_warnedUnclassified.has(dedupKey)) {
     if (_warnedUnclassified.size >= WARN_DEDUP_CAP) {
       _warnedUnclassified.clear();
