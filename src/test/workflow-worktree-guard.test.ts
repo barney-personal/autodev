@@ -180,6 +180,214 @@ describe('WorkflowManager: spawnPhaseJob worktree safety guard', () => {
     expect(Sentry.captureException).not.toHaveBeenCalled();
   });
 
+  // ── M3: Sentry-gating regression for operational blocked reasons ────────
+
+  it('does NOT call Sentry for "was cancelled" blocks', async () => {
+    const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    const queries = await import('../server/db/queries.js');
+    const { Sentry } = await import('../server/instrument.js');
+
+    const project = await insertTestProject();
+    const workflow = await insertTestWorkflow({
+      project_id: project.id,
+      status: 'running',
+      current_phase: 'implement',
+      current_cycle: 1,
+      use_worktree: 0,
+    });
+    queries.upsertNote(`workflow/${workflow.id}/plan`, '- [ ] M1', null);
+    queries.upsertNote(`workflow/${workflow.id}/contract`, '# contract', null);
+
+    const job = await insertTestJob({
+      workflow_id: workflow.id,
+      workflow_cycle: 1,
+      workflow_phase: 'implement',
+      status: 'cancelled',
+    });
+    onJobCompleted(job);
+
+    const updated = queries.getWorkflowById(workflow.id);
+    expect(updated!.status).toBe('blocked');
+    expect(updated!.blocked_reason).toContain('was cancelled');
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+  });
+
+  it('does NOT call Sentry for "no fallback model available" blocks', async () => {
+    const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    const queries = await import('../server/db/queries.js');
+    const { Sentry } = await import('../server/instrument.js');
+    const { classifyJobFailure, isFallbackEligibleFailure } = await import('../server/orchestrator/FailureClassifier.js');
+
+    vi.mocked(classifyJobFailure).mockReturnValue('rate_limit');
+    vi.mocked(isFallbackEligibleFailure).mockReturnValue(true);
+    // getFallbackModel already returns the same model (no fallback)
+
+    const project = await insertTestProject();
+    const workflow = await insertTestWorkflow({
+      project_id: project.id,
+      status: 'running',
+      current_phase: 'implement',
+      current_cycle: 1,
+      use_worktree: 0,
+    });
+    queries.upsertNote(`workflow/${workflow.id}/plan`, '- [ ] M1', null);
+    queries.upsertNote(`workflow/${workflow.id}/contract`, '# contract', null);
+
+    const job = await insertTestJob({
+      workflow_id: workflow.id,
+      workflow_cycle: 1,
+      workflow_phase: 'implement',
+      status: 'failed',
+      model: 'claude-sonnet-4-6',
+    });
+
+    // Insert an agent linked to this job so the "failed before start" check doesn't trigger
+    queries.insertAgent({ id: 'agent-nofallback', job_id: job.id, status: 'finished', started_at: Date.now() });
+    queries.updateAgent('agent-nofallback', { num_turns: 5, cost_usd: 0.01 });
+
+    onJobCompleted(job);
+
+    const updated = queries.getWorkflowById(workflow.id);
+    expect(updated!.status).toBe('blocked');
+    expect(updated!.blocked_reason).toContain('no fallback model available');
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+  });
+
+  it('does NOT call Sentry for "duplicate completion skipped" blocks', async () => {
+    const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    const queries = await import('../server/db/queries.js');
+    const { Sentry } = await import('../server/instrument.js');
+    const { classifyJobFailure, isFallbackEligibleFailure } = await import('../server/orchestrator/FailureClassifier.js');
+
+    vi.mocked(classifyJobFailure).mockReturnValue('rate_limit');
+    vi.mocked(isFallbackEligibleFailure).mockReturnValue(true);
+
+    const project = await insertTestProject();
+    const workflow = await insertTestWorkflow({
+      project_id: project.id,
+      status: 'running',
+      current_phase: 'review',
+      current_cycle: 1,
+      use_worktree: 0,
+    });
+    queries.upsertNote(`workflow/${workflow.id}/plan`, '- [ ] M1', null);
+    queries.upsertNote(`workflow/${workflow.id}/contract`, '# contract', null);
+
+    // Pre-insert the model-fallback recovery note so the code hits the "duplicate completion" path
+    queries.upsertNote(
+      `workflow/${workflow.id}/recovery/review/cycle-1/model-fallback`,
+      'fallback=codex,from=claude-sonnet-4-6,failure=rate_limit',
+      null,
+    );
+
+    const job = await insertTestJob({
+      workflow_id: workflow.id,
+      workflow_cycle: 1,
+      workflow_phase: 'review',
+      status: 'failed',
+      model: 'claude-sonnet-4-6',
+    });
+
+    // Agent with real work so we don't hit the "failed before start" path
+    queries.insertAgent({ id: 'agent-dupecomp', job_id: job.id, status: 'finished', started_at: Date.now() });
+    queries.updateAgent('agent-dupecomp', { num_turns: 3, cost_usd: 0.005 });
+
+    onJobCompleted(job);
+
+    const updated = queries.getWorkflowById(workflow.id);
+    expect(updated!.status).toBe('blocked');
+    expect(updated!.blocked_reason).toContain('duplicate completion skipped');
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+  });
+
+  it('does NOT call Sentry for "failed (timeout)" blocks (operational)', async () => {
+    const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    const queries = await import('../server/db/queries.js');
+    const { Sentry } = await import('../server/instrument.js');
+    const { classifyJobFailure, isFallbackEligibleFailure, isSameModelRetryEligible } = await import('../server/orchestrator/FailureClassifier.js');
+
+    vi.mocked(classifyJobFailure).mockReturnValue('timeout');
+    vi.mocked(isFallbackEligibleFailure).mockImplementation((kind: string) => kind === 'rate_limit' || kind === 'provider_overload');
+    vi.mocked(isSameModelRetryEligible).mockReturnValue(true);
+
+    const project = await insertTestProject();
+    const workflow = await insertTestWorkflow({
+      project_id: project.id,
+      status: 'running',
+      current_phase: 'implement',
+      current_cycle: 1,
+      use_worktree: 0,
+    });
+    queries.upsertNote(`workflow/${workflow.id}/plan`, '- [ ] M1', null);
+    queries.upsertNote(`workflow/${workflow.id}/contract`, '# contract', null);
+
+    // Exhaust CLI retries so the timeout failure reaches the blocking path
+    const attemptsKey = `workflow/${workflow.id}/cli-retry/implement/cycle-1`;
+    queries.upsertNote(attemptsKey, '3', null);
+
+    const job = await insertTestJob({
+      workflow_id: workflow.id,
+      workflow_cycle: 1,
+      workflow_phase: 'implement',
+      status: 'failed',
+      model: 'claude-sonnet-4-6',
+    });
+
+    // Agent with real work
+    queries.insertAgent({ id: 'agent-timeout', job_id: job.id, status: 'finished', started_at: Date.now() });
+    queries.updateAgent('agent-timeout', { num_turns: 10, cost_usd: 0.05 });
+
+    onJobCompleted(job);
+
+    const updated = queries.getWorkflowById(workflow.id);
+    expect(updated!.status).toBe('blocked');
+    expect(updated!.blocked_reason).toMatch(/failed \(timeout\)/);
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+  });
+
+  it('DOES call Sentry for "failed (task_failure)" blocks (non-operational)', async () => {
+    const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    const queries = await import('../server/db/queries.js');
+    const { Sentry } = await import('../server/instrument.js');
+    const { classifyJobFailure, isFallbackEligibleFailure } = await import('../server/orchestrator/FailureClassifier.js');
+
+    vi.mocked(classifyJobFailure).mockReturnValue('task_failure');
+    vi.mocked(isFallbackEligibleFailure).mockImplementation((kind: string) => kind === 'rate_limit' || kind === 'provider_overload');
+    const { isSameModelRetryEligible } = await import('../server/orchestrator/FailureClassifier.js');
+    vi.mocked(isSameModelRetryEligible).mockReturnValue(false);
+
+    const project = await insertTestProject();
+    const workflow = await insertTestWorkflow({
+      project_id: project.id,
+      status: 'running',
+      current_phase: 'implement',
+      current_cycle: 1,
+      use_worktree: 0,
+    });
+    queries.upsertNote(`workflow/${workflow.id}/plan`, '- [ ] M1', null);
+    queries.upsertNote(`workflow/${workflow.id}/contract`, '# contract', null);
+
+    const job = await insertTestJob({
+      workflow_id: workflow.id,
+      workflow_cycle: 1,
+      workflow_phase: 'implement',
+      status: 'failed',
+      model: 'claude-sonnet-4-6',
+    });
+
+    // Agent with real work
+    queries.insertAgent({ id: 'agent-taskfail', job_id: job.id, status: 'finished', started_at: Date.now() });
+    queries.updateAgent('agent-taskfail', { num_turns: 8, cost_usd: 0.03 });
+
+    onJobCompleted(job);
+
+    const updated = queries.getWorkflowById(workflow.id);
+    expect(updated!.status).toBe('blocked');
+    expect(updated!.blocked_reason).toMatch(/failed \(task_failure\)/);
+    // task_failure is NOT operational — Sentry MUST fire
+    expect(Sentry.captureException).toHaveBeenCalled();
+  });
+
   it('does NOT block when use_worktree=0 and worktree_path is null', async () => {
     const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
     const queries = await import('../server/db/queries.js');
