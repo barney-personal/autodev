@@ -599,6 +599,23 @@ describe('Failure classification', () => {
     expect(classifyFailureText('Reading prompt from stdin...')).toBe('codex_cli_crash');
   });
 
+  it('classifies timeout errors', async () => {
+    const { classifyFailureText } = await import('../server/orchestrator/FailureClassifier.js');
+    expect(classifyFailureText('Connection timeout waiting for response')).toBe('timeout');
+    expect(classifyFailureText('Request timed out after 60s')).toBe('timeout');
+    expect(classifyFailureText('deadline exceeded')).toBe('timeout');
+    expect(classifyFailureText('ETIMEDOUT')).toBe('timeout');
+  });
+
+  it('isSameModelRetryEligible returns true for timeout and codex_cli_crash', async () => {
+    const { isSameModelRetryEligible } = await import('../server/orchestrator/FailureClassifier.js');
+    expect(isSameModelRetryEligible('timeout')).toBe(true);
+    expect(isSameModelRetryEligible('codex_cli_crash')).toBe(true);
+    expect(isSameModelRetryEligible('rate_limit')).toBe(false);
+    expect(isSameModelRetryEligible('task_failure')).toBe(false);
+    expect(isSameModelRetryEligible('unknown')).toBe(false);
+  });
+
   it('returns unknown without warning for SessionStart hook JSON noise', async () => {
     const {
       classifyFailureText,

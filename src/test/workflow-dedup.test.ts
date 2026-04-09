@@ -96,7 +96,7 @@ vi.mock('../server/orchestrator/FailureClassifier.js', () => ({
       || kind === 'provider_billing'
   ),
   isSameModelRetryEligible: vi.fn((kind: string) =>
-    kind === 'codex_cli_crash'
+    kind === 'codex_cli_crash' || kind === 'timeout'
   ),
   shouldMarkProviderUnavailable: vi.fn((kind: string) =>
     kind === 'rate_limit'
@@ -654,6 +654,130 @@ describe('WorkflowManager: onJobCompleted phase transitions', () => {
 
     // Workflow must still be running (not blocked by the duplicate)
     expect(getWorkflowById(workflow.id)!.status).toBe('running');
+  });
+
+  it('timeout retries same model instead of blocking', async () => {
+    const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    const { classifyJobFailure } = await import('../server/orchestrator/FailureClassifier.js');
+    const { upsertNote, getWorkflowById, getJobsForWorkflow } = await import('../server/db/queries.js');
+
+    const project = await insertTestProject();
+    const workflow = await insertTestWorkflow({
+      project_id: project.id,
+      status: 'running',
+      current_phase: 'implement',
+      current_cycle: 1,
+      implementer_model: 'claude-sonnet-4-6',
+    });
+    upsertNote(`workflow/${workflow.id}/plan`, '- [ ] M1\n- [ ] M2', null);
+
+    const job = await insertTestJob({
+      workflow_id: workflow.id,
+      workflow_cycle: 1,
+      workflow_phase: 'implement',
+      status: 'failed',
+      model: 'claude-sonnet-4-6',
+    });
+
+    vi.mocked(classifyJobFailure).mockReturnValue('timeout');
+
+    onJobCompleted(job);
+
+    const updated = getWorkflowById(workflow.id)!;
+    expect(updated.status).toBe('running');
+
+    const jobs = getJobsForWorkflow(workflow.id);
+    const retryJob = jobs.find(j => j.id !== job.id);
+    expect(retryJob).toBeDefined();
+    // Retry should use the same model (not a fallback)
+    expect(retryJob!.title).not.toContain('(fallback)');
+  });
+
+  it('timeout falls back to alternate provider after exhausting same-model retries', async () => {
+    const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    const { classifyJobFailure } = await import('../server/orchestrator/FailureClassifier.js');
+    const { upsertNote, getWorkflowById, getJobsForWorkflow } = await import('../server/db/queries.js');
+
+    const project = await insertTestProject();
+    const workflow = await insertTestWorkflow({
+      project_id: project.id,
+      status: 'running',
+      current_phase: 'review',
+      current_cycle: 2,
+      reviewer_model: 'codex',
+    });
+    upsertNote(`workflow/${workflow.id}/plan`, '- [x] M1\n- [ ] M2', null);
+    // Simulate 3 prior retries exhausted
+    upsertNote(`workflow/${workflow.id}/cli-retry/review/cycle-2`, '3', null);
+
+    const job = await insertTestJob({
+      workflow_id: workflow.id,
+      workflow_cycle: 2,
+      workflow_phase: 'review',
+      status: 'failed',
+      model: 'codex',
+    });
+
+    vi.mocked(classifyJobFailure).mockReturnValue('timeout');
+
+    onJobCompleted(job);
+
+    const updated = getWorkflowById(workflow.id)!;
+    // Should NOT block — should fall back to alternate provider (codex → claude-sonnet)
+    expect(updated.status).toBe('running');
+
+    const jobs = getJobsForWorkflow(workflow.id);
+    const fallbackJob = jobs.find(j => j.id !== job.id);
+    expect(fallbackJob).toBeDefined();
+    expect(fallbackJob!.model).toBe('claude-sonnet-4-6');
+    expect(fallbackJob!.title).toContain('(fallback)');
+  });
+
+  it('failed-before-starting respawn path is unaffected by timeout retry eligibility', async () => {
+    const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    const { upsertNote, getWorkflowById, getJobsForWorkflow, insertAgent } = await import('../server/db/queries.js');
+
+    const project = await insertTestProject();
+    const workflow = await insertTestWorkflow({
+      project_id: project.id,
+      status: 'running',
+      current_phase: 'implement',
+      current_cycle: 1,
+      implementer_model: 'claude-sonnet-4-6',
+    });
+    upsertNote(`workflow/${workflow.id}/plan`, '- [ ] M1\n- [ ] M2', null);
+
+    const job = await insertTestJob({
+      workflow_id: workflow.id,
+      workflow_cycle: 1,
+      workflow_phase: 'implement',
+      status: 'failed',
+      model: 'claude-sonnet-4-6',
+    });
+
+    // Create an agent with 0 turns and 0 cost (infrastructure failure signature)
+    insertAgent({
+      id: 'infra-fail-agent',
+      job_id: job.id,
+      status: 'failed',
+      num_turns: 0,
+      cost_usd: 0,
+    });
+
+    // classifyJobFailure is NOT called in the failed-before-starting path —
+    // the code checks (hasNoTurns && hasNoCost && hasNoLogOutput) first
+    onJobCompleted(job);
+
+    const updated = getWorkflowById(workflow.id)!;
+    // Should still be running — respawned at same cycle without incrementing
+    expect(updated.status).toBe('running');
+
+    const jobs = getJobsForWorkflow(workflow.id);
+    const respawnedJob = jobs.find(j => j.id !== job.id);
+    expect(respawnedJob).toBeDefined();
+    // The respawned job should be at the same cycle
+    expect(respawnedJob!.workflow_cycle).toBe(1);
+    expect(respawnedJob!.workflow_phase).toBe('implement');
   });
 
   it('max_cycles reached with remaining milestones blocks instead of completing', async () => {
