@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useMemo, lazy, Suspense } from 'react';
+import { useCallback, useEffect, useRef, useMemo, lazy, Suspense } from 'react';
 import { Header } from './components/Header';
 import { AgentTerminal } from './components/AgentTerminal';
 import { WorkQueueSidebar } from './components/WorkQueueSidebar';

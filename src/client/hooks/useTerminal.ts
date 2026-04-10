@@ -12,7 +12,7 @@ const STRIP_MOUSE_RE = /\x1b\[\?(?:1049|47|1047|1000|1002|1003|1006|1005|1004)[h
 const TAIL = 5000;
 
 export interface UseTerminalReturn {
-  containerRef: React.RefObject<HTMLDivElement | null>;
+  containerRef: React.RefObject<HTMLDivElement>;
   isTruncated: boolean;
   ptySnapshotMode: boolean;
   loadFullHistory: () => void;
@@ -29,7 +29,7 @@ export function useTerminal(
   agentStatus: string,
   isInteractive: boolean,
 ): UseTerminalReturn {
-  const containerRef = useRef<HTMLDivElement | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   const [isTruncated, setIsTruncated] = useState(false);
   const isTruncatedRef = useRef(false);
@@ -103,7 +103,7 @@ function setupInteractiveTerminal(
   fitAddon: FitAddon,
   agentId: string,
   agentStatus: string,
-  containerRef: React.RefObject<HTMLDivElement | null>,
+  containerRef: React.RefObject<HTMLDivElement>,
   setPtySnapshotMode: (v: boolean) => void,
   ptySnapshotModeRef: React.MutableRefObject<boolean>,
   jumpToLiveRef: React.MutableRefObject<() => void>,
@@ -294,7 +294,7 @@ function setupBatchTerminal(
   fitAddon: FitAddon,
   agentId: string,
   agentStatus: string,
-  containerRef: React.RefObject<HTMLDivElement | null>,
+  containerRef: React.RefObject<HTMLDivElement>,
   setIsTruncated: (v: boolean) => void,
   isTruncatedRef: React.MutableRefObject<boolean>,
   loadFullHistoryRef: React.MutableRefObject<() => void>,
@@ -318,8 +318,7 @@ function setupBatchTerminal(
     term.write('\x1b[2mLoading output\u2026\x1b[0m');
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const _fetchPromise = cached
+  void (cached
     ? Promise.resolve()
     : fetch(`/api/agents/${agentId}/rendered-output?tail=${TAIL}`)
         .then(r => r.json())
@@ -445,7 +444,7 @@ function setupBatchTerminal(
             disposables.push(() => { socket.off('pty:snapshot-refresh', onSnapshotRefresh); });
           })
           .catch(() => { term.write('\x1b[2mNo output available.\x1b[0m\r\n'); });
-      });
+      }));
 
   loadFullHistoryRef.current = () => {
     if (!isTruncatedRef.current) return;

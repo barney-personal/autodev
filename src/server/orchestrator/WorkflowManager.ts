@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { execSync, execFileSync } from 'child_process';
+import { execSync } from 'child_process';
 import { existsSync, statSync } from 'fs';
 import path from 'path';
 import { captureWithContext, Sentry } from '../instrument.js';
@@ -12,13 +12,13 @@ import { getAvailableModel, getFallbackModel, getAlternateProviderModel, getMode
 import { classifyJobFailure, isFallbackEligibleFailure, isSameModelRetryEligible, shouldMarkProviderUnavailable } from './FailureClassifier.js';
 import { nudgeQueue } from './WorkQueueManager.js';
 import { logResilienceEvent } from './ResilienceLogger.js';
-import { errMsg, execErrMsg } from '../../shared/errors.js';
+import { errMsg } from '../../shared/errors.js';
 import { validateTransition } from './StateTransitions.js';
 
 // ─── Sub-module imports ────────────────────────────────────────────────────
 import { parseMilestones, meetsCompletionThreshold, recoverPlanFromAgentOutput } from './WorkflowMilestoneParser.js';
 import { ensureWorktreeBranch, verifyWorktreeHealth, createWorkflowWorktree, restoreWorkflowWorktree } from './WorkflowWorktreeManager.js';
-import { pushAndCreatePr as _pushAndCreatePr, finalizeWorkflow as _finalizeWorkflow, reconcileBlockedPRs as _reconcileBlockedPRs, countBranchCommits } from './WorkflowPRCreator.js';
+import { pushAndCreatePr as _pushAndCreatePr, finalizeWorkflow as _finalizeWorkflow, reconcileBlockedPRs as _reconcileBlockedPRs } from './WorkflowPRCreator.js';
 import { diagnoseWriteNoteInOutput, formatWriteNoteDiagnostic, writeBlockedDiagnostic } from './WorkflowBlockedDiagnostics.js';
 
 // ─── Re-exports (preserve public API — all import sites continue to work) ──
