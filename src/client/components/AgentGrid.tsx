@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { AgentCard } from './AgentCard';
 import { WorkflowSummaryCard } from './WorkflowSummaryCard';
 import type { AgentWithJob, AgentStatus, Job, Workflow } from '@shared/types';

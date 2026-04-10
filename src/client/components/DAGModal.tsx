@@ -1,4 +1,4 @@
-import React, { useMemo, useEffect, useState } from 'react';
+import { useMemo, useEffect, useState } from 'react';
 import type { Job, AgentWithJob, JobStatus } from '@shared/types';
 
 const RANGE_OPTS = [

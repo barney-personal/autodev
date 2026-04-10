@@ -47,7 +47,7 @@ export function listAgents(status?: string): Agent[] {
   } else {
     rows = db.prepare('SELECT * FROM agents ORDER BY started_at DESC').all();
   }
-  return rows.map((r: any) => cast<Agent>(r));
+  return rows.map((r: unknown) => cast<Agent>(r));
 }
 
 export function updateAgent(id: string, fields: Partial<Pick<Agent, 'status' | 'pid' | 'session_id' | 'exit_code' | 'error_message' | 'status_message' | 'output_read' | 'base_sha' | 'diff' | 'cost_usd' | 'duration_ms' | 'num_turns' | 'estimated_input_tokens' | 'estimated_output_tokens' | 'finished_at' | 'pending_wait_ids'>>): void {
@@ -92,7 +92,7 @@ export function listBatchAgents(status?: string): Agent[] {
       ORDER BY a.started_at DESC
     `).all();
   }
-  return (rows as unknown[]).map((r: any) => cast<Agent>(r));
+  return (rows as unknown[]).map((r: unknown) => cast<Agent>(r));
 }
 
 export function listRunningInteractiveAgents(): Agent[] {
@@ -103,7 +103,7 @@ export function listRunningInteractiveAgents(): Agent[] {
     WHERE j.is_interactive = 1
       AND a.status IN ('starting', 'running', 'waiting_user')
   `).all();
-  return (rows as unknown[]).map((r: any) => cast<Agent>(r));
+  return (rows as unknown[]).map((r: unknown) => cast<Agent>(r));
 }
 
 /** All running agents regardless of is_interactive flag — used by unified watchdog/recovery. */
@@ -113,13 +113,13 @@ export function listAllRunningAgents(): Agent[] {
     SELECT * FROM agents
     WHERE status IN ('starting', 'running', 'waiting_user')
   `).all();
-  return (rows as unknown[]).map((r: any) => cast<Agent>(r));
+  return (rows as unknown[]).map((r: unknown) => cast<Agent>(r));
 }
 
 export function getAgentsWithJob(): AgentWithJob[] {
   const db = getDb();
   const rows = db.prepare('SELECT * FROM agents ORDER BY started_at DESC').all();
-  return rows.map((r: any) => enrichAgent(cast<Agent>(r)));
+  return rows.map((r: unknown) => enrichAgent(cast<Agent>(r)));
 }
 
 /**
@@ -149,7 +149,7 @@ export function getAgentsWithJobForSnapshot(): AgentWithJob[] {
 
   // Merge and dedup
   const allRows = [...activeRows, ...recentRows.filter((r: DbRow) => !activeIds.has(r.id as string))];
-  const agents = allRows.map((r: any) => cast<Agent>(r));
+  const agents = allRows.map((r: unknown) => cast<Agent>(r));
   if (agents.length === 0) return [];
 
   // Batch-enrich: one query per relation instead of N queries per agent
@@ -160,7 +160,7 @@ export function getAgentsWithJobForSnapshot(): AgentWithJob[] {
 
   // Jobs — one query
   const jobRows = db.prepare(`SELECT * FROM jobs WHERE id IN (${ph(jobIds.length)})`).all(...jobIds);
-  const jobMap = new Map<string, Job>(jobRows.map((r: any) => { const j = cast<Job>(r); return [j.id, j]; }));
+  const jobMap = new Map<string, Job>(jobRows.map((r: unknown) => { const j = cast<Job>(r); return [j.id, j]; }));
 
   // Pending questions — one query
   const qRows = db.prepare(`SELECT * FROM questions WHERE agent_id IN (${ph(agentIds.length)}) AND status = 'pending'`).all(...agentIds);
@@ -250,13 +250,13 @@ export function getAgentsForJobIds(jobIds: string[]): AgentWithJob[] {
     if (!latestByJob.has(r.job_id as string)) latestByJob.set(r.job_id as string, r);
   }
 
-  const agents = [...latestByJob.values()].map((r: any) => cast<Agent>(r));
+  const agents = [...latestByJob.values()].map((r: unknown) => cast<Agent>(r));
   if (agents.length === 0) return [];
 
   // Enrich with job data (same pattern as getAgentsWithJobForSnapshot)
   const agentJobIds = [...new Set(agents.map(a => a.job_id))];
   const jobRows = db.prepare(`SELECT * FROM jobs WHERE id IN (${ph(agentJobIds.length)})`).all(...agentJobIds);
-  const jobMap = new Map<string, Job>(jobRows.map((r: any) => { const j = cast<Job>(r); return [j.id, j]; }));
+  const jobMap = new Map<string, Job>(jobRows.map((r: unknown) => { const j = cast<Job>(r); return [j.id, j]; }));
 
   const templateIds = [...new Set(jobRows.map((r: DbRow) => r.template_id).filter(Boolean))];
   const templateMap = new Map<string, string>();
@@ -284,7 +284,7 @@ export function getAgentsForJobIds(jobIds: string[]): AgentWithJob[] {
 export function getAgentsWithJobByJobId(jobId: string): AgentWithJob[] {
   const db = getDb();
   const rows = db.prepare('SELECT * FROM agents WHERE job_id = ? ORDER BY started_at DESC').all(jobId);
-  return (rows as unknown[]).map((r: any) => enrichAgent(cast<Agent>(r)));
+  return (rows as unknown[]).map((r: unknown) => enrichAgent(cast<Agent>(r)));
 }
 
 export function getAgentWithJob(id: string): AgentWithJob | null {
@@ -302,7 +302,7 @@ function getChildAgentSummaries(agentId: string): ChildAgentSummary[] {
     WHERE a.parent_agent_id = ?
     ORDER BY a.started_at ASC
   `).all(agentId);
-  return rows.map((r: any) => cast<ChildAgentSummary>(r));
+  return rows.map((r: unknown) => cast<ChildAgentSummary>(r));
 }
 
 function enrichAgent(agent: Agent): AgentWithJob {
@@ -321,12 +321,12 @@ function enrichAgent(agent: Agent): AgentWithJob {
   const lockRows = db.prepare(`
     SELECT * FROM file_locks WHERE agent_id = ? AND released_at IS NULL
   `).all(agent.id);
-  const active_locks = lockRows.map((r: any) => cast<FileLock>(r));
+  const active_locks = lockRows.map((r: unknown) => cast<FileLock>(r));
   const child_agents = getChildAgentSummaries(agent.id);
   const warningRows = db.prepare(`
     SELECT * FROM agent_warnings WHERE agent_id = ? AND dismissed = 0 ORDER BY created_at DESC
   `).all(agent.id);
-  const warnings = warningRows.map((r: any) => cast<AgentWarning>(r));
+  const warnings = warningRows.map((r: unknown) => cast<AgentWarning>(r));
   let template_name: string | null = null;
   if (job.template_id) {
     const tRow = db.prepare('SELECT name FROM templates WHERE id = ?').get(job.template_id) as { name: string } | undefined;
@@ -374,13 +374,13 @@ export function insertWarning(warning: { id: string; agent_id: string; type: str
 export function getActiveWarningsForAgent(agentId: string): AgentWarning[] {
   const db = getDb();
   const rows = db.prepare('SELECT * FROM agent_warnings WHERE agent_id = ? AND dismissed = 0 ORDER BY created_at DESC').all(agentId);
-  return rows.map((r: any) => cast<AgentWarning>(r));
+  return rows.map((r: unknown) => cast<AgentWarning>(r));
 }
 
 export function getAllActiveWarnings(): AgentWarning[] {
   const db = getDb();
   const rows = db.prepare('SELECT * FROM agent_warnings WHERE dismissed = 0 ORDER BY created_at DESC').all();
-  return rows.map((r: any) => cast<AgentWarning>(r));
+  return rows.map((r: unknown) => cast<AgentWarning>(r));
 }
 
 export function dismissWarningsForAgent(agentId: string): void {
@@ -414,7 +414,7 @@ export function insertWorktree(wt: { id: string; agent_id: string; job_id: strin
 export function listActiveWorktrees(): Worktree[] {
   const db = getDb();
   const rows = db.prepare('SELECT * FROM worktrees WHERE cleaned_at IS NULL ORDER BY created_at DESC').all();
-  return rows.map((r: any) => cast<Worktree>(r));
+  return rows.map((r: unknown) => cast<Worktree>(r));
 }
 
 export function markWorktreeCleaned(id: string): void {
@@ -444,7 +444,7 @@ export function insertNudge(nudge: { id: string; agent_id: string; message: stri
 export function getUndeliveredNudges(agentId: string): Nudge[] {
   const db = getDb();
   const rows = db.prepare('SELECT * FROM nudges WHERE agent_id = ? AND delivered = 0 ORDER BY created_at ASC').all(agentId);
-  return rows.map((r: any) => cast<Nudge>(r));
+  return rows.map((r: unknown) => cast<Nudge>(r));
 }
 
 export function markNudgeDelivered(id: string): void {

@@ -17,12 +17,6 @@ interface PrInfo {
   url: string;
 }
 
-interface PrComment {
-  author: { login: string };
-  body: string;
-  createdAt: string;
-}
-
 interface StoredPrState {
   [prNumber: number]: {
     updatedAt: string;

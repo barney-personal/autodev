@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import type { KBEntry } from '@shared/types';
 
 interface KnowledgeBaseModalProps {

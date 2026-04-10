@@ -12,6 +12,7 @@ import { isCodexModel, codexModelName, isAutoExitJob } from '../../shared/types.
 import { markJobRunning } from './JobLifecycle.js';
 import { wrapExecLineWithNice } from './ProcessPriority.js';
 import { logResilienceEvent } from './ResilienceLogger.js';
+import { errMsg } from '../../shared/errors.js';
 
 const CLAUDE = process.env.CLAUDE_BIN ?? 'claude';
 const CODEX = process.env.CODEX_BIN ?? 'codex';
@@ -639,27 +640,27 @@ export function startInteractiveAgent({ agentId, job, cols = 100, rows = 50, res
       execFileSync(TMUX, ['set-option', '-t', sessionName(agentId), 'mouse', 'on'], { stdio: 'pipe' });
     } catch { /* ignore — older tmux may not support per-session mouse */ }
 
-  } catch (err: any) {
+  } catch (err) {
     _spawningAgents.delete(agentId);
-    console.error(`[pty ${agentId}] failed to create tmux session:`, err.message);
+    console.error(`[pty ${agentId}] failed to create tmux session:`, errMsg(err));
     captureWithContext(err, { agent_id: agentId, job_id: job.id, component: 'PtyManager' });
     logPtyLifecycleEvent('pty_tmux_session_create_failed', agentId, job, {
-      error: err.message,
+      error: errMsg(err),
       cols,
       rows,
       work_dir_exists: fs.existsSync(workDir),
     });
-    queries.updateAgent(agentId, { status: 'failed', error_message: err.message, finished_at: Date.now() });
+    queries.updateAgent(agentId, { status: 'failed', error_message: errMsg(err), finished_at: Date.now() });
     queries.updateJobStatus(job.id, 'failed');
 
     // Detect resource exhaustion errors and escalate backoff to prevent tight retry loops
-    const isResourceError = /posix_spawnp|EMFILE|ENFILE|EAGAIN|resource|Device not configured|fork failed/i.test(err.message);
+    const isResourceError = /posix_spawnp|EMFILE|ENFILE|EAGAIN|resource|Device not configured|fork failed/i.test(errMsg(err));
     if (isResourceError) {
       _lastResourceErrorTime = Date.now();
       escalateResourceBackoff();
       console.warn(`[pty ${agentId}] resource exhaustion detected — backoff now ${_resourceBackoffMs / 1000}s`);
       logPtyLifecycleEvent('pty_resource_backoff_escalated', agentId, job, {
-        error: err.message,
+        error: errMsg(err),
         backoff_ms: _resourceBackoffMs,
       });
     }
@@ -684,8 +685,8 @@ export function startInteractiveAgent({ agentId, job, cols = 100, rows = 50, res
           try {
             execFileSync(TMUX, ['load-buffer', '-b', `agent-${agentId}`, pFile], { stdio: 'pipe' });
             execFileSync(TMUX, ['paste-buffer', '-b', `agent-${agentId}`, '-t', sessionName(agentId)], { stdio: 'pipe' });
-          } catch (err: any) {
-            console.warn(`[pty ${agentId}] failed to paste codex prompt:`, err.message);
+          } catch (err) {
+            console.warn(`[pty ${agentId}] failed to paste codex prompt:`, errMsg(err));
           }
           // paste-buffer returns before tmux finishes feeding content into the terminal;
           // give it a moment to settle so Enter arrives after the full paste is processed.
@@ -693,8 +694,8 @@ export function startInteractiveAgent({ agentId, job, cols = 100, rows = 50, res
         }
         try {
           execFileSync(TMUX, ['send-keys', '-t', sessionName(agentId), 'Enter'], { stdio: 'pipe' });
-        } catch (err: any) {
-          console.warn(`[pty ${agentId}] failed to send Enter:`, err.message);
+        } catch (err) {
+          console.warn(`[pty ${agentId}] failed to send Enter:`, errMsg(err));
         }
       }
 
@@ -713,13 +714,13 @@ export function startInteractiveAgent({ agentId, job, cols = 100, rows = 50, res
 
       // Attach node-pty to the tmux session
       attachPty(agentId, job, cols, rows);
-    } catch (err: any) {
-      console.error(`[pty ${agentId}] error in post-start setup:`, err.message);
+    } catch (err) {
+      console.error(`[pty ${agentId}] error in post-start setup:`, errMsg(err));
       captureWithContext(err, { agent_id: agentId, job_id: job.id, component: 'PtyManager' });
       logPtyLifecycleEvent('pty_post_start_setup_failed', agentId, job, {
-        error: err.message,
+        error: errMsg(err),
       });
-      queries.updateAgent(agentId, { status: 'failed', error_message: err.message, finished_at: Date.now() });
+      queries.updateAgent(agentId, { status: 'failed', error_message: errMsg(err), finished_at: Date.now() });
       queries.updateJobStatus(job.id, 'failed');
       const updated = queries.getAgentWithJob(agentId);
       if (updated) socket.emitAgentUpdate(updated);
@@ -852,7 +853,7 @@ export async function attachPty(agentId: string, job: Job, cols = 100, rows = 50
   // Retry ptySpawn with exponential backoff — posix_spawnp can fail transiently
   // under resource pressure (FD exhaustion, process limits)
   let ptyInstance: IPty | null = null;
-  let lastErr: Error | null = null;
+  let lastErr: unknown = null;
   const ptyEnv = (() => {
     const env: Record<string, string> = {};
     for (const [k, v] of Object.entries(process.env)) {
@@ -882,9 +883,9 @@ export async function attachPty(agentId: string, job: Job, cols = 100, rows = 50
         env: ptyEnv,
       });
       break;
-    } catch (err: any) {
+    } catch (err) {
       lastErr = err;
-      console.warn(`[pty ${agentId}] PTY spawn attempt ${attempt + 1} failed: ${err.message}`);
+      console.warn(`[pty ${agentId}] PTY spawn attempt ${attempt + 1} failed: ${errMsg(err)}`);
     }
   }
 
@@ -894,12 +895,12 @@ export async function attachPty(agentId: string, job: Job, cols = 100, rows = 50
     // All retries exhausted — fall back to polling if tmux session is alive
     const err = lastErr!;
     if (isAutoExitJob(job)) {
-      console.warn(`[pty ${agentId}] PTY attach failed after ${PTY_SPAWN_MAX_RETRIES + 1} attempts (tailing continues):`, err.message);
+      console.warn(`[pty ${agentId}] PTY attach failed after ${PTY_SPAWN_MAX_RETRIES + 1} attempts (tailing continues):`, errMsg(err));
     } else {
-      console.warn(`[pty ${agentId}] PTY attach failed after ${PTY_SPAWN_MAX_RETRIES + 1} attempts:`, err.message);
+      console.warn(`[pty ${agentId}] PTY attach failed after ${PTY_SPAWN_MAX_RETRIES + 1} attempts:`, errMsg(err));
     }
     logPtyLifecycleEvent('pty_attach_exhausted', agentId, job, {
-      error: err.message,
+      error: errMsg(err),
       attempts: PTY_SPAWN_MAX_RETRIES + 1,
       tmux_alive: isTmuxSessionAlive(agentId),
       fallback: isAutoExitJob(job) ? 'wait_for_tmux_exit_poll' : 'finalize_if_tmux_gone',

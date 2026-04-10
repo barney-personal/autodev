@@ -1,7 +1,7 @@
 import { Sentry } from '../instrument.js';
 import express from 'express';
 import { randomUUID } from 'node:crypto';
-import { McpServer as MCP, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { McpServer as MCP } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { askUserHandler, askUserSchema } from './tools/askUser.js';

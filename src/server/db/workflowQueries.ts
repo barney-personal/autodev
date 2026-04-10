@@ -3,7 +3,6 @@ import { getDb } from './database.js';
 import type { Job, Review, TemplateModelStat, ReviewStatus, Workflow, WorkflowMetrics, WorkflowPhaseMetric } from '../../shared/types.js';
 
 // A raw database row before casting to a typed interface.
-type DbRow = Record<string, unknown>;
 
 // node:sqlite returns null-prototype objects; shallow-copy to a regular object.
 function cast<T>(val: unknown): T {

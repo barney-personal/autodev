@@ -7,7 +7,7 @@
  * Pure functions only — no React, no hooks, no side-effects.
  */
 
-import type { Workflow, AgentWithJob, Job, AgentStatus, WorkflowStatus, JobStatus } from '@shared/types';
+import type { Workflow, AgentWithJob, Job, AgentStatus, WorkflowStatus } from '@shared/types';
 
 // ─── Task-item model ────────────────────────────────────────────────────────
 
@@ -126,7 +126,7 @@ export function buildGroupedTaskItems(
   // ── Build lookup sets for deduplication ────────────────────────────────────
 
   // Set of workflow IDs to exclude workflow-owned agents and queued jobs
-  const workflowIds = new Set(workflows.map(w => w.id));
+  // const workflowIds = new Set(workflows.map(w => w.id));
 
   // Set of job IDs that already have an agent, to avoid duplicate queued_job items
   const agentJobIds = new Set(agents.map(a => a.job_id));

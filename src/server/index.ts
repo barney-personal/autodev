@@ -22,6 +22,7 @@ import { startResourceMonitor, stopResourceMonitor, setQueueControls } from './o
 import { startDbBackup, stopDbBackup, runBackupNow } from './orchestrator/DbBackup.js';
 import { writeInput, resizePty, resizeAndSnapshot, saveSnapshot, isTmuxSessionAlive } from './orchestrator/PtyManager.js';
 import * as queries from './db/queries.js';
+import type { QueueSnapshot } from '../shared/types.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -82,7 +83,7 @@ async function main() {
 
   // Send snapshot on connect; also respond to explicit re-requests (e.g. after StrictMode remount or HMR)
   // Short-TTL cache so multiple rapid connections (HMR, tabs) don't each run the full query set.
-  let snapshotCache: { data: any; expires: number } | null = null;
+  let snapshotCache: { data: QueueSnapshot; expires: number } | null = null;
   const SNAPSHOT_CACHE_TTL = 1500; // 1.5s
 
   const buildSnapshot = () => {
@@ -169,8 +170,6 @@ async function main() {
   // 8. Graceful shutdown with connection draining
   let shuttingDown = false;
 
-  /** Exposed for health checks — true once shutdown begins */
-  function isShuttingDown(): boolean { return shuttingDown; }
 
   async function shutdown(signal: string) {
     if (shuttingDown) return;

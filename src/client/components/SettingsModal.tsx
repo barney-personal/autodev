@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 
 interface SettingsModalProps {
   onClose: () => void;
@@ -57,7 +57,7 @@ export function SettingsModal({ onClose, eyeEnabled = false, onEyeEnabledChange 
     try {
       const res = await fetch('/api/worktrees/cleanup', { method: 'POST' });
       if (res.ok) {
-        const data = await res.json();
+// const data = await res.json();
         // Refresh stats
         const statsRes = await fetch('/api/worktrees/stats');
         if (statsRes.ok) setWorktreeStats(await statsRes.json());

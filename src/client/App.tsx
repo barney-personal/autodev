@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useRef, useMemo, lazy, Suspense } from 'react';
+import { useState, useCallback, useEffect, useRef, useMemo, lazy, Suspense } from 'react';
 import { Header } from './components/Header';
 import { AgentTerminal } from './components/AgentTerminal';
 import { WorkQueueSidebar } from './components/WorkQueueSidebar';
@@ -32,7 +32,7 @@ import { useWorkflows } from './hooks/useWorkflows';
 import { useToasts } from './hooks/useToasts';
 import { ToastFeed } from './components/ToastFeed';
 import socket from './socket';
-import type { AgentWithJob, AgentOutput, CreateJobRequest, CreateTaskRequest, CreateTaskResponse, CreateDebateRequest, CreateAutonomousAgentRunRequest, Debate, Workflow, Job, Template, BatchTemplate, Discussion, Proposal } from '@shared/types';
+import type { AgentWithJob, AgentOutput, CreateTaskRequest, CreateTaskResponse, CreateDebateRequest, Debate, Workflow, Job, Template, Discussion, Proposal } from '@shared/types';
 
 export default function App() {
   const { agents, setInitial: setInitialAgents, addAgent, updateAgent } = useAgents();
@@ -42,7 +42,7 @@ export default function App() {
   const { debates, setInitial: setInitialDebates, addDebate, updateDebate: updateDebateState } = useDebates();
   const { workflows, setInitial: setInitialWorkflows, addWorkflow, updateWorkflow: updateWorkflowState } = useWorkflows();
   const { toasts, dismiss: dismissToast } = useToasts();
-  const [templates, setTemplates] = useState<Template[]>([]);
+  const [_templates, setTemplates] = useState<Template[]>([]);
 
   const [selectedAgent, setSelectedAgent] = useState<AgentWithJob | null>(null);
   const [showTaskForm, setShowTaskForm] = useState(false);
@@ -55,7 +55,7 @@ export default function App() {
   const [showBatchTemplates, setShowBatchTemplates] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showDebateForm, setShowDebateForm] = useState(false);
-  const [debateFormInitial, setDebateFormInitial] = useState<Partial<CreateDebateRequest> | undefined>();
+  const [_debateFormInitial, setDebateFormInitial] = useState<Partial<CreateDebateRequest> | undefined>();
   const [selectedDebate, setSelectedDebate] = useState<Debate | null>(null);
   const [selectedWorkflow, setSelectedWorkflow] = useState<Workflow | null>(null);
   const [showKnowledgeBase, setShowKnowledgeBase] = useState(false);
@@ -174,10 +174,10 @@ export default function App() {
     onAgentOutput: (_agentId: string, _line: AgentOutput) => {
       // Output is rendered live in AgentTerminal via socket listener
     },
-    onQuestionNew: (question) => {
+    onQuestionNew: (_question) => {
       // Question state is on the agent; update will come via agent:update
     },
-    onQuestionAnswered: (question) => {
+    onQuestionAnswered: (_question) => {
       // Same — agent update will follow
     },
     onLockAcquired: addLock,

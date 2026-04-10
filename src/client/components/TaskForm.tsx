@@ -45,7 +45,7 @@ export function TaskForm({ onSubmit, onClose, availableJobs = [] }: TaskFormProp
   // ── Job-only: stopping, scheduling, retry ─────────────────────────────────
   const [stopMode, setStopMode] = useState<StopMode>('completion');
   const [stopValue, setStopValue] = useState<number | null>(null);
-  const [maxTurns, setMaxTurns] = useState<number | ''>('');
+  const [maxTurns, _setMaxTurns] = useState<number | ''>('');
   const [priority, setPriority] = useState(0);
   const [dependsOn, setDependsOn] = useState<string[]>([]);
   const [interactive, setInteractive] = useState(true);

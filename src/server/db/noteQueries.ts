@@ -3,7 +3,6 @@ import { validateTransition } from '../orchestrator/StateTransitions.js';
 import type { FileLock, Template, Note, Project, BatchTemplate, Debate, Job } from '../../shared/types.js';
 
 // A raw database row before casting to a typed interface.
-type DbRow = Record<string, unknown>;
 
 // node:sqlite returns null-prototype objects; shallow-copy to a regular object.
 // SQLite rows are always flat scalars so a shallow copy is sufficient and far

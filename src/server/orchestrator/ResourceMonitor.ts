@@ -9,7 +9,6 @@
  * When resources are critically low, emits warnings and can pause the work queue.
  */
 
-import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
 import { captureWithContext } from '../instrument.js';

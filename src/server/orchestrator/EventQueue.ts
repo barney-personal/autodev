@@ -15,7 +15,7 @@ const MAX_AGE_MS = 10 * 60 * 1000; // 10 minutes
 
 // Track which DB instance we initialized the table for, so that test
 // isolation (which swaps in-memory DBs) correctly re-creates the table.
-let _initializedDb: any = null;
+let _initializedDb: unknown = null;
 
 function ensureTable(): void {
   if (!isDbInitialized()) return;
@@ -36,7 +36,7 @@ function ensureTable(): void {
 /**
  * Push an event into the queue. Called from SocketManager emit wrappers.
  */
-export function pushEvent(eventName: string, payload: any): void {
+export function pushEvent(eventName: string, payload: unknown): void {
   if (!isDbInitialized()) return;
   try {
     ensureTable();
@@ -69,7 +69,7 @@ export function pushEvent(eventName: string, payload: any): void {
  * Get all events since a given timestamp. Used by the UI on reconnect
  * to replay missed events.
  */
-export function getEventsSince(sinceMs: number): Array<{ event_name: string; payload: any; created_at: number }> {
+export function getEventsSince(sinceMs: number): Array<{ event_name: string; payload: unknown; created_at: number }> {
   if (!isDbInitialized()) return [];
   try {
     ensureTable();

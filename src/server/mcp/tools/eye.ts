@@ -87,7 +87,7 @@ export const replyDiscussionSchema = z.object({
   requires_user_reply: z.boolean().optional().describe('Set to true if this reply is a question or request that needs a response from the user. Default: false (most replies are informational — acknowledgments, status updates, "I will look into it" — and do NOT need a user response).'),
 });
 
-export async function replyDiscussionHandler(agentId: string, input: z.infer<typeof replyDiscussionSchema>): Promise<string> {
+export async function replyDiscussionHandler(_agentId: string, input: z.infer<typeof replyDiscussionSchema>): Promise<string> {
   const { discussion_id, message, resolve, requires_user_reply } = input;
 
   const discussion = queries.getDiscussionById(discussion_id);
@@ -165,7 +165,7 @@ export const checkProposalsSchema = z.object({
   status_filter: z.enum(['pending', 'approved', 'rejected', 'discussing', 'in_progress', 'done']).optional(),
 });
 
-export async function checkProposalsHandler(agentId: string, input: z.infer<typeof checkProposalsSchema>): Promise<string> {
+export async function checkProposalsHandler(_agentId: string, input: z.infer<typeof checkProposalsSchema>): Promise<string> {
   const { proposal_ids, status_filter } = input;
 
   let proposals;
@@ -205,7 +205,7 @@ export const updateProposalSchema = z.object({
   execution_job_id: z.string().optional().describe('Job ID of the worker executing this proposal'),
 });
 
-export async function updateProposalHandler(agentId: string, input: z.infer<typeof updateProposalSchema>): Promise<string> {
+export async function updateProposalHandler(_agentId: string, input: z.infer<typeof updateProposalSchema>): Promise<string> {
   const { proposal_id, status, execution_job_id } = input;
 
   const proposal = queries.getProposalById(proposal_id);
@@ -260,7 +260,7 @@ export const reportPrReviewSchema = z.object({
   })).describe('Individual review comments on specific files/lines'),
 });
 
-export async function reportPrReviewHandler(agentId: string, input: z.infer<typeof reportPrReviewSchema>): Promise<string> {
+export async function reportPrReviewHandler(_agentId: string, input: z.infer<typeof reportPrReviewSchema>): Promise<string> {
   const { pr_number, pr_url, pr_title, pr_author, repo, summary, comments } = input;
   const commentsJson = JSON.stringify(comments);
 
@@ -322,7 +322,7 @@ export const checkPrReviewsSchema = z.object({
   review_ids: z.array(z.string()).optional().describe('Check specific review IDs'),
 });
 
-export async function checkPrReviewsHandler(agentId: string, input: z.infer<typeof checkPrReviewsSchema>): Promise<string> {
+export async function checkPrReviewsHandler(_agentId: string, input: z.infer<typeof checkPrReviewsSchema>): Promise<string> {
   const { unread_only, review_ids } = input;
 
   let reviews: any[];
@@ -364,7 +364,7 @@ export const replyPrReviewSchema = z.object({
   })).optional().describe('Updated comment list — replaces all comments if provided'),
 });
 
-export async function replyPrReviewHandler(agentId: string, input: z.infer<typeof replyPrReviewSchema>): Promise<string> {
+export async function replyPrReviewHandler(_agentId: string, input: z.infer<typeof replyPrReviewSchema>): Promise<string> {
   const { review_id, message, updated_comments } = input;
 
   const review = queries.getPrReviewById(review_id);
@@ -416,7 +416,7 @@ export const replyProposalSchema = z.object({
   update_plan: z.string().optional().describe('Updated implementation plan based on feedback'),
 });
 
-export async function replyProposalHandler(agentId: string, input: z.infer<typeof replyProposalSchema>): Promise<string> {
+export async function replyProposalHandler(_agentId: string, input: z.infer<typeof replyProposalSchema>): Promise<string> {
   const { proposal_id, message, update_plan } = input;
 
   const proposal = queries.getProposalById(proposal_id);

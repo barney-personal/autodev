@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import type { Workflow, Job, AgentWithJob, WorkflowMetrics } from '@shared/types';
 
 function useNowTick(enabled: boolean): number {

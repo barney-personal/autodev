@@ -1,4 +1,3 @@
-import React from 'react';
 import type { AgentWithJob } from '@shared/types';
 import type { Project } from '@shared/types';
 

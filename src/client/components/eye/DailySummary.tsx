@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import styles from './DailySummary.module.css';
 
 interface DailySummaryItem { timestamp: number; text: string }

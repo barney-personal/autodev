@@ -107,7 +107,7 @@ export function TaskFeed({
   workflows,
   agents,
   allAgents,
-  jobs,
+  jobs: _jobs,
   queuedJobs,
   now,
   onSelectAgent,

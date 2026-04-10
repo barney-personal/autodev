@@ -12,6 +12,7 @@ import { getAvailableModel, getFallbackModel, getAlternateProviderModel, getMode
 import { classifyJobFailure, isFallbackEligibleFailure, isSameModelRetryEligible, shouldMarkProviderUnavailable } from './FailureClassifier.js';
 import { nudgeQueue } from './WorkQueueManager.js';
 import { logResilienceEvent } from './ResilienceLogger.js';
+import { errMsg, execErrMsg } from '../../shared/errors.js';
 import { validateTransition } from './StateTransitions.js';
 
 // Track jobs we've already processed to prevent double-exit race from triggering
@@ -224,10 +225,10 @@ function _onJobCompleted(job: Job): void {
         });
         spawnPhaseJob(queries.getWorkflowById(workflow.id)!, 'review', 1);
       } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
+        const errorMessage = errMsg(err);
         console.error(`[workflow ${workflow.id}] error in assess handler (cycle ${job.workflow_cycle}):`, err);
         captureWithContext(err, { job_id: job.id, workflow_id: workflow.id, component: 'WorkflowManager' });
-        updateAndEmit(workflow.id, { status: 'blocked', current_phase: 'assess' as WorkflowPhase, blocked_reason: `Internal error in assess handler: ${errMsg}` });
+        updateAndEmit(workflow.id, { status: 'blocked', current_phase: 'assess' as WorkflowPhase, blocked_reason: `Internal error in assess handler: ${errorMessage}` });
         return;
       }
       break;
@@ -268,10 +269,10 @@ function _onJobCompleted(job: Job): void {
           spawnPhaseJob(updated, 'implement', updated.current_cycle);
         }
       } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
+        const errorMessage = errMsg(err);
         console.error(`[workflow ${workflow.id}] error in review handler (cycle ${job.workflow_cycle}):`, err);
         captureWithContext(err, { job_id: job.id, workflow_id: workflow.id, component: 'WorkflowManager' });
-        updateAndEmit(workflow.id, { status: 'blocked', current_phase: 'review' as WorkflowPhase, blocked_reason: `Internal error in review handler: ${errMsg}` });
+        updateAndEmit(workflow.id, { status: 'blocked', current_phase: 'review' as WorkflowPhase, blocked_reason: `Internal error in review handler: ${errorMessage}` });
         return;
       }
       break;
@@ -399,10 +400,10 @@ function _onJobCompleted(job: Job): void {
           spawnPhaseJob(queries.getWorkflowById(workflow.id)!, 'review', nextCycle);
         }
       } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
+        const errorMessage = errMsg(err);
         console.error(`[workflow ${workflow.id}] error in implement handler (cycle ${job.workflow_cycle}):`, err);
         captureWithContext(err, { job_id: job.id, workflow_id: workflow.id, component: 'WorkflowManager' });
-        updateAndEmit(workflow.id, { status: 'blocked', current_phase: 'implement' as WorkflowPhase, blocked_reason: `Internal error in implement handler: ${errMsg}` });
+        updateAndEmit(workflow.id, { status: 'blocked', current_phase: 'implement' as WorkflowPhase, blocked_reason: `Internal error in implement handler: ${errorMessage}` });
         return;
       }
       break;
@@ -700,8 +701,8 @@ export function ensureWorktreeBranch(
       });
     }
     return { ok: true };
-  } catch (err: any) {
-    return { ok: false, error: err.message ?? String(err) };
+  } catch (err) {
+    return { ok: false, error: errMsg(err) ?? String(err) };
   }
 }
 
@@ -763,11 +764,11 @@ export function verifyWorktreeHealth(
       execSync(`git checkout -f ${JSON.stringify(expectedBranch)}`, {
         cwd: worktreePath, stdio: 'pipe', timeout: 10000,
       });
-    } catch (err: any) {
+    } catch (err) {
       logResilienceEvent('worktree_repair', 'worktree', worktreePath, {
-        check: 'not_inside_work_tree', action: 'force_checkout', outcome: 'failed', error: err.message,
+        check: 'not_inside_work_tree', action: 'force_checkout', outcome: 'failed', error: errMsg(err),
       });
-      return { ok: false, error: `git not functional in worktree and force checkout failed: ${err.message}` };
+      return { ok: false, error: `git not functional in worktree and force checkout failed: ${errMsg(err)}` };
     }
   }
 
@@ -784,11 +785,11 @@ export function verifyWorktreeHealth(
       execSync(`git checkout -f ${JSON.stringify(expectedBranch)}`, {
         cwd: worktreePath, stdio: 'pipe', timeout: 10000,
       });
-    } catch (err: any) {
+    } catch (err) {
       logResilienceEvent('worktree_repair', 'worktree', worktreePath, {
-        check: 'invalid_head', action: 'force_checkout', outcome: 'failed', error: err.message,
+        check: 'invalid_head', action: 'force_checkout', outcome: 'failed', error: errMsg(err),
       });
-      return { ok: false, error: `Invalid HEAD and force checkout failed: ${err.message}` };
+      return { ok: false, error: `Invalid HEAD and force checkout failed: ${errMsg(err)}` };
     }
   }
 
@@ -820,11 +821,11 @@ function recreateWorktree(
       action: 'recreate', outcome: 'success', branch,
     });
     return { ok: true };
-  } catch (err: any) {
+  } catch (err) {
     logResilienceEvent('worktree_repair', 'worktree', worktreePath, {
-      action: 'recreate', outcome: 'failed', branch, error: err.message,
+      action: 'recreate', outcome: 'failed', branch, error: errMsg(err),
     });
-    return { ok: false, error: `Worktree recreation failed: ${err.message}` };
+    return { ok: false, error: `Worktree recreation failed: ${errMsg(err)}` };
   }
 }
 
@@ -969,7 +970,6 @@ function spawnPhaseJob(workflow: Workflow, phase: WorkflowPhase, cycle: number, 
 
   // Choose model, max_turns, and stop config based on phase
   let model: string;
-  let maxTurns: number;
   let stopMode: StopMode;
   let stopValue: number | null;
   let prompt: string;
@@ -986,14 +986,12 @@ function spawnPhaseJob(workflow: Workflow, phase: WorkflowPhase, cycle: number, 
         console.log(`[workflow ${workflow.id}] assess phase requires reliable MCP — falling back from Codex to Claude`);
         model = 'claude-sonnet-4-6';
       }
-      maxTurns = workflow.max_turns_assess;
       stopMode = workflow.stop_mode_assess;
       stopValue = workflow.stop_value_assess;
       prompt = buildAssessPrompt(workflow);
       break;
     case 'review': {
       model = workflow.reviewer_model;
-      maxTurns = workflow.max_turns_review;
       stopMode = workflow.stop_mode_review;
       stopValue = workflow.stop_value_review;
       prompt = buildReviewPrompt(workflow, cycle, inlineContext);
@@ -1001,7 +999,6 @@ function spawnPhaseJob(workflow: Workflow, phase: WorkflowPhase, cycle: number, 
     }
     case 'implement': {
       model = workflow.implementer_model;
-      maxTurns = workflow.max_turns_implement;
       stopMode = workflow.stop_mode_implement;
       stopValue = workflow.stop_value_implement;
       prompt = buildImplementPrompt(workflow, cycle, inlineContext);
@@ -1221,8 +1218,8 @@ export function startWorkflow(workflow: Workflow): Job | null {
     }
     try {
       execSync('git status --porcelain', { cwd: workflow.work_dir, timeout: 5000, stdio: 'pipe' });
-    } catch (err: any) {
-      const reason = `Pre-flight failed: git is not functional in ${workflow.work_dir}: ${err.message}`;
+    } catch (err) {
+      const reason = `Pre-flight failed: git is not functional in ${workflow.work_dir}: ${errMsg(err)}`;
       console.warn(`[workflow ${workflow.id}] ${reason}`);
       updateAndEmit(workflow.id, { status: 'blocked', blocked_reason: reason });
       return null;
@@ -1256,8 +1253,8 @@ export function startWorkflow(workflow: Workflow): Job | null {
         worktree_branch: branchName,
       }) ?? workflow;
       console.log(`[workflow ${workflow.id}] created worktree at ${worktreePath} (branch: ${branchName})`);
-    } catch (err: any) {
-      const reason = `Worktree creation failed: ${err.message}`;
+    } catch (err) {
+      const reason = `Worktree creation failed: ${errMsg(err)}`;
       console.warn(`[workflow ${workflow.id}] ${reason}`);
       updateAndEmit(workflow.id, { status: 'blocked', blocked_reason: reason });
       return null;
@@ -1370,11 +1367,11 @@ export function resumeWorkflow(
         action: 'restore', outcome: 'success', branch: branchName, worktree_path: worktreePath,
       });
       console.log(`[workflow ${current.id}] restored worktree at ${worktreePath} (branch: ${branchName}) during resume`);
-    } catch (err: any) {
+    } catch (err) {
       logResilienceEvent('worktree_restore', 'workflow', current.id, {
-        action: 'restore', outcome: 'failed', branch: branchName, error: err.message,
+        action: 'restore', outcome: 'failed', branch: branchName, error: errMsg(err),
       });
-      throw new Error(`Worktree restoration failed during resume: ${err.message}`);
+      throw new Error(`Worktree restoration failed during resume: ${errMsg(err)}`);
     }
   }
 
@@ -1410,7 +1407,6 @@ export function resumeWorkflow(
   const updated = queries.getWorkflowById(workflow.id)!;
 
   let model: string;
-  let maxTurns: number;
   let stopMode: StopMode;
   let stopValue: number | null;
   let prompt: string;
@@ -1423,14 +1419,12 @@ export function resumeWorkflow(
   switch (phase) {
     case 'assess':
       model = updated.implementer_model;
-      maxTurns = updated.max_turns_assess;
       stopMode = updated.stop_mode_assess;
       stopValue = updated.stop_value_assess;
       prompt = buildAssessPrompt(updated);
       break;
     case 'review': {
       model = updated.reviewer_model;
-      maxTurns = updated.max_turns_review;
       stopMode = updated.stop_mode_review;
       stopValue = updated.stop_value_review;
       prompt = buildReviewPrompt(updated, cycle, inlineContext);
@@ -1438,7 +1432,6 @@ export function resumeWorkflow(
     }
     case 'implement': {
       model = updated.implementer_model;
-      maxTurns = updated.max_turns_implement;
       stopMode = updated.stop_mode_implement;
       stopValue = updated.stop_value_implement;
       prompt = buildImplementPrompt(updated, cycle, inlineContext);
@@ -1587,8 +1580,8 @@ export function pushAndCreatePr(workflow: Workflow, isDraft: boolean): string | 
     updateAndEmit(workflow.id, { pr_url: prUrl });
     console.log(`[workflow ${workflow.id}] ${isDraft ? 'draft ' : ''}PR created: ${prUrl}`);
     return prUrl;
-  } catch (err: any) {
-    const stderr = err.stderr?.toString() ?? err.message ?? '';
+  } catch (err) {
+    const stderr = execErrMsg(err);
     // gh CLI returns error if PR already exists — find and use existing
     if (stderr.includes('already exists')) {
       try {
@@ -1679,8 +1672,8 @@ export function getPrCreationOutcome(workflow: Workflow, prUrl: string | null): 
   let hasPublishableCommits = false;
   try {
     hasPublishableCommits = countBranchCommits(workflow.worktree_path) > 0;
-  } catch (err: any) {
-    console.warn(`[workflow ${workflow.id}] getPrCreationOutcome: git error — preserving worktree as safe default:`, err?.message);
+  } catch (err) {
+    console.warn(`[workflow ${workflow.id}] getPrCreationOutcome: git error — preserving worktree as safe default:`, errMsg(err));
     return 'failed_with_publishable_commits';
   }
 
@@ -1725,8 +1718,8 @@ export async function finalizeWorkflow(workflow: Workflow): Promise<void> {
         execFileSync('git', ['push', '-u', 'origin', workflow.worktree_branch], {
           cwd: workflow.worktree_path, stdio: 'pipe', timeout: 30000,
         });
-      } catch (pushErr: any) {
-        console.warn(`[workflow ${workflow.id}] pre-retry push failed:`, pushErr?.message ?? pushErr);
+      } catch (pushErr) {
+        console.warn(`[workflow ${workflow.id}] pre-retry push failed:`, errMsg(pushErr));
       }
     }
   }
@@ -1795,8 +1788,8 @@ export async function reconcileBlockedPRs(): Promise<void> {
       } else {
         console.warn(`[reconcile-blocked-prs] PR creation still failing for workflow ${workflow.id} — leaving blocked`);
       }
-    } catch (err: any) {
-      console.warn(`[reconcile-blocked-prs] error retrying PR for workflow ${workflow.id}:`, err?.message ?? err);
+    } catch (err) {
+      console.warn(`[reconcile-blocked-prs] error retrying PR for workflow ${workflow.id}:`, errMsg(err));
     }
   }
 }
@@ -1840,8 +1833,8 @@ function _removeWorktree(workflow: Workflow): void {
     });
     execSync('git worktree prune', { cwd: work_dir, stdio: 'pipe', timeout: 10000 });
     console.log(`[workflow ${workflow.id}] worktree removed`);
-  } catch (err: any) {
-    console.warn(`[workflow ${workflow.id}] worktree removal failed:`, err.message);
+  } catch (err) {
+    console.warn(`[workflow ${workflow.id}] worktree removal failed:`, errMsg(err));
   }
 }
 

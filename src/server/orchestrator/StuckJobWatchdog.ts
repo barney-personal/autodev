@@ -29,7 +29,7 @@ import { getFileLockRegistry } from './FileLockRegistry.js';
 import { isTmuxSessionAlive, startInteractiveAgent, saveSnapshot, resolveStandalonePrintJobOutcome } from './PtyManager.js';
 import { handleRetry } from './RetryManager.js';
 import { orphanedWaits, disconnectedAgents, hasActiveTransport } from '../mcp/McpServer.js';
-import { isCodexModel, isAutoExitJob } from '../../shared/types.js';
+import { isAutoExitJob } from '../../shared/types.js';
 import { markModelRateLimited, getFallbackModel, getModelProvider, markProviderRateLimited } from './ModelClassifier.js';
 import { claimRecovery } from './RecoveryLedger.js';
 import { classifyFailureText, isFallbackEligibleFailure, shouldMarkProviderUnavailable } from './FailureClassifier.js';

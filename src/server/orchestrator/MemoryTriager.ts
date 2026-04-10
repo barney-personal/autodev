@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { captureWithContext } from '../instrument.js';
 import * as queries from '../db/queries.js';
-import type { Job, KBEntry } from '../../shared/types.js';
+import type { Job } from '../../shared/types.js';
 
 const TRIAGE_MODEL = 'claude-haiku-4-5-20251001';
 

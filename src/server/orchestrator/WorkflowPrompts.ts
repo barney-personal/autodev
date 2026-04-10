@@ -257,7 +257,7 @@ ${writeTargets}
  */
 export function buildSimplifiedAssessRepairPrompt(
   workflow: Workflow,
-  missingArtifacts: string[],
+  _missingArtifacts: string[],
   diagnosticContext?: string,
 ): string {
   const planKey = `workflow/${workflow.id}/plan`;

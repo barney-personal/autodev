@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import { useMemo } from 'react';
 import type { AgentStatus, AgentWithJob } from '@shared/types';
 
 interface Props {
@@ -77,7 +77,7 @@ function buildLineageSet(selectedAgent: AgentWithJob, allAgents: AgentWithJob[])
 interface LNode { agent: AgentWithJob; x: number; y: number; cx: number; cy: number }
 interface LEdge  { from: LNode; to: LNode }
 
-function computeLayout(selectedId: string, agents: AgentWithJob[]) {
+function computeLayout(_selectedId: string, agents: AgentWithJob[]) {
   if (agents.length === 0) return { nodes: [] as LNode[], edges: [] as LEdge[], w: 0, h: 0 };
 
   const agentMap = new Map(agents.map(a => [a.id, a]));

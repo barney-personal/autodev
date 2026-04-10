@@ -307,7 +307,7 @@ const EYE_IDLE_THRESHOLD_MAX = 6;      // idle cycles before stepping up to 10mi
  * An "idle" cycle is one where no wake events were pending when the prompt was built.
  * When events are present, reset to minimum interval.
  */
-export function computeAdaptiveEyeInterval(currentInterval: number): number {
+export function computeAdaptiveEyeInterval(_currentInterval: number): number {
   const eventCountNote = queries.getNote('setting:eye:lastCycleEventCount');
   const eventCount = eventCountNote?.value ? parseInt(eventCountNote.value, 10) : 0;
 

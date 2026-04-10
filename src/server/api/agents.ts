@@ -3,16 +3,16 @@ import { randomUUID } from 'crypto';
 import { execFileSync } from 'child_process';
 import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
-import { runAgent, cancelledAgents } from '../orchestrator/AgentRunner.js';
+import { cancelledAgents } from '../orchestrator/AgentRunner.js';
 import { markJobRunning } from '../orchestrator/JobLifecycle.js';
-import { disconnectAgent, disconnectAll, getPtyBuffer, getSnapshot, attachPty, isTmuxSessionAlive, saveSnapshot, startInteractiveAgent } from '../orchestrator/PtyManager.js';
+import { disconnectAgent, disconnectAll, getPtyBuffer, getSnapshot, attachPty, isTmuxSessionAlive, saveSnapshot } from '../orchestrator/PtyManager.js';
 import { getFileLockRegistry } from '../orchestrator/FileLockRegistry.js';
 import { nudgeQueue } from '../orchestrator/WorkQueueManager.js';
 
 const router = Router();
 
 // Short-TTL cache — when CPU is contended, prevents duplicate heavy work
-let agentsCache: { data: any; expires: number } | null = null;
+let agentsCache: { data: unknown; expires: number } | null = null;
 const AGENTS_CACHE_TTL = 1500; // 1.5s
 
 router.get('/', (_req, res) => {
@@ -206,8 +206,8 @@ router.post('/:id/cancel', (req, res) => {
   if (agent.pid) {
     try {
       process.kill(-agent.pid, 'SIGTERM');
-    } catch (err: any) {
-      if (err.code !== 'ESRCH') {
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ESRCH') {
         cancelledAgents.delete(agent.id);
         res.status(500).json({ error: 'Failed to kill process' }); return;
       }
@@ -264,8 +264,8 @@ router.post('/:id/requeue', (req, res) => {
   if (agent.pid) {
     try {
       process.kill(-agent.pid, 'SIGTERM');
-    } catch (err: any) {
-      if (err.code !== 'ESRCH') {
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ESRCH') {
         cancelledAgents.delete(agent.id);
         res.status(500).json({ error: 'Failed to kill process' }); return;
       }

@@ -1,4 +1,3 @@
-import React from 'react';
 import type { FileLock } from '@shared/types';
 
 interface FileLockMapProps {

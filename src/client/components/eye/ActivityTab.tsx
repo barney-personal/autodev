@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import type { AgentWithJob } from '@shared/types';
 import { InlineOutput, StatusDot, formatDuration, formatTime } from './utils';
 

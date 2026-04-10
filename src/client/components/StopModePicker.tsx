@@ -1,4 +1,3 @@
-import React from 'react';
 import type { StopMode } from '@shared/types';
 
 interface StopModePickerProps {

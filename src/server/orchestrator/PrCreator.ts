@@ -4,7 +4,7 @@
  * Extracted from WorkflowManager.finalizeWorkflow so both standalone jobs
  * and workflow jobs share the same resilient push-and-PR logic.
  */
-import { execSync, execFileSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import { captureWithContext } from '../instrument.js';
 import * as queries from '../db/queries.js';

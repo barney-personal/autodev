@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import type { Discussion, Proposal } from '@shared/types';
 import { formatNextCycle } from './eye/utils';
 import { DailySummary } from './eye/DailySummary';

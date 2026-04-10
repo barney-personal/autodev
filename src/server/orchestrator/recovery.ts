@@ -7,7 +7,6 @@ import { isTmuxSessionAlive, attachPty, resolveStandalonePrintJobOutcome } from 
 import { onJobCompleted as debateOnJobCompleted } from './DebateManager.js';
 import { onJobCompleted as workflowOnJobCompleted, reconcileRunningWorkflows, reconcileBlockedPRs } from './WorkflowManager.js';
 import { orphanedWaits } from '../mcp/McpServer.js';
-import type { ClaudeStreamEvent } from '../../shared/types.js';
 import { isCodexModel, isAutoExitJob } from '../../shared/types.js';
 import { handleRetry } from './RetryManager.js';
 import { claimRecovery } from './RecoveryLedger.js';

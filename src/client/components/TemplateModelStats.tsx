@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import type { TemplateModelStat } from '@shared/types';
 
 interface TemplateModelStatsProps {
@@ -28,7 +28,7 @@ export function TemplateModelStats({ templateId, model }: TemplateModelStatsProp
   const rate = Math.round((match.success_rate ?? 0) * 100);
   const costStr = match.avg_cost != null ? `$${match.avg_cost.toFixed(3)}` : '—';
   const turnsStr = match.avg_turns != null ? Math.round(match.avg_turns).toString() : '—';
-  const modelLabel = match.model?.replace('claude-', '') ?? 'auto';
+  // const modelLabel = match.model?.replace('claude-', '') ?? 'auto';
 
   return (
     <div className="template-model-stats" title={`Based on ${match.total} runs`}>

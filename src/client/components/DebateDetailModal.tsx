@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import type { Debate, Job, AgentWithJob, CreateDebateRequest } from '@shared/types';
 
 interface DebateDetailModalProps {

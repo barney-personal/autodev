@@ -5,7 +5,7 @@ import '@xterm/xterm/css/xterm.css';
 import socket from '../socket';
 import { QuestionBubble } from './QuestionBubble';
 import { DiffViewer } from './DiffViewer';
-import type { AgentWithJob, AgentOutput, AgentOutputSegment, ClaudeStreamEvent, CodexStreamEvent, ChildAgentSummary } from '@shared/types';
+import type { AgentWithJob, AgentOutput, ClaudeStreamEvent, CodexStreamEvent, ChildAgentSummary } from '@shared/types';
 
 // LRU cache for completed agents' rendered terminal output.
 // Avoids re-fetching and re-parsing output that will never change.
@@ -673,7 +673,7 @@ export function AgentTerminal({ agent, onClose, onContinued, onRenameJob }: Agen
       }
 
       // For cache misses (or running agents), fetch from server
-      const fetchPromise = cached
+      cached
         ? Promise.resolve()  // skip fetch — already applied
         : fetch(`/api/agents/${agent.id}/rendered-output?tail=${TAIL}`)
           .then(r => r.json())

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { ProposalCard } from '../ProposalCard';
 import socket from '../../socket';
 import type { Proposal, ProposalMessage } from '@shared/types';

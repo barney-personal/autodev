@@ -13,7 +13,7 @@ export const addKnowledgeSchema = z.object({
   tags: z.string().optional().describe('Comma-separated tags'),
 });
 
-export async function searchKBHandler(agentId: string, input: z.infer<typeof searchKBSchema>): Promise<string> {
+export async function searchKBHandler(_agentId: string, input: z.infer<typeof searchKBSchema>): Promise<string> {
   const results = queries.searchKB(input.query, input.project_id);
   if (results.length === 0) {
     return JSON.stringify({ results: [], message: 'No knowledge base entries found matching your query.' });
