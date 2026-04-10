@@ -1,5 +1,6 @@
 // Sentry must be imported first to instrument all subsequent modules
 import { Sentry } from './instrument.js';
+import { serverLogger, socketLogger } from './lib/logger.js';
 import { createServer } from 'http';
 import express from 'express';
 import compression from 'compression';
@@ -24,6 +25,9 @@ import { writeInput, resizePty, resizeAndSnapshot, saveSnapshot, isTmuxSessionAl
 import * as queries from './db/queries.js';
 import type { QueueSnapshot } from '../shared/types.js';
 
+const log = serverLogger();
+const sockLog = socketLogger();
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const PORT = Number(process.env.PORT ?? 3456);
@@ -35,22 +39,22 @@ const DB_PATH = process.env.DB_PATH ?? path.join(process.cwd(), 'data', 'orchest
 // server process). Without exit, a zombie process keeps running WorkQueue and
 // dispatching agents whose socket events go nowhere.
 process.on('uncaughtException', (err: NodeJS.ErrnoException) => {
-  console.error('[server] Uncaught exception:', err);
+  log.error({ err }, 'Uncaught exception');
   Sentry.captureException(err);
   if (err.code === 'EADDRINUSE' || err.code === 'EACCES') {
-    console.error('[server] Fatal: port already in use — exiting to avoid zombie process');
+    log.fatal({ err }, 'Fatal: port in use');
     process.exit(1);
   }
 });
 process.on('unhandledRejection', (reason) => {
-  console.error('[server] Unhandled rejection:', reason);
+  log.error({ err: reason }, 'Unhandled rejection');
   Sentry.captureException(reason);
 });
 
 async function main() {
   // 1. Init database
   initDb(DB_PATH);
-  console.log(`[server] DB initialized at ${DB_PATH}`);
+  log.info({ dbPath: DB_PATH }, 'DB initialized');
 
   // Populate FTS index for any existing output rows not yet indexed
   queries.rebuildFts();
@@ -106,14 +110,14 @@ async function main() {
   };
 
   io.on('connection', (socket) => {
-    try { socket.emit('queue:snapshot', buildSnapshot()); } catch (err) { console.error('[socket] snapshot error:', err); }
+    try { socket.emit('queue:snapshot', buildSnapshot()); } catch (err) { sockLog.error({ err }, 'snapshot error'); }
 
     socket.on('request:snapshot', () => {
-      try { socket.emit('queue:snapshot', buildSnapshot()); } catch (err) { console.error('[socket] snapshot error:', err); }
+      try { socket.emit('queue:snapshot', buildSnapshot()); } catch (err) { sockLog.error({ err }, 'snapshot error'); }
     });
 
-    socket.on('pty:input', ({ agent_id, data }) => { try { writeInput(agent_id, data); } catch (err) { console.error('[socket] pty:input error:', err); } });
-    socket.on('pty:resize', ({ agent_id, cols, rows }) => { try { resizePty(agent_id, cols, rows); } catch (err) { console.error('[socket] pty:resize error:', err); } });
+    socket.on('pty:input', ({ agent_id, data }) => { try { writeInput(agent_id, data); } catch (err) { sockLog.error({ err, agentId: agent_id }, 'pty:input error'); } });
+    socket.on('pty:resize', ({ agent_id, cols, rows }) => { try { resizePty(agent_id, cols, rows); } catch (err) { sockLog.error({ err, agentId: agent_id }, 'pty:resize error'); } });
     socket.on('pty:resize-and-snapshot', async ({ agent_id, cols, rows }) => {
       try {
         const snapshot = await resizeAndSnapshot(agent_id, cols, rows);
@@ -121,7 +125,7 @@ async function main() {
           socket.emit('pty:snapshot-refresh', { agent_id, snapshot });
         }
       } catch (err) {
-        console.error('[socket] pty:resize-and-snapshot error:', err);
+        sockLog.error({ err, agentId: agent_id }, 'pty:resize-and-snapshot error');
       }
     });
   });
@@ -132,7 +136,7 @@ async function main() {
   // 5. MCP server on separate port
   const mcpApp = createMcpApp();
   const mcpServer = mcpApp.listen(MCP_PORT, () => {
-    console.log(`[server] MCP server listening on :${MCP_PORT}`);
+    log.info({ mcpPort: MCP_PORT }, 'MCP server listening');
   });
   // Disable idle timeouts on the MCP server. Node.js defaults (keepAliveTimeout=5s,
   // headersTimeout=60s, requestTimeout=300s) close HTTP connections mid-flight on
@@ -164,7 +168,7 @@ async function main() {
 
   // 7. Start main server
   httpServer.listen(PORT, () => {
-    console.log(`[server] Orchestrator listening on :${PORT}`);
+    log.info({ port: PORT }, 'Orchestrator listening');
   });
 
   // 8. Graceful shutdown with connection draining
@@ -174,12 +178,12 @@ async function main() {
   async function shutdown(signal: string) {
     if (shuttingDown) return;
     shuttingDown = true;
-    console.log(`\n[server] ${signal} received — shutting down gracefully`);
+    log.info({ signal }, 'Shutting down gracefully');
 
     // Hard-exit watchdog: if shutdown takes >30s, force it
     // (increased from 10s to allow running agents time to reach a checkpoint)
     const watchdog = setTimeout(() => {
-      console.error('[server] Shutdown timed out — forcing exit');
+      log.error('Shutdown timed out');
       process.exit(1);
     }, 30_000);
     watchdog.unref(); // don't let this alone keep the process alive
@@ -187,14 +191,14 @@ async function main() {
     // Phase 1: Stop dispatching new jobs but keep monitors running briefly
     // so in-flight agents can still report status and release locks.
     stopWorkQueue();
-    console.log('[server] stopped work queue — no new jobs will be dispatched');
+    log.info('Stopped work queue');
 
     // Phase 2: Notify all running agents to finish gracefully.
     // Send SIGTERM to give them a chance to commit work-in-progress.
     try {
       const runningAgents = queries.listAllRunningAgents();
       if (runningAgents.length > 0) {
-        console.log(`[server] sending SIGTERM to ${runningAgents.length} running agent(s)`);
+        log.info({ count: runningAgents.length }, 'Sending SIGTERM');
         for (const agent of runningAgents) {
           if (agent.pid != null) {
             try { process.kill(agent.pid, 'SIGTERM'); } catch { /* already gone */ }
@@ -205,7 +209,7 @@ async function main() {
         await new Promise(resolve => setTimeout(resolve, DRAIN_TIMEOUT_MS));
       }
     } catch (err) {
-      console.error('[server] error during agent drain:', err);
+      log.error({ err }, 'Agent drain error');
     }
 
     // Phase 3: Stop all periodic monitors
@@ -233,10 +237,10 @@ async function main() {
         }
       }
       if (snapshotCount > 0) {
-        console.log(`[server] saved ${snapshotCount} agent snapshot(s) before shutdown`);
+        log.info({ count: snapshotCount }, 'Saved snapshots');
       }
     } catch (err) {
-      console.error('[server] error saving agent snapshots:', err);
+      log.error({ err }, 'Snapshot error');
     }
 
     // Phase 5: Stop accepting new HTTP connections; wait for in-flight requests to drain
@@ -258,15 +262,15 @@ async function main() {
     await Sentry.flush(2000).catch(() => {});
 
     clearTimeout(watchdog);
-    console.log('[server] Shutdown complete');
+    log.info('Shutdown complete');
     process.exit(0);
   }
 
-  process.on('SIGTERM', () => shutdown('SIGTERM').catch(err => { console.error('[server] Shutdown error:', err); process.exit(1); }));
-  process.on('SIGINT',  () => shutdown('SIGINT').catch(err => { console.error('[server] Shutdown error:', err); process.exit(1); }));
+  process.on('SIGTERM', () => shutdown('SIGTERM').catch(err => { log.error({ err }, 'Shutdown error'); process.exit(1); }));
+  process.on('SIGINT',  () => shutdown('SIGINT').catch(err => { log.error({ err }, 'Shutdown error'); process.exit(1); }));
 }
 
 main().catch((err) => {
-  console.error('[server] Fatal error:', err);
+  log.fatal({ err }, 'Fatal startup error');
   process.exit(1);
 });

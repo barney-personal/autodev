@@ -1,4 +1,5 @@
-import * as fs from 'fs';
+import { isPidAlive, statusFromLog } from '../lib/process-utils.js';
+import { recoveryLogger } from '../lib/logger.js';
 import { captureWithContext } from '../instrument.js';
 import * as queries from '../db/queries.js';
 import { reattachAgent, getLogPath } from './AgentRunner.js';
@@ -7,6 +8,8 @@ import { isTmuxSessionAlive, attachPty, resolveStandalonePrintJobOutcome } from 
 import { onJobCompleted as debateOnJobCompleted } from './DebateManager.js';
 import { onJobCompleted as workflowOnJobCompleted, reconcileRunningWorkflows, reconcileBlockedPRs } from './WorkflowManager.js';
 import { orphanedWaits } from '../mcp/McpServer.js';
+
+const log = recoveryLogger();
 import { isCodexModel, isAutoExitJob } from '../../shared/types.js';
 import { handleRetry } from './RetryManager.js';
 import { claimRecovery } from './RecoveryLedger.js';
@@ -14,38 +17,9 @@ import { nudgeQueue } from './WorkQueueManager.js';
 import { getJobIfStatus } from './JobLifecycle.js';
 import { logResilienceEvent } from './ResilienceLogger.js';
 
-function isPidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0); // signal 0 = no-op, just checks existence
-    return true;
-  } catch {
-    return false;
-  }
-}
+// isPidAlive → process-utils
 
-/**
- * Read the agent's log file to determine the actual exit status.
- * Used for legacy stream-json (Codex batch) agents.
- */
-function statusFromLog(agentId: string): 'done' | 'failed' | null {
-  try {
-    const content = fs.readFileSync(getLogPath(agentId), 'utf8');
-    const lines = content.split('\n').filter(Boolean);
-    for (let i = lines.length - 1; i >= 0; i--) {
-      try {
-        const ev = JSON.parse(lines[i]);
-        // Claude result event
-        if (ev.type === 'result') {
-          return ev.is_error ? 'failed' : 'done';
-        }
-        // Codex turn events
-        if (ev.type === 'turn.completed') return 'done';
-        if (ev.type === 'turn.failed') return 'failed';
-      } catch { /* skip malformed lines */ }
-    }
-  } catch { /* log file may not exist */ }
-  return null;
-}
+// statusFromLog → process-utils
 
 /**
  * On startup, check each previously-running agent and recover it:
@@ -82,17 +56,14 @@ export function runRecovery(): void {
         const alive = agent.pid != null && isPidAlive(agent.pid);
 
         if (alive) {
-          console.log(`[recovery] reattaching live Codex agent ${agent.id} (PID ${agent.pid})`);
+          log.info({ agentId: agent.id, pid: agent.pid }, 'reattaching Codex');
           reattachAgent({ agentId: agent.id, job });
           codexReattached++;
         } else {
-          const logStatus = statusFromLog(agent.id);
+          const logStatus = statusFromLog(getLogPath(agent.id));
           const finalStatus = logStatus ?? 'failed';
 
-          console.log(
-            `[recovery] Codex agent ${agent.id} (${status}) — PID ${agent.pid ?? 'none'} not found, ` +
-            `marking ${finalStatus}${logStatus ? ' (from log)' : ' (no result in log)'}`
-          );
+          log.info({ agentId: agent.id, prevStatus: status, finalStatus, fromLog: !!logStatus }, 'Codex PID not found');
 
           // Accept 'assigned' too — agent may have crashed before reaching 'running'
           const activeJob = getJobIfStatus(agent.job_id, ['running', 'assigned']);
@@ -120,8 +91,8 @@ export function runRecovery(): void {
             try {
               queries.scheduleRepeatJob(job);
               nudgeQueue();
-              console.log(`[recovery] scheduled next repeat for job "${job.title}" (${job.id})`);
-            } catch (err) { console.error(`[recovery] failed to schedule repeat for job ${job.id}:`, err); captureWithContext(err, { agent_id: agent.id, job_id: job.id, component: 'recovery' }); }
+              log.info({ jobId: job.id }, 'repeat scheduled');
+            } catch (err) { log.error({ err, jobId: job.id }, 'repeat schedule failed'); captureWithContext(err, { agent_id: agent.id, job_id: job.id, component: 'recovery' }); }
           }
 
           // If failed, invoke retry policy (independent of repeat scheduling)
@@ -129,7 +100,7 @@ export function runRecovery(): void {
             try {
               const freshJob = queries.getJobById(agent.job_id);
               if (freshJob) handleRetry(freshJob, agent.id);
-            } catch (err) { console.error(`[recovery] handleRetry error for job ${agent.job_id}:`, err); captureWithContext(err, { agent_id: agent.id, job_id: agent.job_id, component: 'recovery' }); }
+            } catch (err) { log.error({ err, jobId: agent.job_id }, 'handleRetry error'); captureWithContext(err, { agent_id: agent.id, job_id: agent.job_id, component: 'recovery' }); }
           }
 
           logResilienceEvent('agent_recovered', 'agent', agent.id, { type: 'codex', outcome: agentStatus, job_id: agent.job_id });
@@ -143,7 +114,7 @@ export function runRecovery(): void {
           const isStandalonePrint = !job.is_interactive && !isDebateStage;
 
           if (isStandalonePrint) {
-            console.log(`[recovery] re-monitoring standalone print job ${agent.id} after restart`);
+            log.info({ agentId: agent.id }, 're-monitoring print');
             attachPty(agent.id, job);
             logResilienceEvent('agent_recovered', 'agent', agent.id, {
               type: 'tmux_standalone_print',
@@ -158,7 +129,7 @@ export function runRecovery(): void {
             // Kill the stale session and fail the job so the system can recover cleanly.
             // Kill tmux directly — can't use disconnectAgent() here because
             // SocketManager isn't initialized yet during recovery.
-            console.log(`[recovery] killing stale automated tmux agent ${agent.id} — MCP session lost on restart`);
+            log.info({ agentId: agent.id }, 'killing stale tmux');
             try {
               execFileSync('tmux', ['kill-session', '-t', `orchestrator-${agent.id}`], { stdio: 'pipe' });
             } catch { /* session may already be gone */ }
@@ -181,9 +152,9 @@ export function runRecovery(): void {
               try {
                 queries.scheduleRepeatJob(job);
                 nudgeQueue();
-                console.log(`[recovery] scheduled next repeat for job "${job.title}" (${job.id})`);
+                log.info({ jobId: job.id }, 'repeat scheduled');
               } catch (err) {
-                console.error(`[recovery] failed to schedule repeat for job ${job.id}:`, err);
+                log.error({ err, jobId: job.id }, 'repeat schedule failed');
                 captureWithContext(err, { agent_id: agent.id, job_id: job.id, component: 'recovery' });
               }
             }
@@ -193,7 +164,7 @@ export function runRecovery(): void {
               try {
                 const freshJob = queries.getJobById(agent.job_id);
                 if (freshJob) handleRetry(freshJob, agent.id);
-              } catch (err) { console.error(`[recovery] handleRetry error for job ${agent.job_id}:`, err); captureWithContext(err, { agent_id: agent.id, job_id: agent.job_id, component: 'recovery' }); }
+              } catch (err) { log.error({ err, jobId: agent.job_id }, 'handleRetry error'); captureWithContext(err, { agent_id: agent.id, job_id: agent.job_id, component: 'recovery' }); }
             }
 
             logResilienceEvent('agent_recovered', 'agent', agent.id, { type: 'tmux_automated', outcome: agentStatus, reason: 'mcp_session_lost', job_id: agent.job_id });
@@ -201,7 +172,7 @@ export function runRecovery(): void {
             else tmuxFailed++;
           } else {
             // Interactive or debate-stage: reattach and let the user/process continue.
-            console.log(`[recovery] reattaching tmux agent ${agent.id} (session alive)`);
+            log.info({ agentId: agent.id }, 'reattaching tmux');
             attachPty(agent.id, job);
             tmuxReattached++;
 
@@ -221,7 +192,7 @@ export function runRecovery(): void {
                     job_ids: jobIds,
                     disconnected_at: Date.now() - 61_000, // bypass the 60s grace period
                   });
-                  console.log(`[recovery] agent ${agent.id} was in wait_for_jobs — registered as orphaned wait for [${jobIds.join(', ')}]`);
+                  log.info({ agentId: agent.id, waitedJobIds: jobIds }, 'orphaned wait');
                 }
               } catch { /* malformed JSON — skip */ }
             }
@@ -232,10 +203,7 @@ export function runRecovery(): void {
           const isStandalonePrint = !job.is_interactive && !isDebateStage;
           const standaloneResolution = isStandalonePrint ? resolveStandalonePrintJobOutcome(agent.id, job) : null;
           const finalStatus = standaloneResolution?.status ?? ((job.is_interactive || isDebateStage) ? 'done' : 'failed');
-          console.log(
-            `[recovery] tmux agent ${agent.id} — session gone, marking ${finalStatus}` +
-            (standaloneResolution ? ` (${standaloneResolution.source})` : '')
-          );
+          log.info({ agentId: agent.id, finalStatus, source: standaloneResolution?.source }, 'tmux session gone');
 
           // Accept 'assigned' too — agent may have crashed before reaching 'running'
           const activeJob = getJobIfStatus(agent.job_id, ['running', 'assigned']);
@@ -273,8 +241,8 @@ export function runRecovery(): void {
           if (activeJob && finalStatus === 'done') {
             const doneJob = queries.getJobById(agent.job_id);
             if (doneJob) {
-              try { debateOnJobCompleted(doneJob); } catch (err) { console.error(`[recovery] debateOnJobCompleted error for agent ${agent.id}:`, err); captureWithContext(err, { agent_id: agent.id, job_id: agent.job_id, component: 'recovery' }); }
-              try { workflowOnJobCompleted(doneJob); } catch (err) { console.error(`[recovery] workflowOnJobCompleted error for agent ${agent.id}:`, err); captureWithContext(err, { agent_id: agent.id, job_id: agent.job_id, component: 'recovery' }); }
+              try { debateOnJobCompleted(doneJob); } catch (err) { log.error({ err, agentId: agent.id }, 'debateOnJobCompleted error'); captureWithContext(err, { agent_id: agent.id, job_id: agent.job_id, component: 'recovery' }); }
+              try { workflowOnJobCompleted(doneJob); } catch (err) { log.error({ err, agentId: agent.id }, 'workflowOnJobCompleted error'); captureWithContext(err, { agent_id: agent.id, job_id: agent.job_id, component: 'recovery' }); }
             }
             tmuxRecovered++;
           } else {
@@ -283,8 +251,8 @@ export function runRecovery(): void {
               try {
                 queries.scheduleRepeatJob(job);
                 nudgeQueue();
-                console.log(`[recovery] scheduled next repeat for job "${job.title}" (${job.id})`);
-              } catch (err) { console.error(`[recovery] failed to schedule repeat for job ${job.id}:`, err); captureWithContext(err, { agent_id: agent.id, job_id: job.id, component: 'recovery' }); }
+                log.info({ jobId: job.id }, 'repeat scheduled');
+              } catch (err) { log.error({ err, jobId: job.id }, 'repeat schedule failed'); captureWithContext(err, { agent_id: agent.id, job_id: job.id, component: 'recovery' }); }
             }
 
             // Invoke retry policy for the failed job
@@ -292,7 +260,7 @@ export function runRecovery(): void {
               try {
                 const freshJob = queries.getJobById(agent.job_id);
                 if (freshJob) handleRetry(freshJob, agent.id);
-              } catch (err) { console.error(`[recovery] handleRetry error for job ${agent.job_id}:`, err); captureWithContext(err, { agent_id: agent.id, job_id: agent.job_id, component: 'recovery' }); }
+              } catch (err) { log.error({ err, jobId: agent.job_id }, 'handleRetry error'); captureWithContext(err, { agent_id: agent.id, job_id: agent.job_id, component: 'recovery' }); }
             }
 
             if (activeJob) tmuxFailed++;
@@ -302,12 +270,12 @@ export function runRecovery(): void {
     }
   }
 
-  if (codexReattached > 0) console.log(`[recovery] reattached ${codexReattached} live Codex agents`);
-  if (codexRecovered > 0) console.log(`[recovery] recovered ${codexRecovered} completed Codex agents`);
-  if (codexFailed > 0) console.log(`[recovery] failed ${codexFailed} dead Codex agents`);
-  if (tmuxReattached > 0) console.log(`[recovery] reattached ${tmuxReattached} tmux agents`);
-  if (tmuxRecovered > 0) console.log(`[recovery] recovered ${tmuxRecovered} completed tmux agents`);
-  if (tmuxFailed > 0) console.log(`[recovery] failed ${tmuxFailed} dead tmux agents`);
+  if (codexReattached > 0) log.info({ count: codexReattached }, 'reattached Codex');
+  if (codexRecovered > 0) log.info({ count: codexRecovered }, 'recovered Codex');
+  if (codexFailed > 0) log.warn({ count: codexFailed }, 'failed Codex');
+  if (tmuxReattached > 0) log.info({ count: tmuxReattached }, 'reattached tmux');
+  if (tmuxRecovered > 0) log.info({ count: tmuxRecovered }, 'recovered tmux');
+  if (tmuxFailed > 0) log.warn({ count: tmuxFailed }, 'failed tmux');
 
   const totalRecovered = codexReattached + codexRecovered + tmuxReattached + tmuxRecovered + codexFailed + tmuxFailed;
   if (totalRecovered > 0) {
@@ -323,7 +291,7 @@ export function runRecovery(): void {
 
   // Fire-and-forget: retry PR creation for workflows blocked on PR failure.
   reconcileBlockedPRs().catch(err =>
-    console.error('[recovery] reconcileBlockedPRs error:', err),
+    log.error({ err }, 'reconcileBlockedPRs error'),
   );
 }
 
@@ -337,7 +305,7 @@ export function startWorkflowGapDetector(): void {
     try {
       reconcileRunningWorkflows();
     } catch (err) {
-      console.error('[workflow-gap] tick error:', err);
+      log.error({ err }, 'gap detector error');
       logResilienceEvent('gap_detector_error', 'system', 'gap_detector', { error: String(err) });
       captureWithContext(err, { component: 'recovery' });
     }

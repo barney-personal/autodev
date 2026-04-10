@@ -3,6 +3,7 @@ import { execSync } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import { captureWithContext } from '../instrument.js';
+import { queueLogger } from '../lib/logger.js';
 import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
 import { runAgent } from './AgentRunner.js';
@@ -10,6 +11,8 @@ import { startInteractiveAgent } from './PtyManager.js';
 import { resolveModel } from './ModelClassifier.js';
 import type { Job } from '../../shared/types.js';
 import { isCodexModel, isAutoExitJob } from '../../shared/types.js';
+
+const log = queueLogger();
 
 let _maxConcurrent = Number(process.env.MAX_CONCURRENT_AGENTS ?? 20);
 const POLL_INTERVAL_MS = 2000;
@@ -58,7 +61,7 @@ export function nudgeQueue(): void {
   _nudgePending = true;
   Promise.resolve().then(() => {
     _nudgePending = false;
-    if (_running) tick().catch(console.error);
+    if (_running) tick().catch(err => log.error({ err }, 'tick error'));
   });
 }
 
@@ -84,9 +87,9 @@ export const _tickForTest = async (): Promise<void> => {
 export function startWorkQueue(): void {
   if (_running) return;
   _running = true;
-  console.log('[queue] WorkQueueManager started');
-  _timer = setInterval(() => { try { tick().catch(console.error); } catch (err) { console.error('[queue] tick error:', err); captureWithContext(err, { component: 'WorkQueueManager' }); } }, POLL_INTERVAL_MS);
-  try { tick().catch(console.error); } catch (err) { console.error('[queue] initial tick error:', err); captureWithContext(err, { component: 'WorkQueueManager' }); }
+  log.info('WorkQueueManager started');
+  _timer = setInterval(() => { try { tick().catch(err => log.error({ err }, 'tick error')); } catch (err) { log.error({ err }, 'tick error'); captureWithContext(err, { component: 'WorkQueueManager' }); } }, POLL_INTERVAL_MS);
+  try { tick().catch(err => log.error({ err }, 'tick error')); } catch (err) { log.error({ err }, 'initial tick error'); captureWithContext(err, { component: 'WorkQueueManager' }); }
 }
 
 export function stopWorkQueue(): void {
@@ -116,7 +119,7 @@ async function tick(): Promise<void> {
   for (const job of queries.getJobsWithFailedDeps()) {
     const failedDeps = queries.getFailedDepsForJob(job.id);
     const names = failedDeps.map(d => `${d.title} (${d.status})`).join(', ');
-    console.log(`[queue] cascade-fail "${job.title}" — failed deps: ${names}`);
+    log.info({ jobId: job.id, failedDeps: names }, 'cascade-fail');
     queries.updateJobStatus(job.id, 'failed');
     socket.emitJobUpdate(queries.getJobById(job.id)!);
   }
@@ -167,7 +170,7 @@ async function tick(): Promise<void> {
       // Classify & resolve model (no-op if user already picked one)
       const model = await resolveModel(job);
       if (model == null) {
-        console.warn(`[queue] no dispatchable model available for "${job.title}" — cooling job for ${Math.round(PROVIDER_PAUSE_RETRY_MS / 1000)}s`);
+        log.warn({ jobId: job.id, cooldownSec: Math.round(PROVIDER_PAUSE_RETRY_MS / 1000) }, 'no model — cooling');
         queries.updateJobStatus(job.id, 'queued');
         queries.updateJobScheduledAt(job.id, Date.now() + PROVIDER_PAUSE_RETRY_MS);
         socket.emitJobUpdate(queries.getJobById(job.id)!);
@@ -198,7 +201,7 @@ async function tick(): Promise<void> {
         }
       } catch (err) {
         // Non-fatal — checkpoint is best-effort
-        console.warn(`[queue] git checkpoint failed for agent ${agentId}:`, err);
+        log.warn({ err, agentId }, 'git checkpoint failed');
       }
 
       // Codex batch agents still use runAgent (stream-json path); all others use tmux.
@@ -210,7 +213,7 @@ async function tick(): Promise<void> {
       const resumeSessionId = queries.getNote(`job-resume:${job.id}`)?.value ?? undefined;
       _totalDispatched++;
       _lastDispatchAt = Date.now();
-      console.log(`[queue] dispatching "${job.title}" → agent ${agentId} (model: ${model}, interactive: ${!!readyJob.is_interactive}${readyJob.use_worktree ? ', worktree' : ''}${useCodexBatch ? ', codex-batch' : ''}${isDebateStage ? ', auto-exit' : ''})`);
+      log.info({ jobId: job.id, agentId, model, interactive: !!readyJob.is_interactive, worktree: !!readyJob.use_worktree, codexBatch: useCodexBatch }, 'dispatching job');
       if (useCodexBatch) {
         runAgent({ agentId, job: dispatchJob, resumeSessionId });
       } else {
@@ -219,7 +222,7 @@ async function tick(): Promise<void> {
       if (resumeSessionId) queries.upsertNote(`job-resume:${job.id}`, '', null);
     } catch (err: any) {
       _totalFailed++;
-      console.error(`[queue] dispatch failed for job ${job.id}:`, err);
+      log.error({ err, jobId: job.id }, 'dispatch failed');
       captureWithContext(err, { job_id: job.id, component: 'WorkQueueManager' });
       queries.updateJobStatus(job.id, 'failed');
       // If an agent row was already inserted, mark it as failed so it doesn't
@@ -242,7 +245,7 @@ async function tick(): Promise<void> {
     // deep call stacks from rapid nudge sequences.
     if (_retickRequested && _running) {
       _retickRequested = false;
-      Promise.resolve().then(() => tick().catch(console.error));
+      Promise.resolve().then(() => tick().catch(err => log.error({ err }, 'tick error')));
     }
   }
 }
@@ -281,7 +284,7 @@ function createWorktree(job: Job, agentId: string): Job {
   // Ensure the namespace directory exists before git worktree add
   fs.mkdirSync(path.dirname(worktreeDir), { recursive: true });
 
-  console.log(`[queue] creating worktree: ${worktreeDir} (branch: ${branchName})`);
+  log.info({ worktreeDir, branchName, agentId }, 'creating worktree');
   execSync(`git worktree add ${JSON.stringify(worktreeDir)} -b ${JSON.stringify(branchName)}`, {
     cwd: repoDir,
     timeout: 30000,
@@ -296,7 +299,7 @@ function createWorktree(job: Job, agentId: string): Job {
       path: worktreeDir,
       branch: branchName,
     });
-  } catch (err) { console.warn('[queue] failed to record worktree:', err); }
+  } catch (err) { log.warn({ err }, 'failed to record worktree'); }
 
   // Update the job's work_dir in DB so sub-agents inherit the worktree path
   // (not the original main-repo path) when they call create_job without an explicit work_dir.

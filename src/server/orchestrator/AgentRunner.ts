@@ -6,6 +6,7 @@ import * as path from 'path';
 
 const execAsync = promisify(exec);
 import { captureWithContext } from '../instrument.js';
+import { agentLogger } from '../lib/logger.js';
 import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
 import { getFileLockRegistry } from './FileLockRegistry.js';
@@ -228,7 +229,7 @@ export function runAgent(options: RunOptions): void {
     binary = CLAUDE;
   }
 
-  console.log(`[agent ${agentId}] spawning ${useCodex ? 'codex' : 'claude'} for job "${job.title}"${model ? ` (model: ${model})` : ''}`);
+  agentLogger(agentId, { jobId: job.id }).info({ binary: useCodex ? 'codex' : 'claude', model }, 'spawning');
 
   // All file descriptor acquisition (logFd, errFd, and the Codex promptFd)
   // happens inside this try block so that any failure at any point closes
@@ -249,7 +250,7 @@ export function runAgent(options: RunOptions): void {
 
     const launch = buildNiceSpawn(binary, args);
     if (!isNiceAvailable()) {
-      console.warn(`[agent ${agentId}] 'nice' not available — launching ${launch.command} directly`);
+      agentLogger(agentId).warn({ command: launch.command }, 'nice not available');
     }
 
     child = spawn(launch.command, launch.args, {
@@ -326,7 +327,7 @@ export function reattachAgent(options: RunOptions): void {
   // Skip lines we already stored before the restart
   const skipLines = agent ? queries.getAgentLastSeq(agentId) + 1 : 0;
 
-  console.log(`[agent ${agentId}] reattaching (PID ${agent?.pid}, skipping ${skipLines} already-stored lines)`);
+  agentLogger(agentId).info({ pid: agent?.pid, skipLines }, 'reattaching');
   startTailing(agentId, job, logPath, skipLines, null, agent?.pid ?? undefined);
 }
 
@@ -366,7 +367,7 @@ export function startTailing(
         fs.closeSync(fd);
       }
     } catch (err) {
-      console.warn(`[agent ${agentId}] readNewContent error:`, err);
+      agentLogger(agentId).warn({ err }, 'readNewContent error');
       return;
     }
     filePos += bytesRead;
@@ -415,7 +416,7 @@ export function startTailing(
           stopTailing(agentId);
           handleAgentExit(agentId, job, code);
         } catch (err) {
-          console.error(`[agent ${agentId}] error in close handler:`, err);
+          agentLogger(agentId).error({ err }, 'close handler error');
           captureWithContext(err, { agent_id: agentId, job_id: job.id, component: 'AgentRunner' });
         }
       }, 500);
@@ -423,7 +424,7 @@ export function startTailing(
 
     child.on('error', (err) => {
       try {
-        console.error(`[agent ${agentId}] spawn error:`, err);
+        agentLogger(agentId).error({ err }, 'spawn error');
         captureWithContext(err, { agent_id: agentId, job_id: job.id, component: 'AgentRunner' });
         stopTailing(agentId);
         queries.updateAgent(agentId, { status: 'failed', error_message: `Agent launch failed: ${err.message}`, finished_at: Date.now() });
@@ -431,7 +432,7 @@ export function startTailing(
         const updated = queries.getAgentWithJob(agentId);
         if (updated) socket.emitAgentUpdate(updated);
       } catch (innerErr) {
-        console.error(`[agent ${agentId}] error in spawn error handler:`, innerErr);
+        agentLogger(agentId).error({ err: innerErr }, 'spawn error handler');
         captureWithContext(innerErr, { agent_id: agentId, job_id: job.id, component: 'AgentRunner' });
       }
     });
@@ -452,7 +453,7 @@ export function startTailing(
             // Read exit code from stderr file if available; use 0 if result event was 'success'
             handleAgentExit(agentId, job, null);
           } catch (err) {
-            console.error(`[agent ${agentId}] error in reattach exit handler:`, err);
+            agentLogger(agentId).error({ err }, 'reattach exit error');
             captureWithContext(err, { agent_id: agentId, job_id: job.id, component: 'AgentRunner' });
           }
         }, 500);
@@ -565,7 +566,7 @@ export async function handleJobCompletion(
 ): Promise<void> {
   // Dedup guard: prevent double-processing if both finishJobHandler and handleAgentExit fire
   if (_completedJobs.has(agentId)) {
-    console.log(`[agent ${agentId}] handleJobCompletion already processed, skipping duplicate`);
+    agentLogger(agentId).info('handleJobCompletion already processed');
     return;
   }
   _completedJobs.add(agentId);
@@ -603,12 +604,12 @@ export async function handleJobCompletion(
       if (freshAgent) {
         const checkFailure = runCompletionChecks(job, freshAgent);
         if (checkFailure) {
-          console.log(`[agent ${agentId}] completion checks failed: ${checkFailure}`);
+          agentLogger(agentId).info({ checkFailure }, 'completion checks failed');
           finalStatus = 'failed';
           queries.updateAgent(agentId, { status: 'failed', error_message: `Completion check failed: ${checkFailure}` });
         }
       }
-    } catch (err) { console.error(`[agent ${agentId}] completion check error:`, err); captureWithContext(err, { agent_id: agentId, job_id: job.id, component: 'AgentRunner' }); }
+    } catch (err) { agentLogger(agentId).error({ err }, 'completion check error'); captureWithContext(err, { agent_id: agentId, job_id: job.id, component: 'AgentRunner' }); }
   }
 
   // ── Snapshot: capture immutable refs for deferred diff before callbacks can start next phase ──
@@ -629,10 +630,7 @@ export async function handleJobCompletion(
   const activeJob = getJobIfStatus(job.id, ['running', 'assigned']);
   if (!activeJob) {
     const currentJob = queries.getJobById(job.id);
-    console.log(
-      `[agent ${agentId}] skipping late completion for job ${job.id}: ` +
-      `current status is ${currentJob?.status ?? 'missing'}`
-    );
+    agentLogger(agentId).info({ jobId: job.id, currentStatus: currentJob?.status ?? 'missing' }, 'skipping late completion');
     if (currentJob?.status === 'done') clearRecoveryState(currentJob);
     getFileLockRegistry().releaseAll(agentId);
     const updatedAgent = queries.getAgentWithJob(agentId);
@@ -647,7 +645,7 @@ export async function handleJobCompletion(
   // Triage any learnings the agent reported
   if (finalStatus === 'done') {
     triageLearnings(agentId, job).catch(err => {
-      console.error(`[agent ${agentId}] memory triage error:`, err);
+      agentLogger(agentId).error({ err }, 'memory triage error');
       captureWithContext(err, { agent_id: agentId, job_id: job.id, component: 'AgentRunner' });
     });
   }
@@ -656,10 +654,10 @@ export async function handleJobCompletion(
   if (updated) socket.emitAgentUpdate(updated);
   const updatedJob = queries.getJobById(activeJob.id);
   if (updatedJob) {
-    try { socket.emitJobUpdate(updatedJob); } catch (err) { console.error(`[agent ${agentId}] emitJobUpdate error:`, err); captureWithContext(err, { agent_id: agentId, job_id: job.id, component: 'AgentRunner' }); }
+    try { socket.emitJobUpdate(updatedJob); } catch (err) { agentLogger(agentId).error({ err }, 'emitJobUpdate error'); captureWithContext(err, { agent_id: agentId, job_id: job.id, component: 'AgentRunner' }); }
     // If this job is part of a debate, check if the round is complete
-    try { debateOnJobCompleted(updatedJob); } catch (err) { console.error(`[agent ${agentId}] debateOnJobCompleted error:`, err); captureWithContext(err, { agent_id: agentId, job_id: job.id, component: 'AgentRunner' }); }
-    try { workflowOnJobCompleted(updatedJob); } catch (err) { console.error(`[agent ${agentId}] workflowOnJobCompleted error:`, err); captureWithContext(err, { agent_id: agentId, job_id: job.id, component: 'AgentRunner' }); }
+    try { debateOnJobCompleted(updatedJob); } catch (err) { agentLogger(agentId).error({ err }, 'debateOnJobCompleted error'); captureWithContext(err, { agent_id: agentId, job_id: job.id, component: 'AgentRunner' }); }
+    try { workflowOnJobCompleted(updatedJob); } catch (err) { agentLogger(agentId).error({ err }, 'workflowOnJobCompleted error'); captureWithContext(err, { agent_id: agentId, job_id: job.id, component: 'AgentRunner' }); }
     // Create PR for worktree jobs that completed with commits (async, non-blocking).
     // Skip workflow jobs — those are handled by WorkflowManager.finalizeWorkflow.
     if (updatedJob.use_worktree === 1 && !updatedJob.workflow_id) {
@@ -671,13 +669,13 @@ export async function handleJobCompletion(
             if (refreshed) socket.emitJobUpdate(refreshed);
           }
         }).catch(err => {
-          console.error(`[agent ${agentId}] PR creation error:`, err);
+          agentLogger(agentId).error({ err }, 'PR creation error');
           captureWithContext(err, { agent_id: agentId, job_id: updatedJob.id, component: 'AgentRunner' });
         });
       } else if (updatedJob.status === 'failed') {
         // Push branch for failed jobs to preserve work (sync, best-effort)
         try { pushBranchForFailedJob(updatedJob); } catch (err) {
-          console.error(`[agent ${agentId}] failed-job branch push error:`, err);
+          agentLogger(agentId).error({ err }, 'branch push error');
         }
       }
     }
@@ -693,11 +691,11 @@ export async function handleJobCompletion(
         }
         const nextJob = queries.scheduleRepeatJob(updatedJob, descriptionOverride, intervalOverride);
         socket.emitJobNew(nextJob);
-      } catch (err) { console.error(`[agent ${agentId}] scheduleRepeatJob error:`, err); captureWithContext(err, { agent_id: agentId, job_id: updatedJob.id, component: 'AgentRunner' }); }
+      } catch (err) { agentLogger(agentId).error({ err }, 'scheduleRepeatJob error'); captureWithContext(err, { agent_id: agentId, job_id: updatedJob.id, component: 'AgentRunner' }); }
     }
     // If the job failed, also attempt retry (independent of repeat scheduling)
     if (updatedJob.status === 'failed') {
-      try { handleRetry(updatedJob, agentId); } catch (err) { console.error(`[agent ${agentId}] handleRetry error:`, err); captureWithContext(err, { agent_id: agentId, job_id: updatedJob.id, component: 'AgentRunner' }); }
+      try { handleRetry(updatedJob, agentId); } catch (err) { agentLogger(agentId).error({ err }, 'handleRetry error'); captureWithContext(err, { agent_id: agentId, job_id: updatedJob.id, component: 'AgentRunner' }); }
       // If this job was executing a proposal, mark the proposal as failed so Eye can handle it
       try {
         const linkedProposal = queries.listProposals('in_progress').find(p => p.execution_job_id === updatedJob.id);
@@ -705,29 +703,29 @@ export async function handleJobCompletion(
           queries.updateProposal(linkedProposal.id, { status: 'failed' });
           const updatedProp = queries.getProposalById(linkedProposal.id)!;
           socket.emitProposalUpdate(updatedProp);
-          console.log(`[agent ${agentId}] marked proposal ${linkedProposal.id} as failed`);
+          agentLogger(agentId).info({ proposalId: linkedProposal.id }, 'proposal failed');
         }
-      } catch (err) { console.error(`[agent ${agentId}] proposal fail-update error:`, err); captureWithContext(err, { agent_id: agentId, job_id: updatedJob.id, component: 'AgentRunner' }); }
+      } catch (err) { agentLogger(agentId).error({ err }, 'proposal update error'); captureWithContext(err, { agent_id: agentId, job_id: updatedJob.id, component: 'AgentRunner' }); }
     }
   }
 
   // ── Deferred: capture diff asynchronously when not already captured ──
   if (!needsDiffForChecks && agentRec?.base_sha && endSha) {
     _lastDeferredDiffPromise = captureAgentDiffDeferred(agentId, agentRec.base_sha, endSha, uncommittedSnapshot, workDir).catch(err => {
-      console.error(`[agent ${agentId}] deferred diff capture error:`, err);
+      agentLogger(agentId).error({ err }, 'diff capture error');
     });
   }
 }
 
 function handleAgentExit(agentId: string, job: Job, exitCode: number | null): void {
-  console.log(`[agent ${agentId}] exited (code ${exitCode ?? 'unknown'})`);
+  agentLogger(agentId).info({ exitCode: exitCode ?? 'unknown' }, 'exited');
 
   // If the agent is already in a terminal state, another exit path already handled it
   // (e.g. PTY onExit vs PID poll race for debate-stage agents). Don't double-process.
   const current = queries.getAgentById(agentId);
   const TERMINAL = ['done', 'failed', 'cancelled'];
   if (current && TERMINAL.includes(current.status)) {
-    console.log(`[agent ${agentId}] already ${current.status}, skipping duplicate exit handler`);
+    agentLogger(agentId).info({ status: current.status }, 'already terminal');
     return;
   }
 
@@ -811,7 +809,7 @@ function handleAgentExit(agentId: string, job: Job, exitCode: number | null): vo
         if (!claimRecovery(restartCandidate, 'premature-done-auto-resume')) return;
         const restartJob = getJobIfStatus(job.id, ['running']);
         if (!restartJob) return;
-        console.log(`[agent ${agentId}] marked done but ${stillPending.length} sub-jobs still pending: [${stillPending.map(j => j!.id).join(', ')}] — auto-resuming`);
+        agentLogger(agentId).info({ pendingCount: stillPending.length }, 'sub-jobs pending — resuming');
         const agentRec2 = queries.getAgentById(agentId);
         const sessionId = agentRec2?.session_id ?? null;
 
@@ -853,7 +851,7 @@ function handleAgentExit(agentId: string, job: Job, exitCode: number | null): vo
         if (!claimRecovery(restartCandidate, 'wait-for-jobs-auto-resume')) return;
         const restartJob = getJobIfStatus(job.id, ['running']);
         if (!restartJob) return;
-        console.log(`[agent ${agentId}] died in wait_for_jobs with all deps done — auto-resuming job ${restartJob.id}`);
+        agentLogger(agentId).info({ jobId: restartJob.id }, 'deps done — resuming');
         const agentRec2 = queries.getAgentById(agentId);
         const sessionId = agentRec2?.session_id ?? null;
 
@@ -879,14 +877,14 @@ function handleAgentExit(agentId: string, job: Job, exitCode: number | null): vo
         return;
       } else {
         const stillPending = waitedJobs.filter(j => j && !TERMINAL_S.includes(j.status)).map(j => j!.id);
-        console.log(`[agent ${agentId}] died in wait_for_jobs but ${stillPending.length} deps still pending: [${stillPending.join(', ')}] — not auto-resuming`);
+        agentLogger(agentId).info({ pendingCount: stillPending.length }, 'deps pending');
       }
     }
   }
 
   // Shared post-processing (git diff, completion checks, learnings, debate, retry, etc.)
   handleJobCompletion(agentId, job, status).catch(err => {
-    console.error(`[agent ${agentId}] handleJobCompletion error:`, err);
+    agentLogger(agentId).error({ err }, 'handleJobCompletion error');
     captureWithContext(err, { agent_id: agentId, job_id: job.id, component: 'AgentRunner' });
   });
 }
