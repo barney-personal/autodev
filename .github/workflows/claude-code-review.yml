@@ -3,25 +3,13 @@ name: Claude Code Review
 on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
-    # Optional: Only run on specific file changes
-    # paths:
-    #   - "src/**/*.ts"
-    #   - "src/**/*.tsx"
-    #   - "src/**/*.js"
-    #   - "src/**/*.jsx"
 
 jobs:
   claude-review:
-    # Optional: Filter by PR author
-    # if: |
-    #   github.event.pull_request.user.login == 'external-contributor' ||
-    #   github.event.pull_request.user.login == 'new-developer' ||
-    #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
-
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: read
+      pull-requests: write
       issues: read
       id-token: write
 
@@ -33,12 +21,44 @@ jobs:
 
       - name: Run Claude Code Review
         id: claude-review
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
-          plugins: 'code-review@claude-code-plugins'
-          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
-          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
-          # or https://code.claude.com/docs/en/cli-reference for available options
+          claude_args: "--allowed-tools Bash(gh:*),Read,Grep,Glob,Write"
+          prompt: |
+            Review PR ${{ github.repository }}#${{ github.event.pull_request.number }}.
 
+            Focus on:
+            - Correctness and potential regressions
+            - Security issues (injection, auth, secrets, dependency bumps)
+            - Test coverage for the changes
+
+            Use `gh pr diff ${{ github.event.pull_request.number }}` to read the diff,
+            `gh pr view ${{ github.event.pull_request.number }} --json files,title,body`
+            for metadata, and `Read`/`Grep`/`Glob` to inspect surrounding code.
+
+            IMPORTANT — to post the review safely, you MUST:
+            1. Use the `Write` tool to save your review summary to
+               `/tmp/claude-review.md`. This avoids shell interpretation of
+               backticks, `$(...)`, and other special characters that could
+               come from untrusted PR content.
+            2. Then post it via:
+               `gh pr comment ${{ github.event.pull_request.number }} --body-file /tmp/claude-review.md`
+
+            Do NOT use `gh pr comment --body "..."` — that path is shell-parsed
+            and vulnerable to injection from PR content.
+
+            Post ONE comment. If the PR looks clean, still write a short
+            "looks good" review to the file and post it so we know the review
+            actually ran.
+
+            Note: the previous version of this workflow used the
+            `code-review@claude-code-plugins` plugin with a slash-command
+            prompt. That plugin runs but silently produces no output (final
+            turn is a TodoWrite instead of a text message, so the action's
+            post-buffered-inline-comments step finds nothing to post). We
+            replaced it with this direct-prompt approach. See hurlicane#64
+            for context. Do not revert to the plugin-based version without
+            first verifying it produces visible output on a test PR.
