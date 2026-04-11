@@ -4,7 +4,7 @@
  * Extracted from WorkflowManager.ts.
  */
 
-import { execSync, execFileSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { existsSync } from 'fs';
 import * as queries from '../db/queries.js';
 import type { Workflow } from '../../shared/types.js';
@@ -19,9 +19,9 @@ export type WorkflowPrCreationOutcome = 'created' | 'failed_with_publishable_com
 
 function getRemoteDefaultBranch(cwd: string): string | null {
   try {
-    const ref = execSync('git symbolic-ref refs/remotes/origin/HEAD', {
+    const ref = execFileSync('git', ['symbolic-ref', 'refs/remotes/origin/HEAD'], {
       cwd,
-      stdio: 'pipe',
+      stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 5000,
     }).toString().trim();
     if (!ref.startsWith('refs/remotes/origin/')) return null;
@@ -42,8 +42,8 @@ function isMissingRemoteRefError(err: unknown): boolean {
 
 function countCommitsAgainstBaseRef(cwd: string, baseRef: string): number | null {
   try {
-    execSync(`git rev-parse --verify ${JSON.stringify(baseRef)}`, {
-      cwd, stdio: 'pipe', timeout: 5000,
+    execFileSync('git', ['rev-parse', '--verify', baseRef], {
+      cwd, stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000,
     });
   } catch (err) {
     const msg = String((err as { message?: string } | null)?.message ?? err ?? '');
@@ -53,9 +53,9 @@ function countCommitsAgainstBaseRef(cwd: string, baseRef: string): number | null
     throw err;
   }
 
-  const count = execSync(
-    `git rev-list --count HEAD ${JSON.stringify(`^${baseRef}`)}`,
-    { cwd, stdio: 'pipe', timeout: 10000 }
+  const count = execFileSync(
+    'git', ['rev-list', '--count', 'HEAD', `^${baseRef}`],
+    { cwd, stdio: ['ignore', 'pipe', 'pipe'], timeout: 10000 }
   ).toString().trim();
   const parsed = parseInt(count, 10);
   return Number.isFinite(parsed) ? parsed : 0;

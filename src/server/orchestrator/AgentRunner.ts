@@ -4,7 +4,30 @@ import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 
-const execFileAsync = promisify(execFile);
+/**
+ * Lazy promisified execFile — the `promisify(execFile)` call is deferred until
+ * first invocation, not module-init time. This lets test files that mock
+ * `child_process` without providing an `execFile` export still import
+ * AgentRunner without throwing at module load (`promisify(undefined)` crashes).
+ * Do not replace with `const execFileAsync = promisify(execFile)` at module top
+ * level — that caused ~190 test failures when #63 first landed.
+ */
+type ExecFileAsyncOpts = { cwd?: string; timeout?: number; maxBuffer?: number; encoding?: BufferEncoding };
+let _execFileAsync: ((file: string, args: string[], opts?: ExecFileAsyncOpts) => Promise<{ stdout: string; stderr: string }>) | null = null;
+function execFileAsync(
+  file: string,
+  args: string[],
+  opts: ExecFileAsyncOpts = {},
+): Promise<{ stdout: string; stderr: string }> {
+  if (!_execFileAsync) {
+    _execFileAsync = promisify(execFile) as unknown as (
+      file: string,
+      args: string[],
+      opts?: ExecFileAsyncOpts,
+    ) => Promise<{ stdout: string; stderr: string }>;
+  }
+  return _execFileAsync(file, args, opts);
+}
 import { captureWithContext } from '../instrument.js';
 import { agentLogger } from '../lib/logger.js';
 import * as queries from '../db/queries.js';

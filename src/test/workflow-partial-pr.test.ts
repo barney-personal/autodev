@@ -645,7 +645,7 @@ describe('countBranchCommits: safe fallback chain (Fix-C4b)', () => {
         throw new Error('fatal: ref refs/remotes/origin/HEAD is not a symbolic ref');
       }
       // rev-parse --verify for origin/HEAD fails (ref doesn't exist)
-      if (cmd === 'git rev-parse --verify "origin/HEAD"') {
+      if (cmd === 'git rev-parse --verify origin/HEAD') {
         throw new Error('fatal: Needed a single revision');
       }
       return Buffer.from('');
@@ -656,7 +656,7 @@ describe('countBranchCommits: safe fallback chain (Fix-C4b)', () => {
     expect(countBranchCommits('/tmp/wt')).toBe(0);
     expect(execSyncCalls.map(c => c.cmd)).toEqual([
       'git symbolic-ref refs/remotes/origin/HEAD',
-      'git rev-parse --verify "origin/HEAD"',
+      'git rev-parse --verify origin/HEAD',
     ]);
   });
 
@@ -668,10 +668,10 @@ describe('countBranchCommits: safe fallback chain (Fix-C4b)', () => {
         return Buffer.from('refs/remotes/origin/main\n');
       }
       // rev-parse --verify for both candidates fails (refs don't exist)
-      if (cmd === 'git rev-parse --verify "origin/main"') {
+      if (cmd === 'git rev-parse --verify origin/main') {
         throw new Error('fatal: Needed a single revision');
       }
-      if (cmd === 'git rev-parse --verify "origin/HEAD"') {
+      if (cmd === 'git rev-parse --verify origin/HEAD') {
         throw new Error('fatal: Needed a single revision');
       }
       return Buffer.from('');
@@ -682,8 +682,8 @@ describe('countBranchCommits: safe fallback chain (Fix-C4b)', () => {
     expect(countBranchCommits('/tmp/wt')).toBe(0);
     expect(execSyncCalls.map(c => c.cmd)).toEqual([
       'git symbolic-ref refs/remotes/origin/HEAD',
-      'git rev-parse --verify "origin/main"',
-      'git rev-parse --verify "origin/HEAD"',
+      'git rev-parse --verify origin/main',
+      'git rev-parse --verify origin/HEAD',
     ]);
   });
 
@@ -694,10 +694,10 @@ describe('countBranchCommits: safe fallback chain (Fix-C4b)', () => {
       if (cmd === 'git symbolic-ref refs/remotes/origin/HEAD') {
         return Buffer.from('refs/remotes/origin/main\n');
       }
-      if (cmd === 'git rev-parse --verify "origin/main"') {
+      if (cmd === 'git rev-parse --verify origin/main') {
         return Buffer.from('abc1234\n');
       }
-      if (cmd === 'git rev-list --count HEAD "^origin/main"') {
+      if (cmd === 'git rev-list --count HEAD ^origin/main') {
         return Buffer.from('2\n');
       }
       throw new Error(`Unexpected command: ${cmd}`);
@@ -708,8 +708,8 @@ describe('countBranchCommits: safe fallback chain (Fix-C4b)', () => {
     expect(countBranchCommits('/tmp/wt')).toBe(2);
     expect(execSyncCalls.map(c => c.cmd)).toEqual([
       'git symbolic-ref refs/remotes/origin/HEAD',
-      'git rev-parse --verify "origin/main"',
-      'git rev-list --count HEAD "^origin/main"',
+      'git rev-parse --verify origin/main',
+      'git rev-list --count HEAD ^origin/main',
     ]);
   });
 
@@ -720,7 +720,7 @@ describe('countBranchCommits: safe fallback chain (Fix-C4b)', () => {
       if (cmd === 'git symbolic-ref refs/remotes/origin/HEAD') {
         throw new Error('fatal: ref refs/remotes/origin/HEAD is not a symbolic ref');
       }
-      if (cmd === 'git rev-parse --verify "origin/HEAD"') {
+      if (cmd === 'git rev-parse --verify origin/HEAD') {
         throw new Error('fatal: Needed a single revision');
       }
       return Buffer.from('');
@@ -740,7 +740,7 @@ describe('countBranchCommits: safe fallback chain (Fix-C4b)', () => {
         return Buffer.from('refs/remotes/origin/main\n');
       }
       // rev-parse --verify throws a transient error (timeout, index.lock, permission)
-      if (cmd === 'git rev-parse --verify "origin/main"') {
+      if (cmd === 'git rev-parse --verify origin/main') {
         throw new Error('Command timed out');
       }
       return Buffer.from('');
@@ -759,11 +759,11 @@ describe('countBranchCommits: safe fallback chain (Fix-C4b)', () => {
         return Buffer.from('refs/remotes/origin/main\n');
       }
       // ref exists
-      if (cmd === 'git rev-parse --verify "origin/main"') {
+      if (cmd === 'git rev-parse --verify origin/main') {
         return Buffer.from('abc1234\n');
       }
       // but rev-list fails (e.g. corrupt pack object)
-      if (cmd === 'git rev-list --count HEAD "^origin/main"') {
+      if (cmd === 'git rev-list --count HEAD ^origin/main') {
         throw new Error('fatal: bad object abc1234');
       }
       return Buffer.from('');
@@ -781,10 +781,10 @@ describe('countBranchCommits: safe fallback chain (Fix-C4b)', () => {
       if (cmd === 'git symbolic-ref refs/remotes/origin/HEAD') {
         return Buffer.from('refs/remotes/origin/main\n');
       }
-      if (cmd === 'git rev-parse --verify "origin/main"') {
+      if (cmd === 'git rev-parse --verify origin/main') {
         throw new Error('fatal: not a valid object name origin/main');
       }
-      if (cmd === 'git rev-parse --verify "origin/HEAD"') {
+      if (cmd === 'git rev-parse --verify origin/HEAD') {
         throw new Error('fatal: not a valid object name origin/HEAD');
       }
       return Buffer.from('');
@@ -795,8 +795,8 @@ describe('countBranchCommits: safe fallback chain (Fix-C4b)', () => {
     expect(countBranchCommits('/tmp/wt')).toBe(0);
     expect(execSyncCalls.map(c => c.cmd)).toEqual([
       'git symbolic-ref refs/remotes/origin/HEAD',
-      'git rev-parse --verify "origin/main"',
-      'git rev-parse --verify "origin/HEAD"',
+      'git rev-parse --verify origin/main',
+      'git rev-parse --verify origin/HEAD',
     ]);
   });
 
@@ -807,10 +807,10 @@ describe('countBranchCommits: safe fallback chain (Fix-C4b)', () => {
       if (cmd === 'git symbolic-ref refs/remotes/origin/HEAD') {
         return Buffer.from('refs/remotes/origin/main\n');
       }
-      if (cmd === 'git rev-parse --verify "origin/main"') {
+      if (cmd === 'git rev-parse --verify origin/main') {
         throw new Error('fatal: unknown revision or path not in working tree');
       }
-      if (cmd === 'git rev-parse --verify "origin/HEAD"') {
+      if (cmd === 'git rev-parse --verify origin/HEAD') {
         throw new Error('fatal: unknown revision or path not in working tree');
       }
       return Buffer.from('');
@@ -821,8 +821,8 @@ describe('countBranchCommits: safe fallback chain (Fix-C4b)', () => {
     expect(countBranchCommits('/tmp/wt')).toBe(0);
     expect(execSyncCalls.map(c => c.cmd)).toEqual([
       'git symbolic-ref refs/remotes/origin/HEAD',
-      'git rev-parse --verify "origin/main"',
-      'git rev-parse --verify "origin/HEAD"',
+      'git rev-parse --verify origin/main',
+      'git rev-parse --verify origin/HEAD',
     ]);
   });
 
@@ -833,11 +833,11 @@ describe('countBranchCommits: safe fallback chain (Fix-C4b)', () => {
       if (cmd === 'git symbolic-ref refs/remotes/origin/HEAD') {
         return Buffer.from('refs/remotes/origin/main\n');
       }
-      if (cmd === 'git rev-parse --verify "origin/main"') {
+      if (cmd === 'git rev-parse --verify origin/main') {
         // Raw string throw (no .message property) — tests the ?? err fallback
         throw 'fatal: not a valid object name origin/main';
       }
-      if (cmd === 'git rev-parse --verify "origin/HEAD"') {
+      if (cmd === 'git rev-parse --verify origin/HEAD') {
         throw 'fatal: not a valid object name origin/HEAD';
       }
       return Buffer.from('');
@@ -849,8 +849,8 @@ describe('countBranchCommits: safe fallback chain (Fix-C4b)', () => {
     expect(countBranchCommits('/tmp/wt')).toBe(0);
     expect(execSyncCalls.map(c => c.cmd)).toEqual([
       'git symbolic-ref refs/remotes/origin/HEAD',
-      'git rev-parse --verify "origin/main"',
-      'git rev-parse --verify "origin/HEAD"',
+      'git rev-parse --verify origin/main',
+      'git rev-parse --verify origin/HEAD',
     ]);
   });
 });
@@ -881,7 +881,7 @@ describe('Fix-C11a: transient rev-parse errors propagate to callers via countBra
       // rev-parse --verify throws a TRANSIENT error (not ref-missing).
       // This propagates immediately out of countCommitsAgainstBaseRef and
       // countBranchCommits — origin/HEAD is never attempted.
-      if (cmd === 'git rev-parse --verify "origin/main"') {
+      if (cmd === 'git rev-parse --verify origin/main') {
         throw new Error('fatal: Unable to create /tmp/wt/.git/index.lock: Permission denied');
       }
       // branch check
@@ -919,7 +919,7 @@ describe('Fix-C11a: transient rev-parse errors propagate to callers via countBra
     expect(prCreateCall).toBeDefined();
 
     // Transient error propagates immediately — origin/HEAD fallback was NOT attempted (Fix-C12a)
-    const originHeadCall = execSyncCalls.find(c => typeof c.cmd === 'string' && c.cmd === 'git rev-parse --verify "origin/HEAD"');
+    const originHeadCall = execSyncCalls.find(c => typeof c.cmd === 'string' && c.cmd === 'git rev-parse --verify origin/HEAD');
     expect(originHeadCall).toBeUndefined();
 
     // Safe-default logging contract verified (Fix-C12b)
@@ -948,7 +948,7 @@ describe('Fix-C11a: transient rev-parse errors propagate to callers via countBra
     expect(symRefCall!.opts?.cwd).toBe('/tmp/wt');
 
     // Transient error propagates immediately — origin/HEAD fallback was NOT attempted (Fix-C12a)
-    const originHeadCall = execSyncCalls.find(c => typeof c.cmd === 'string' && c.cmd === 'git rev-parse --verify "origin/HEAD"');
+    const originHeadCall = execSyncCalls.find(c => typeof c.cmd === 'string' && c.cmd === 'git rev-parse --verify origin/HEAD');
     expect(originHeadCall).toBeUndefined();
 
     // Safe-default logging contract verified (Fix-C12b)
