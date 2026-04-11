@@ -206,8 +206,13 @@ export function isSameModelRetryEligible(kind: FailureKind): boolean {
 }
 
 export function shouldMarkProviderUnavailable(kind: FailureKind): boolean {
-  return kind === 'rate_limit'
-    || kind === 'provider_overload'
+  // NOTE: rate_limit is intentionally excluded. Anthropic 429s are per-model
+  // (opus vs sonnet vs haiku have independent quota buckets), so marking the
+  // entire provider unavailable on a single model's 429 causes cascading
+  // fallback failures — e.g. opus rate_limit would also block sonnet[1m] and
+  // haiku recoveries. Let each model get individually rate-limited as the
+  // fallback chain walks. See `markModelRateLimited` in ModelClassifier.ts.
+  return kind === 'provider_overload'
     || kind === 'provider_billing'
     || kind === 'auth_failure';
 }

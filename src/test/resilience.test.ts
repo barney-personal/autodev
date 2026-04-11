@@ -616,6 +616,30 @@ describe('Failure classification', () => {
     expect(isSameModelRetryEligible('unknown')).toBe(false);
   });
 
+  it('shouldMarkProviderUnavailable excludes rate_limit to prevent cascade blocks', async () => {
+    const { shouldMarkProviderUnavailable } = await import('../server/orchestrator/FailureClassifier.js');
+    // rate_limit MUST NOT mark the whole provider unavailable — Anthropic 429s
+    // are per-model, so marking anthropic as a whole blocks sonnet[1m] and
+    // haiku recoveries when opus hits a 429. Observed in the Apr 9 14:57
+    // fallback-exhaustion cluster where two workflows blocked with "no
+    // fallback model available" because opus rate_limit cascaded to all
+    // claude variants at the same moment codex was still in its own cooldown.
+    expect(shouldMarkProviderUnavailable('rate_limit')).toBe(false);
+
+    // Hard-provider failures should still mark the whole provider.
+    expect(shouldMarkProviderUnavailable('provider_overload')).toBe(true);
+    expect(shouldMarkProviderUnavailable('provider_billing')).toBe(true);
+    expect(shouldMarkProviderUnavailable('auth_failure')).toBe(true);
+
+    // Per-model/per-call failures should not cascade either.
+    expect(shouldMarkProviderUnavailable('timeout')).toBe(false);
+    expect(shouldMarkProviderUnavailable('context_overflow')).toBe(false);
+    expect(shouldMarkProviderUnavailable('launch_environment')).toBe(false);
+    expect(shouldMarkProviderUnavailable('codex_cli_crash')).toBe(false);
+    expect(shouldMarkProviderUnavailable('task_failure')).toBe(false);
+    expect(shouldMarkProviderUnavailable('unknown')).toBe(false);
+  });
+
   it('returns unknown without warning for SessionStart hook JSON noise', async () => {
     const {
       classifyFailureText,
