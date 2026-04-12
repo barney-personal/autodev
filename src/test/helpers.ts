@@ -200,6 +200,7 @@ export async function insertTestJob(overrides: Partial<{
   description: string;
   status: string;
   priority: number;
+  context: string | null;
   workflow_id: string | null;
   workflow_cycle: number | null;
   workflow_phase: string | null;
@@ -212,7 +213,7 @@ export async function insertTestJob(overrides: Partial<{
     id: overrides.id ?? randomUUID(),
     title: overrides.title ?? 'Test Job',
     description: overrides.description ?? 'Test job description',
-    context: null,
+    context: overrides.context ?? null,
     priority: overrides.priority ?? 0,
     status: (overrides.status ?? 'queued') as any,
     workflow_id: overrides.workflow_id ?? null,

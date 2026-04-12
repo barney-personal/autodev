@@ -3,9 +3,9 @@
  *
  * Covers:
  * - No-verify regression: workflows without verifyCommand advance normally
- * - Cycle-0 skip: verify is skipped on cycle 0 (the planning cycle)
- * - Verify pass: workflow advances to the next review cycle
- * - Verify fail+retry: implement re-spawned for same cycle, no block
+ * - Threshold not met: verify is not triggered when completion threshold is not met
+ * - Verify pass: workflow finalizes on pass when threshold is met
+ * - Verify fail+retry: implement re-spawned with is_verify_retry context
  * - Verify fail exhausted: workflow blocked with verify_failed reason
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -143,6 +143,9 @@ describe('WorkflowManager verify phase lifecycle', () => {
     vi.clearAllMocks();
     // Reset to a passing verify result
     mockVerifyResult = { exitCode: 0, stdout: 'ok', stderr: '', durationMs: 100 };
+    // Ensure meetsCompletionThreshold returns false by default (tests that need true override it)
+    const { meetsCompletionThreshold } = await import('../server/orchestrator/WorkflowMilestoneParser.js');
+    vi.mocked(meetsCompletionThreshold).mockReturnValue(false);
   });
 
   afterEach(async () => {
@@ -153,7 +156,7 @@ describe('WorkflowManager verify phase lifecycle', () => {
 
   it('advances normally when verify_command is NULL (no regression)', async () => {
     const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
-    const { getWorkflowById, upsertNote } = await import('../server/db/queries.js');
+    const { upsertNote } = await import('../server/db/queries.js');
     const { runVerification } = await import('../server/orchestrator/VerifyRunner.js');
 
     const { workflow } = await makeVerifyWorkflow({
@@ -177,42 +180,15 @@ describe('WorkflowManager verify phase lifecycle', () => {
     expect(runVerification).not.toHaveBeenCalled();
   });
 
-  // ── Cycle-0 skip ───────────────────────────────────────────────────────────
+  // ── Threshold not met — verify not triggered ────────────────────────────────
 
-  it('skips verify on cycle 0 even when verify_command is set', async () => {
+  it('does not run verify when completion threshold is not met', async () => {
     const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
-    const { getWorkflowById, updateWorkflow, upsertNote } = await import('../server/db/queries.js');
+    const { updateWorkflow, upsertNote } = await import('../server/db/queries.js');
     const { runVerification } = await import('../server/orchestrator/VerifyRunner.js');
-
-    const { workflow } = await makeVerifyWorkflow({ current_cycle: 0 });
-    // Set verify_command
-    updateWorkflow(workflow.id, { verify_command: 'echo hello' } as any);
-    upsertNote(`workflow/${workflow.id}/plan`, '- [ ] M1\n- [ ] M2', null);
-
-    const job = await insertTestJob({
-      workflow_id: workflow.id,
-      workflow_cycle: 0,
-      workflow_phase: 'implement',
-      status: 'done',
-    });
-
-    onJobCompleted(job);
-
-    // Verify must NOT run for cycle 0
-    expect(runVerification).not.toHaveBeenCalled();
-  });
-
-  // ── Verify pass ────────────────────────────────────────────────────────────
-
-  it('runs verify and advances to review on pass', async () => {
-    const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
-    const { getWorkflowById, updateWorkflow, upsertNote, getVerifyRunsForCycle } = await import('../server/db/queries.js');
-    const { runVerification } = await import('../server/orchestrator/VerifyRunner.js');
-
-    mockVerifyResult = { exitCode: 0, stdout: 'All checks passed', stderr: '', durationMs: 250 };
 
     const { workflow } = await makeVerifyWorkflow({ current_cycle: 1 });
-    updateWorkflow(workflow.id, { verify_command: 'echo pass', max_verify_retries: 2 } as any);
+    updateWorkflow(workflow.id, { verify_command: 'echo hello' } as any);
     upsertNote(`workflow/${workflow.id}/plan`, '- [ ] M1\n- [ ] M2', null);
     upsertNote(`workflow/${workflow.id}/pre-implement-milestones/1`, '0', null);
     upsertNote(`workflow/${workflow.id}/replan-attempted/1`, '1', null);
@@ -226,35 +202,71 @@ describe('WorkflowManager verify phase lifecycle', () => {
 
     onJobCompleted(job);
 
-    // Give the async verify task a moment to complete
+    // Verify must NOT run — completion threshold not met (mock returns false)
+    expect(runVerification).not.toHaveBeenCalled();
+  });
+
+  // ── Verify pass → finalize ─────────────────────────────────────────────────
+
+  it('runs verify and finalizes workflow on pass when threshold is met', async () => {
+    const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    const { getWorkflowById, updateWorkflow, upsertNote, getVerifyRunsForCycle, getNote } = await import('../server/db/queries.js');
+    const { runVerification } = await import('../server/orchestrator/VerifyRunner.js');
+    const { meetsCompletionThreshold } = await import('../server/orchestrator/WorkflowMilestoneParser.js');
+    const { finalizeWorkflow: mockFinalize } = await import('../server/orchestrator/WorkflowPRCreator.js');
+
+    mockVerifyResult = { exitCode: 0, stdout: 'All checks passed', stderr: '', durationMs: 250 };
+    // Make completion threshold return true so verify triggers
+    vi.mocked(meetsCompletionThreshold).mockReturnValue(true);
+
+    const { workflow } = await makeVerifyWorkflow({ current_cycle: 2 });
+    updateWorkflow(workflow.id, { verify_command: 'npm test', max_verify_retries: 2 } as any);
+    upsertNote(`workflow/${workflow.id}/plan`, '- [x] M1\n- [x] M2\n- [x] M3', null);
+
+    const job = await insertTestJob({
+      workflow_id: workflow.id,
+      workflow_cycle: 2,
+      workflow_phase: 'implement',
+      status: 'done',
+    });
+
+    onJobCompleted(job);
     await new Promise(r => setTimeout(r, 50));
 
-    expect(runVerification).toHaveBeenCalledWith('echo pass', expect.any(String));
+    expect(runVerification).toHaveBeenCalledWith('npm test', expect.any(String));
 
-    // A verify run should be persisted
-    const freshWf = getWorkflowById(workflow.id)!;
-    const runs = getVerifyRunsForCycle(workflow.id, 1);
+    // Verify run persisted
+    const runs = getVerifyRunsForCycle(workflow.id, 2);
     expect(runs.length).toBe(1);
     expect(runs[0].exit_code).toBe(0);
 
+    // Workflow should be marked complete
+    const freshWf = getWorkflowById(workflow.id)!;
+    expect(freshWf.status).toBe('complete');
+
+    // finalizeWorkflow should have been called
+    expect(mockFinalize).toHaveBeenCalled();
+
     // Worklog note written
-    const { getNote } = await import('../server/db/queries.js');
-    const wl = getNote(`workflow/${workflow.id}/worklog/cycle-1-verify`);
+    const wl = getNote(`workflow/${workflow.id}/worklog/cycle-2-verify`);
     expect(wl?.value).toContain('PASSED');
+
   });
 
   // ── Verify fail + retry ───────────────────────────────────────────────────
 
-  it('re-spawns implement on verify failure when retries remain', async () => {
+  it('spawns implement with verify_retry context on verify failure when retries remain', async () => {
     const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
-    const { getWorkflowById, updateWorkflow, upsertNote, getVerifyRunsForCycle, getNote } = await import('../server/db/queries.js');
+    const { getWorkflowById, updateWorkflow, upsertNote, getNote, getJobsForWorkflow } = await import('../server/db/queries.js');
     const { runVerification } = await import('../server/orchestrator/VerifyRunner.js');
+    const { meetsCompletionThreshold } = await import('../server/orchestrator/WorkflowMilestoneParser.js');
 
     mockVerifyResult = { exitCode: 1, stdout: '', stderr: 'Server error 500', durationMs: 400 };
+    vi.mocked(meetsCompletionThreshold).mockReturnValue(true);
 
     const { workflow } = await makeVerifyWorkflow({ current_cycle: 1 });
     updateWorkflow(workflow.id, { verify_command: 'exit 1', max_verify_retries: 2 } as any);
-    upsertNote(`workflow/${workflow.id}/plan`, '- [ ] M1', null);
+    upsertNote(`workflow/${workflow.id}/plan`, '- [x] M1\n- [x] M2\n- [x] M3', null);
 
     const job = await insertTestJob({
       workflow_id: workflow.id,
@@ -267,8 +279,16 @@ describe('WorkflowManager verify phase lifecycle', () => {
     await new Promise(r => setTimeout(r, 50));
 
     const freshWf = getWorkflowById(workflow.id)!;
-    // Should NOT be blocked yet — retry available (attempt 1 ≤ max_verify_retries 2)
+    // Should NOT be blocked yet — retry available (attempt 1 <= max_verify_retries 2)
     expect(freshWf.status).not.toBe('blocked');
+    // Phase should be implement (re-spawned for verify retry)
+    expect(freshWf.current_phase).toBe('implement');
+
+    // A new implement job should have been spawned with is_verify_retry context
+    const jobs = getJobsForWorkflow(workflow.id);
+    const retryJob = jobs.find(j => j.context && JSON.parse(j.context).is_verify_retry);
+    expect(retryJob).toBeTruthy();
+    expect(retryJob!.title).toContain('verify retry');
 
     // Failure note should be written so implement prompt can show it
     const failureNote = getNote(`workflow/${workflow.id}/verify-failure/1`);
@@ -281,10 +301,6 @@ describe('WorkflowManager verify phase lifecycle', () => {
     const wl = getNote(`workflow/${workflow.id}/worklog/cycle-1-verify`);
     expect(wl?.value).toContain('FAILED');
 
-    // A verify run record persisted
-    const runs = getVerifyRunsForCycle(workflow.id, 1);
-    expect(runs.length).toBe(1);
-    expect(runs[0].exit_code).toBe(1);
   });
 
   // ── Verify fail exhausted ─────────────────────────────────────────────────
@@ -292,12 +308,14 @@ describe('WorkflowManager verify phase lifecycle', () => {
   it('blocks workflow after max_verify_retries exhausted', async () => {
     const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
     const { getWorkflowById, updateWorkflow, upsertNote, insertVerifyRun } = await import('../server/db/queries.js');
+    const { meetsCompletionThreshold } = await import('../server/orchestrator/WorkflowMilestoneParser.js');
 
     mockVerifyResult = { exitCode: 2, stdout: '', stderr: 'Fatal error', durationMs: 200 };
+    vi.mocked(meetsCompletionThreshold).mockReturnValue(true);
 
     const { workflow } = await makeVerifyWorkflow({ current_cycle: 1 });
     updateWorkflow(workflow.id, { verify_command: 'exit 2', max_verify_retries: 1 } as any);
-    upsertNote(`workflow/${workflow.id}/plan`, '- [ ] M1', null);
+    upsertNote(`workflow/${workflow.id}/plan`, '- [x] M1\n- [x] M2\n- [x] M3', null);
 
     // Pre-insert 1 failed run (so attempt will be 2, which exceeds max_verify_retries=1)
     insertVerifyRun({
@@ -327,5 +345,43 @@ describe('WorkflowManager verify phase lifecycle', () => {
     expect(freshWf.status).toBe('blocked');
     expect(freshWf.blocked_reason).toContain('verify_failed');
     expect(freshWf.current_phase).toBe('verify');
+
+  });
+
+  // ── Verify-retry implement bypasses zero-progress detection ───────────────
+
+  it('verify-retry implement jobs bypass zero-progress detection and advance normally', async () => {
+    const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    const { getWorkflowById, upsertNote } = await import('../server/db/queries.js');
+    const { runVerification } = await import('../server/orchestrator/VerifyRunner.js');
+
+    // meetsCompletionThreshold returns false — threshold not met after retry implement
+    const { workflow } = await makeVerifyWorkflow({ current_cycle: 2 });
+    upsertNote(`workflow/${workflow.id}/plan`, '- [x] M1\n- [ ] M2\n- [ ] M3', null);
+    // Set up zero-progress state that would normally block
+    upsertNote(`workflow/${workflow.id}/pre-implement-milestones/2`, '1', null);
+    upsertNote(`workflow/${workflow.id}/zero-progress-count`, '1', null);
+    upsertNote(`workflow/${workflow.id}/replan-attempted/2`, '1', null);
+
+    // Simulate a verify-retry implement job completing (below threshold)
+    const job = await insertTestJob({
+      workflow_id: workflow.id,
+      workflow_cycle: 2,
+      workflow_phase: 'implement',
+      status: 'done',
+      context: JSON.stringify({ is_verify_retry: true }),
+    });
+
+    onJobCompleted(job);
+
+    // Should NOT be blocked by zero-progress — verify-retry bypasses it
+    const freshWf = getWorkflowById(workflow.id)!;
+    expect(freshWf.status).toBe('running');
+    // Should have advanced to next cycle
+    expect(freshWf.current_cycle).toBe(3);
+    expect(freshWf.current_phase).toBe('review');
+
+    // Verify should NOT have been called (threshold not met)
+    expect(runVerification).not.toHaveBeenCalled();
   });
 });

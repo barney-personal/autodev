@@ -20,14 +20,15 @@ describe('WorkflowSummaryCard', () => {
     expect(screen.getByText('7/10')).toBeInTheDocument();
   });
 
-  it('shows all three phase pills', () => {
+  it('shows all four phase pills', () => {
     const workflow = makeWorkflow({ current_phase: 'review', status: 'running' });
     const { container } = render(<WorkflowSummaryCard workflow={workflow} workflowAgents={[]} now={Date.now()} onClick={vi.fn()} />);
     const pills = container.querySelectorAll('.workflow-phase-pill');
-    expect(pills).toHaveLength(3);
+    expect(pills).toHaveLength(4);
     expect(pills[0].textContent).toBe('Assess');
     expect(pills[1].textContent).toBe('Review');
     expect(pills[2].textContent).toBe('Implement');
+    expect(pills[3].textContent).toBe('Verify');
     expect(pills[1].classList.contains('workflow-phase-current')).toBe(true);
     expect(pills[0].classList.contains('workflow-phase-past')).toBe(true);
   });
