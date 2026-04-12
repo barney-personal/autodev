@@ -4,7 +4,7 @@ import { captureWithContext } from '../instrument.js';
 import * as queries from '../db/queries.js';
 import { reattachAgent, getLogPath } from './AgentRunner.js';
 import { execFileSync } from 'child_process';
-import { isTmuxSessionAlive, attachPty, resolveStandalonePrintJobOutcome } from './PtyManager.js';
+import { isTmuxSessionAlive, attachPty, resolveStandalonePrintJobOutcome, reportStandaloneResolutionFailure } from './PtyManager.js';
 import { onJobCompleted as debateOnJobCompleted } from './DebateManager.js';
 import { onJobCompleted as workflowOnJobCompleted, reconcileRunningWorkflows, reconcileBlockedPRs } from './WorkflowManager.js';
 import { orphanedWaits } from '../mcp/McpServer.js';
@@ -238,6 +238,9 @@ export function runRecovery(): void {
             detail: standaloneResolution?.detail,
             job_id: agent.job_id,
           });
+          if (standaloneResolution) {
+            reportStandaloneResolutionFailure(agent.id, agent.job_id, 'recovery', standaloneResolution);
+          }
           if (activeJob && finalStatus === 'done') {
             const doneJob = queries.getJobById(agent.job_id);
             if (doneJob) {

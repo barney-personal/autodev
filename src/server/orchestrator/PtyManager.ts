@@ -148,6 +148,14 @@ function getPtyLogPath(agentId: string): string {
   return path.join(PTY_LOG_DIR, `${agentId}.pty`);
 }
 
+function getNdjsonPath(agentId: string): string {
+  return path.join(PTY_LOG_DIR, `${agentId}.ndjson`);
+}
+
+function getPtyStderrPath(agentId: string): string {
+  return path.join(PTY_LOG_DIR, `${agentId}.stderr`);
+}
+
 export function getPtyBuffer(agentId: string): string[] {
   // Always prefer disk log — it has the complete, unbounded history.
   // The in-memory buffer is capped at PTY_BUFFER_MAX and loses old data.
@@ -214,7 +222,7 @@ export function isTmuxSessionAlive(agentId: string): boolean {
  * Returns a descriptive error string if found, or null if no rate limit detected.
  */
 function detectRateLimitInNdjson(agentId: string): string | null {
-  const ndjsonPath = path.join(PTY_LOG_DIR, `${agentId}.ndjson`);
+  const ndjsonPath = getNdjsonPath(agentId);
   try {
     if (!fs.existsSync(ndjsonPath)) return null;
     const lines = fs.readFileSync(ndjsonPath, 'utf8').split('\n').filter(Boolean);
@@ -236,7 +244,7 @@ function detectRateLimitInNdjson(agentId: string): string | null {
 }
 
 function statusFromNdjson(agentId: string): { status: 'done' | 'failed'; errorMessage: string | null; source: 'result' | 'rate_limit' } | null {
-  const ndjsonPath = path.join(PTY_LOG_DIR, `${agentId}.ndjson`);
+  const ndjsonPath = getNdjsonPath(agentId);
   try {
     if (!fs.existsSync(ndjsonPath)) return null;
     const lines = fs.readFileSync(ndjsonPath, 'utf8').split('\n').filter(Boolean);
@@ -280,10 +288,134 @@ function checkCommitsSince(baseSha: string | null, workDir: string | null): bool
 
 type StandalonePrintResolution = {
   status: 'done' | 'failed';
-  source: 'result' | 'rate_limit' | 'commits' | 'no_terminal_evidence';
+  source: 'result' | 'rate_limit' | 'commits' | 'incomplete_run' | 'no_terminal_evidence';
   errorMessage: string | null;
   detail: string;
 };
+
+type NdjsonTailSummary = {
+  eventCount: number;
+  allowedWarningCount: number;
+  lastEventDescription: string | null;
+  pendingToolUse: { id: string; name: string } | null;
+};
+
+function readTextTail(filePath: string, maxBytes = 4096): string | null {
+  try {
+    const stat = fs.statSync(filePath);
+    if (stat.size === 0) return null;
+
+    const bytesToRead = Math.min(stat.size, maxBytes);
+    const buffer = Buffer.alloc(bytesToRead);
+    const fd = fs.openSync(filePath, 'r');
+    try {
+      fs.readSync(fd, buffer, 0, bytesToRead, stat.size - bytesToRead);
+    } finally {
+      fs.closeSync(fd);
+    }
+
+    let text = buffer.toString('utf8');
+    if (stat.size > bytesToRead) {
+      const firstNewline = text.indexOf('\n');
+      if (firstNewline >= 0) text = text.slice(firstNewline + 1);
+    }
+
+    const normalized = text.replace(/\s+/g, ' ').trim();
+    return normalized ? normalized : null;
+  } catch {
+    return null;
+  }
+}
+
+function describeNdjsonEvent(ev: any): string | null {
+  if (!ev || typeof ev !== 'object') return null;
+
+  if (ev.type === 'assistant') {
+    const content = Array.isArray(ev.message?.content) ? ev.message.content : [];
+    const toolNames = content
+      .filter((part: any) => part?.type === 'tool_use' && typeof part?.name === 'string')
+      .map((part: any) => part.name);
+    const textPart = content.find((part: any) => part?.type === 'text' && typeof part?.text === 'string');
+
+    if (toolNames.length > 0) return `assistant tool_use ${toolNames.join(', ')}`;
+    if (textPart?.text) return `assistant text "${textPart.text.replace(/\s+/g, ' ').trim().slice(0, 120)}"`;
+    return 'assistant event';
+  }
+
+  if (ev.type === 'user') {
+    const content = Array.isArray(ev.message?.content) ? ev.message.content : [];
+    const hasToolResult = content.some((part: any) => part?.type === 'tool_result');
+    return hasToolResult ? 'user tool_result' : 'user event';
+  }
+
+  if (ev.type === 'system') {
+    return ev.subtype ? `system ${ev.subtype}` : 'system event';
+  }
+
+  if (ev.type === 'rate_limit_event') {
+    return `rate_limit_event ${ev.rate_limit_info?.status ?? 'unknown'}`;
+  }
+
+  if (ev.type === 'result') {
+    return ev.is_error ? 'result error' : 'result success';
+  }
+
+  return typeof ev.type === 'string' ? ev.type : null;
+}
+
+function summarizeNdjsonTail(agentId: string): NdjsonTailSummary | null {
+  const ndjsonPath = getNdjsonPath(agentId);
+  try {
+    if (!fs.existsSync(ndjsonPath)) return null;
+    const lines = fs.readFileSync(ndjsonPath, 'utf8').split('\n').filter(Boolean);
+    if (lines.length === 0) return null;
+
+    const unresolvedToolUses = new Map<string, { id: string; name: string }>();
+    let allowedWarningCount = 0;
+    let lastEventDescription: string | null = null;
+    let eventCount = 0;
+
+    for (const line of lines) {
+      let ev: any;
+      try {
+        ev = JSON.parse(line);
+      } catch {
+        continue;
+      }
+
+      eventCount += 1;
+      lastEventDescription = describeNdjsonEvent(ev);
+
+      if (ev.type === 'rate_limit_event' && ev.rate_limit_info?.status === 'allowed_warning') {
+        allowedWarningCount += 1;
+      }
+
+      const content = Array.isArray(ev.message?.content) ? ev.message.content : [];
+      if (ev.type === 'assistant') {
+        for (const part of content) {
+          if (part?.type === 'tool_use' && typeof part.id === 'string' && typeof part.name === 'string') {
+            unresolvedToolUses.set(part.id, { id: part.id, name: part.name });
+          }
+        }
+      } else if (ev.type === 'user') {
+        for (const part of content) {
+          if (part?.type === 'tool_result' && typeof part.tool_use_id === 'string') {
+            unresolvedToolUses.delete(part.tool_use_id);
+          }
+        }
+      }
+    }
+
+    return {
+      eventCount,
+      allowedWarningCount,
+      lastEventDescription,
+      pendingToolUse: Array.from(unresolvedToolUses.values()).at(-1) ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
 
 export function resolveStandalonePrintJobOutcome(agentId: string, job: Pick<Job, 'id' | 'title' | 'work_dir' | 'is_interactive' | 'debate_role' | 'workflow_phase'>): StandalonePrintResolution {
   const ndjsonStatus = statusFromNdjson(agentId);
@@ -306,28 +438,41 @@ export function resolveStandalonePrintJobOutcome(agentId: string, job: Pick<Job,
     };
   }
 
-  // Check if there are any events at all — if the agent did work but died without
-  // a result event, extract what we can for diagnostics
-  const ndjsonPath = path.join(PTY_LOG_DIR, `${agentId}.ndjson`);
-  let eventCount = 0;
-  try {
-    if (fs.existsSync(ndjsonPath)) {
-      const content = fs.readFileSync(ndjsonPath, 'utf8');
-      eventCount = content.split('\n').filter(Boolean).length;
+  const stderrTail = readTextTail(getPtyStderrPath(agentId));
+  const ndjsonSummary = summarizeNdjsonTail(agentId);
+  if (stderrTail || ndjsonSummary) {
+    const evidence: string[] = [];
+    if (ndjsonSummary) {
+      evidence.push(`parsed ${ndjsonSummary.eventCount} ndjson event${ndjsonSummary.eventCount === 1 ? '' : 's'}`);
+      if (ndjsonSummary.pendingToolUse) {
+        evidence.push(`session ended during pending tool call ${ndjsonSummary.pendingToolUse.name}`);
+      }
+      if (ndjsonSummary.allowedWarningCount > 0) {
+        evidence.push(
+          `${ndjsonSummary.allowedWarningCount} rate-limit warning event${ndjsonSummary.allowedWarningCount === 1 ? '' : 's'}`,
+        );
+      }
+      if (ndjsonSummary.lastEventDescription) {
+        evidence.push(`last event: ${ndjsonSummary.lastEventDescription}`);
+      }
     }
-  } catch { /* ignore */ }
+    if (stderrTail) {
+      evidence.push(`stderr tail: ${stderrTail.slice(0, 300)}`);
+    }
 
-  const detail = eventCount > 0
-    ? `Agent produced ${eventCount} events but died without a result event — likely CLI crash or unclean exit`
-    : 'no final ndjson result/rate-limit event and no commits since base_sha';
+    return {
+      status: 'failed',
+      source: 'incomplete_run',
+      errorMessage: `Agent session ended before emitting a final result event.${evidence.length > 0 ? ` ${evidence.join('. ')}.` : ''}`,
+      detail: `terminal evidence collected without final result${ndjsonSummary ? ` (${ndjsonSummary.eventCount} ndjson events)` : ''}`,
+    };
+  }
 
   return {
     status: 'failed',
     source: 'no_terminal_evidence',
-    errorMessage: eventCount > 0
-      ? `Agent died mid-session after ${eventCount} events without producing a result. Likely CLI crash, API error, or context overflow.`
-      : 'Agent session ended without a final result event or new commits.',
-    detail,
+    errorMessage: 'Agent session ended without a final result event or new commits.',
+    detail: 'no final ndjson result/rate-limit event and no commits since base_sha',
   };
 }
 
@@ -351,6 +496,24 @@ function logStandalonePrintResolution(
     detail: resolution.detail,
     error_message: resolution.errorMessage,
   });
+}
+
+export function reportStandaloneResolutionFailure(
+  agentId: string,
+  jobId: string,
+  component: string,
+  resolution: StandalonePrintResolution,
+): void {
+  if (resolution.status !== 'failed') return;
+  if (resolution.source === 'result' || resolution.source === 'commits') return;
+
+  const message = [
+    `Standalone print job failed via ${resolution.source}`,
+    resolution.detail,
+    resolution.errorMessage,
+  ].filter(Boolean).join(': ');
+
+  captureWithContext(new Error(message), { agent_id: agentId, job_id: jobId, component });
 }
 
 function logPtyLifecycleEvent(
@@ -529,8 +692,9 @@ export function startInteractiveAgent({ agentId, job, cols = 100, rows = 50, res
       // Pipe --print output through tee so: (a) you can attach to the tmux session to observe,
       // and (b) the clean stream-json lands in a .ndjson file the UI can display properly.
       // Can't use `exec` with a pipe — the shell stays alive until claude + tee both finish.
-      const ndjsonPath = path.join(PTY_LOG_DIR, `${agentId}.ndjson`);
-      execLine = `${JSON.stringify(CLAUDE)} --dangerously-skip-permissions --settings ${JSON.stringify(HOOK_SETTINGS)} --mcp-config ${JSON.stringify(mcpConfig)} --append-system-prompt ${JSON.stringify(SYSTEM_PROMPT)}${model ? ` --model ${JSON.stringify(model)}` : ''} --print --output-format stream-json --verbose${resumeFlag} "$(cat ${JSON.stringify(pFile)})" | tee ${JSON.stringify(ndjsonPath)}`;
+      const ndjsonPath = getNdjsonPath(agentId);
+      const stderrPath = getPtyStderrPath(agentId);
+      execLine = `${JSON.stringify(CLAUDE)} --dangerously-skip-permissions --settings ${JSON.stringify(HOOK_SETTINGS)} --mcp-config ${JSON.stringify(mcpConfig)} --append-system-prompt ${JSON.stringify(SYSTEM_PROMPT)}${model ? ` --model ${JSON.stringify(model)}` : ''} --print --output-format stream-json --verbose${resumeFlag} "$(cat ${JSON.stringify(pFile)})" 2>> ${JSON.stringify(stderrPath)} | tee ${JSON.stringify(ndjsonPath)}`;
     } else {
       execLine = `exec ${JSON.stringify(CLAUDE)} --dangerously-skip-permissions --settings ${JSON.stringify(HOOK_SETTINGS)} --mcp-config ${JSON.stringify(mcpConfig)} --append-system-prompt ${JSON.stringify(SYSTEM_PROMPT)}${model ? ` --model ${JSON.stringify(model)}` : ''}${resumeFlag} "$(cat ${JSON.stringify(pFile)})"`;
     }
@@ -612,6 +776,7 @@ export function startInteractiveAgent({ agentId, job, cols = 100, rows = 50, res
   fs.mkdirSync(PTY_LOG_DIR, { recursive: true });
   try { fs.unlinkSync(getPtyLogPath(agentId)); } catch { /* no previous log */ }
   try { fs.unlinkSync(getSnapshotPath(agentId)); } catch { /* no previous snapshot */ }
+  try { fs.unlinkSync(getPtyStderrPath(agentId)); } catch { /* no previous stderr */ }
 
   // Mark this agent as spawning so concurrent cleanupStaleTmuxSessions calls
   // don't kill its tmux session before the PTY is attached to _ptys.
@@ -804,6 +969,7 @@ async function finalizeStandalonePrintJob(agentId: string, job: Job, trigger: st
 
   const resolution = resolveStandalonePrintJobOutcome(agentId, job);
   logStandalonePrintResolution(agentId, job, trigger, resolution);
+  reportStandaloneResolutionFailure(agentId, job.id, 'PtyManager', resolution);
 
   const updateFields: Parameters<typeof queries.updateAgent>[1] = {
     status: resolution.status,

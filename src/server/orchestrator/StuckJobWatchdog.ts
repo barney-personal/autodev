@@ -26,7 +26,7 @@ import { runAgent, getLogPath } from './AgentRunner.js';
 import { onJobCompleted as debateOnJobCompleted } from './DebateManager.js';
 import { onJobCompleted as workflowOnJobCompleted } from './WorkflowManager.js';
 import { getFileLockRegistry } from './FileLockRegistry.js';
-import { isTmuxSessionAlive, startInteractiveAgent, saveSnapshot, resolveStandalonePrintJobOutcome } from './PtyManager.js';
+import { isTmuxSessionAlive, startInteractiveAgent, saveSnapshot, resolveStandalonePrintJobOutcome, reportStandaloneResolutionFailure } from './PtyManager.js';
 import { handleRetry } from './RetryManager.js';
 import { orphanedWaits, disconnectedAgents, hasActiveTransport } from '../mcp/McpServer.js';
 import { isAutoExitJob } from '../../shared/types.js';
@@ -317,14 +317,7 @@ function check(): void {
           source: standaloneResolution.source,
           detail: standaloneResolution.detail,
         });
-        // Report to Sentry when an agent dies mid-session without a result event
-        // (the most common failure mode — agents that ran but the CLI exited uncleanly)
-        if (standaloneResolution.source === 'no_terminal_evidence' && standaloneResolution.status === 'failed') {
-          captureWithContext(
-            new Error(`Agent died without result: ${standaloneResolution.detail}`),
-            { agent_id: agent.id, job_id: agent.job_id, component: 'StuckJobWatchdog', resolution_source: standaloneResolution.source },
-          );
-        }
+        reportStandaloneResolutionFailure(agent.id, agent.job_id, 'StuckJobWatchdog', standaloneResolution);
       }
     }
 

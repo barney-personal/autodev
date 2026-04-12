@@ -22,6 +22,7 @@ vi.mock('../server/orchestrator/PtyManager.js', () => ({
   startInteractiveAgent: vi.fn(),
   saveSnapshot: vi.fn(),
   resolveStandalonePrintJobOutcome: vi.fn(() => null),
+  reportStandaloneResolutionFailure: vi.fn(),
 }));
 
 vi.mock('../server/orchestrator/AgentRunner.js', () => ({
@@ -234,5 +235,47 @@ describe('StuckJobWatchdog terminal guards', () => {
     } finally {
       warnSpy.mockRestore();
     }
+  });
+
+  it('reports incomplete standalone terminal failures to Sentry', async () => {
+    const queries = await import('../server/db/queries.js');
+    const { _invokeWatchdogCheckForTest } = await import('../server/orchestrator/StuckJobWatchdog.js');
+    const { resolveStandalonePrintJobOutcome, reportStandaloneResolutionFailure } = await import('../server/orchestrator/PtyManager.js') as any;
+
+    const job = queries.insertJob({
+      id: 'watchdog-incomplete-job',
+      title: 'Standalone batch job',
+      description: 'test',
+      context: null,
+      priority: 0,
+      status: 'running',
+      work_dir: process.cwd(),
+      model: 'claude-sonnet-4-6',
+      is_interactive: 0,
+    });
+    const agent = queries.insertAgent({
+      id: 'watchdog-incomplete-agent',
+      job_id: job.id,
+      status: 'running',
+    });
+
+    (resolveStandalonePrintJobOutcome as any).mockReturnValue({
+      status: 'failed',
+      source: 'incomplete_run',
+      errorMessage: 'Agent session ended before emitting a final result event. session ended during pending tool call Edit.',
+      detail: 'terminal evidence collected without final result (12 ndjson events)',
+    });
+
+    _invokeWatchdogCheckForTest();
+
+    expect(reportStandaloneResolutionFailure).toHaveBeenCalledWith(
+      agent.id,
+      job.id,
+      'StuckJobWatchdog',
+      expect.objectContaining({
+        source: 'incomplete_run',
+        status: 'failed',
+      }),
+    );
   });
 });
