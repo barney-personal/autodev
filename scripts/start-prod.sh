@@ -6,6 +6,14 @@ export PATH="/opt/homebrew/bin:$PATH"
 REPO_DIR="/Users/barneyhussey-yeo/GitHub/personal/hurlicane"
 cd "$REPO_DIR"
 
+# Load runtime env for the LaunchAgent-managed production server.
+# Dev already uses `--env-file=.env`; production should read the same source.
+if [ -f .env ]; then
+    set -a
+    . ./.env
+    set +a
+fi
+
 echo "[$(date)] Starting hurlicane with commit: $(git rev-parse --short HEAD)"
 
 # Build if dist is missing or stale
