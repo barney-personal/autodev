@@ -218,6 +218,23 @@ export function isTmuxSessionAlive(agentId: string): boolean {
 }
 
 /**
+ * Build a descriptive error message from a `system api_retry` ndjson event.
+ * Captures the HTTP status and/or error type so the failure is identifiable in logs.
+ */
+function formatApiRetryErrorMessage(ev: Record<string, unknown>): string {
+  const parts: string[] = ['API rate limited'];
+  if (ev.error_status != null) {
+    parts.push(`(HTTP ${ev.error_status})`);
+  } else if (typeof ev.error === 'string' && ev.error) {
+    parts.push(`(${ev.error})`);
+  }
+  if (typeof ev.message === 'string' && ev.message) {
+    parts.push(ev.message);
+  }
+  return parts.join(' ');
+}
+
+/**
  * Scan the agent's ndjson log for rate_limit_event with status "rejected".
  * Returns a descriptive error string if found, or null if no rate limit detected.
  */
@@ -264,6 +281,17 @@ function statusFromNdjson(agentId: string): { status: 'done' | 'failed'; errorMe
           return {
             status: 'failed',
             errorMessage: detectRateLimitInNdjson(agentId),
+            source: 'rate_limit',
+          };
+        }
+        if (
+          ev.type === 'system'
+          && ev.subtype === 'api_retry'
+          && (ev.error_status === 429 || ev.error === 'rate_limit')
+        ) {
+          return {
+            status: 'failed',
+            errorMessage: formatApiRetryErrorMessage(ev as Record<string, unknown>),
             source: 'rate_limit',
           };
         }

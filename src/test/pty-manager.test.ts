@@ -368,4 +368,159 @@ describe('PtyManager spawning state', () => {
 
     expect(captureWithContext).not.toHaveBeenCalled();
   });
+
+  it('classifies system api_retry with error_status 429 as rate_limit with a non-empty error message', async () => {
+    const queries = await import('../server/db/queries.js');
+    const { _resolveStandalonePrintJobOutcomeForTest } = await import('../server/orchestrator/PtyManager.js');
+
+    const job = queries.insertJob({
+      id: 'pty-api-retry-429-job',
+      title: 'api_retry 429 test',
+      description: 'test',
+      context: null,
+      priority: 0,
+      status: 'running',
+      is_interactive: 0,
+      work_dir: null,
+    });
+    queries.insertAgent({ id: 'pty-api-retry-429-agent', job_id: job.id, status: 'running' });
+
+    const logDir = path.join(process.cwd(), 'data', 'agent-logs');
+    fs.mkdirSync(logDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(logDir, 'pty-api-retry-429-agent.ndjson'),
+      [
+        JSON.stringify({ type: 'assistant', message: { content: [] } }),
+        JSON.stringify({ type: 'system', subtype: 'api_retry', error_status: 429, message: 'Too many requests' }),
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const resolution = _resolveStandalonePrintJobOutcomeForTest('pty-api-retry-429-agent', job as any);
+
+    expect(resolution.status).toBe('failed');
+    expect(resolution.source).toBe('rate_limit');
+    expect(resolution.errorMessage).toBeTruthy();
+    expect(resolution.errorMessage).toContain('429');
+  });
+
+  it('classifies system api_retry with error rate_limit (no status) as rate_limit with a non-empty error message', async () => {
+    const queries = await import('../server/db/queries.js');
+    const { _resolveStandalonePrintJobOutcomeForTest } = await import('../server/orchestrator/PtyManager.js');
+
+    const job = queries.insertJob({
+      id: 'pty-api-retry-rl-job',
+      title: 'api_retry rate_limit test',
+      description: 'test',
+      context: null,
+      priority: 0,
+      status: 'running',
+      is_interactive: 0,
+      work_dir: null,
+    });
+    queries.insertAgent({ id: 'pty-api-retry-rl-agent', job_id: job.id, status: 'running' });
+
+    const logDir = path.join(process.cwd(), 'data', 'agent-logs');
+    fs.mkdirSync(logDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(logDir, 'pty-api-retry-rl-agent.ndjson'),
+      [
+        JSON.stringify({ type: 'system', subtype: 'api_retry', error: 'rate_limit' }),
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const resolution = _resolveStandalonePrintJobOutcomeForTest('pty-api-retry-rl-agent', job as any);
+
+    expect(resolution.status).toBe('failed');
+    expect(resolution.source).toBe('rate_limit');
+    expect(resolution.errorMessage).toBeTruthy();
+    expect(resolution.errorMessage).toContain('rate_limit');
+  });
+
+  it('a result event after system api_retry takes precedence', async () => {
+    const queries = await import('../server/db/queries.js');
+    const { _resolveStandalonePrintJobOutcomeForTest } = await import('../server/orchestrator/PtyManager.js');
+
+    const job = queries.insertJob({
+      id: 'pty-api-retry-result-job',
+      title: 'api_retry with later result test',
+      description: 'test',
+      context: null,
+      priority: 0,
+      status: 'running',
+      is_interactive: 0,
+      work_dir: null,
+    });
+    queries.insertAgent({ id: 'pty-api-retry-result-agent', job_id: job.id, status: 'running' });
+
+    const logDir = path.join(process.cwd(), 'data', 'agent-logs');
+    fs.mkdirSync(logDir, { recursive: true });
+    // api_retry appears first (earlier in file), result event is last (wins)
+    fs.writeFileSync(
+      path.join(logDir, 'pty-api-retry-result-agent.ndjson'),
+      [
+        JSON.stringify({ type: 'system', subtype: 'api_retry', error_status: 429 }),
+        JSON.stringify({ type: 'result', is_error: false, result: 'Task complete' }),
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const resolution = _resolveStandalonePrintJobOutcomeForTest('pty-api-retry-result-agent', job as any);
+
+    expect(resolution.status).toBe('done');
+    expect(resolution.source).toBe('result');
+  });
+
+  it('ambiguous system api_retry without explicit rate-limit markers remains incomplete_run', async () => {
+    const queries = await import('../server/db/queries.js');
+    const { _resolveStandalonePrintJobOutcomeForTest } = await import('../server/orchestrator/PtyManager.js');
+
+    const job = queries.insertJob({
+      id: 'pty-api-retry-ambig-job',
+      title: 'api_retry ambiguous test',
+      description: 'test',
+      context: null,
+      priority: 0,
+      status: 'running',
+      is_interactive: 0,
+      work_dir: null,
+    });
+    queries.insertAgent({ id: 'pty-api-retry-ambig-agent', job_id: job.id, status: 'running' });
+
+    const logDir = path.join(process.cwd(), 'data', 'agent-logs');
+    fs.mkdirSync(logDir, { recursive: true });
+    // api_retry but no error_status 429 or error: 'rate_limit'
+    fs.writeFileSync(
+      path.join(logDir, 'pty-api-retry-ambig-agent.ndjson'),
+      [
+        JSON.stringify({ type: 'system', subtype: 'api_retry', error_status: 500, error: 'server_error' }),
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const resolution = _resolveStandalonePrintJobOutcomeForTest('pty-api-retry-ambig-agent', job as any);
+
+    expect(resolution.source).toBe('incomplete_run');
+  });
+
+  it('does not report system api_retry rate_limit resolutions to Sentry', async () => {
+    const { reportStandaloneResolutionFailure } = await import('../server/orchestrator/PtyManager.js');
+    const { captureWithContext } = await import('../server/instrument.js');
+
+    vi.mocked(captureWithContext).mockClear();
+
+    reportStandaloneResolutionFailure('agent-2', 'job-2', 'PtyManager', {
+      status: 'failed',
+      source: 'rate_limit',
+      errorMessage: 'API rate limited (HTTP 429) Too many requests',
+      detail: 'resolved from system api_retry event',
+    });
+
+    expect(captureWithContext).not.toHaveBeenCalled();
+  });
 });
