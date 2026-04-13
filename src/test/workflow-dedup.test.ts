@@ -62,6 +62,15 @@ vi.mock('../server/orchestrator/WorkflowPrompts.js', () => ({
 
 // Mock ModelClassifier for rate limit fallback tests
 vi.mock('../server/orchestrator/ModelClassifier.js', () => ({
+  getCircuitBreaker: vi.fn(() => ({
+    isOpen: () => false,
+    reason: () => 'circuit closed',
+    recordModelLimited: () => {},
+    recordModelAvailable: () => {},
+    recordInfraFailure: () => {},
+    recordSuccess: () => {},
+    consecutiveInfraFailures: () => 0,
+  })),
   getAvailableModel: vi.fn((model: string) => {
     if (model === 'codex') return null;
     return model;

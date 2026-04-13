@@ -53,8 +53,17 @@ router.get('/check-checkout', (req, res) => {
 });
 
 router.delete('/:id', (req, res) => {
+  const { agent_id } = req.query as { agent_id?: string };
+  if (!agent_id) {
+    res.status(400).json({ error: 'agent_id required' });
+    return;
+  }
   const lock = queries.getFileLockById(req.params.id);
   if (!lock) { res.status(404).json({ error: 'not found' }); return; }
+  if (lock.agent_id !== agent_id) {
+    res.status(403).json({ error: 'forbidden' });
+    return;
+  }
   queries.releaseLock(lock.id);
   socket.emitLockReleased(lock.id, lock.file_path);
   res.json({ ok: true });

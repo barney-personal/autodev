@@ -130,22 +130,44 @@ describe('DELETE /api/locks/:id', () => {
   beforeEach(async () => { await setupTestDb(); vi.clearAllMocks(); app = createTestApp(); });
   afterEach(async () => { await cleanupTestDb(); });
 
-  it('releases a lock', async () => {
+  it('owner can release own lock', async () => {
     const lock = await insertLock('agent-1', '/file.ts');
-    const res = await request(app).delete(`/api/locks/${lock.id}`);
+    const res = await request(app)
+      .delete(`/api/locks/${lock.id}`)
+      .query({ agent_id: 'agent-1' });
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
   });
 
+  it('non-owner gets 403', async () => {
+    const lock = await insertLock('agent-1', '/file.ts');
+    const res = await request(app)
+      .delete(`/api/locks/${lock.id}`)
+      .query({ agent_id: 'agent-2' });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe('forbidden');
+  });
+
+  it('returns 400 when agent_id missing', async () => {
+    const lock = await insertLock('agent-1', '/file.ts');
+    const res = await request(app).delete(`/api/locks/${lock.id}`);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('agent_id required');
+  });
+
   it('returns 404 for unknown lock', async () => {
-    const res = await request(app).delete('/api/locks/nonexistent');
+    const res = await request(app)
+      .delete('/api/locks/nonexistent')
+      .query({ agent_id: 'agent-1' });
     expect(res.status).toBe(404);
   });
 
   it('emits socket event on release', async () => {
     const socket = await import('../../server/socket/SocketManager.js');
     const lock = await insertLock('agent-1', '/file.ts');
-    await request(app).delete(`/api/locks/${lock.id}`);
+    await request(app)
+      .delete(`/api/locks/${lock.id}`)
+      .query({ agent_id: 'agent-1' });
     expect(socket.emitLockReleased).toHaveBeenCalledWith(lock.id, '/file.ts');
   });
 });

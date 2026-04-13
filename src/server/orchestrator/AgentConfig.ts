@@ -4,7 +4,9 @@
  * Extracted to break the circular dependency between those two modules.
  * AgentRunner re-exports everything here for backward compatibility.
  */
+import * as fs from 'fs';
 import * as path from 'path';
+import * as queries from '../db/queries.js';
 import type { Job } from '../../shared/types.js';
 
 // ── Binary paths ──────────────────────────────────────────────────────────────
@@ -123,4 +125,102 @@ export interface RunOptions {
   job: Job;
   mcpPort?: number;
   resumeSessionId?: string;
+}
+
+
+// ── Codex trust ──────────────────────────────────────────────────────────────
+
+/**
+ * Ensure a directory is marked as trusted in Codex's config.toml so the
+ * "Do you trust this directory?" prompt doesn't appear. The bypass flag
+ * doesn't suppress this prompt in codex v0.115.0+.
+ */
+export function ensureCodexTrusted(workDir: string): void {
+  const configPath = path.join(process.env.HOME ?? '', '.codex', 'config.toml');
+  try {
+    let content = '';
+    try { content = fs.readFileSync(configPath, 'utf8'); } catch { /* file doesn't exist yet */ }
+    const key = `[projects.${JSON.stringify(workDir)}]`;
+    if (content.includes(key)) return; // already trusted
+    const entry = `\n${key}\ntrust_level = "trusted"\n`;
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.appendFileSync(configPath, entry);
+  } catch (err) {
+    console.warn(`[codex] failed to add trust for ${workDir}:`, err);
+  }
+}
+
+// ── Cancelled agents ─────────────────────────────────────────────────────────
+// Agents that were explicitly cancelled — handleAgentExit checks this to avoid overwriting 'cancelled' status
+export const cancelledAgents = new Set<string>();
+
+// ── Shared path helpers ─────────────────────────────────────────────────────
+// Centralized here to avoid duplication across AgentSpawner, PtySessionManager,
+// and PtyDiskLogger.
+
+export function sessionName(agentId: string): string {
+  return `orchestrator-${agentId}`;
+}
+
+export function getExistingCwd(preferred?: string | null): string {
+  if (preferred) {
+    try {
+      if (fs.statSync(preferred).isDirectory()) return preferred;
+    } catch { /* fall through */ }
+  }
+  return process.cwd();
+}
+
+// ── Shared helper functions ──────────────────────────────────────────────────
+
+export function readClaudeMd(workDir: string): string | null {
+  const claudeMdPath = path.join(workDir, 'CLAUDE.md');
+  let content: string;
+  try {
+    content = fs.readFileSync(claudeMdPath, 'utf8');
+  } catch {
+    return null;
+  }
+
+  // Also read any .claude/docs/ files referenced in CLAUDE.md
+  const docsDir = path.join(workDir, '.claude', 'docs');
+  try {
+    const docFiles = fs.readdirSync(docsDir).filter(f => f.endsWith('.md'));
+    if (docFiles.length > 0) {
+      content += '\n\n---\n\n# Referenced Documentation\n';
+      for (const docFile of docFiles) {
+        try {
+          const docContent = fs.readFileSync(path.join(docsDir, docFile), 'utf8');
+          content += `\n## ${docFile}\n\n${docContent}\n`;
+        } catch { /* skip unreadable docs */ }
+      }
+    }
+  } catch { /* no .claude/docs directory */ }
+
+  return content;
+}
+
+export function buildMemorySection(job: Job): string {
+  const projectId: string | null = job.project_id ?? null;
+  const workDir: string | null = job.work_dir ?? null;
+  const effectiveProjectId: string | null = projectId ?? workDir ?? null;
+  const memories = queries.getMemoryForJob(effectiveProjectId, job.title, job.description);
+  if (memories.length === 0) return '';
+
+  let section = '\n\n## Memory\nRelevant learnings from previous tasks:\n';
+  let budget = MEMORY_BUDGET - section.length;
+
+  for (const m of memories) {
+    const scope = m.project_id ? 'project' : 'global';
+    const header = `\n### ${m.title} [${scope}]\n`;
+    const remaining = budget - header.length - 5; // 5 for "...\n"
+    if (remaining <= 0) break;
+    const content = m.content.length > remaining ? m.content.slice(0, remaining) + '...' : m.content;
+    const entry = header + content + '\n';
+    budget -= entry.length;
+    section += entry;
+    if (budget <= 0) break;
+  }
+
+  return section;
 }

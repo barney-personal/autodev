@@ -76,6 +76,15 @@ vi.mock('../server/orchestrator/WorkflowPrompts.js', () => ({
 
 // Mock ModelClassifier
 vi.mock('../server/orchestrator/ModelClassifier.js', () => ({
+  getCircuitBreaker: vi.fn(() => ({
+    isOpen: () => false,
+    reason: () => 'circuit closed',
+    recordModelLimited: () => {},
+    recordModelAvailable: () => {},
+    recordInfraFailure: () => {},
+    recordSuccess: () => {},
+    consecutiveInfraFailures: () => 0,
+  })),
   getAvailableModel: vi.fn((m: string) => m),
   getFallbackModel: vi.fn(() => null),
   getAlternateProviderModel: vi.fn(() => null),

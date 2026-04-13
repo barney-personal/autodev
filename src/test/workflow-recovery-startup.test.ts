@@ -47,7 +47,11 @@ vi.mock('../server/orchestrator/AgentRunner.js', () => ({
 vi.mock('../server/orchestrator/PtyManager.js', () => ({
   isTmuxSessionAlive: vi.fn(() => false),
   attachPty: vi.fn(),
+}));
+
+vi.mock('../server/orchestrator/JobFinalizer.js', () => ({
   resolveStandalonePrintJobOutcome: vi.fn(() => null),
+  reportStandaloneResolutionFailure: vi.fn(),
 }));
 
 vi.mock('../server/orchestrator/DebateManager.js', () => ({

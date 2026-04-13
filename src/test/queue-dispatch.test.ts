@@ -34,6 +34,15 @@ vi.mock('../server/orchestrator/PtyManager.js', () => ({
 
 // Mock ModelClassifier so resolveModel just returns the job's model
 vi.mock('../server/orchestrator/ModelClassifier.js', () => ({
+  getCircuitBreaker: vi.fn(() => ({
+    isOpen: () => false,
+    reason: () => 'circuit closed',
+    recordModelLimited: () => {},
+    recordModelAvailable: () => {},
+    recordInfraFailure: () => {},
+    recordSuccess: () => {},
+    consecutiveInfraFailures: () => 0,
+  })),
   resolveModel: vi.fn(async (job: any) => job.model ?? 'claude-sonnet-4-6'),
   getAvailableModel: vi.fn((m: string) => m),
   getFallbackModel: vi.fn((m: string) => m),

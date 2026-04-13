@@ -7,13 +7,15 @@ import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
 import type { Job, Workflow, WorkflowPhase, StopMode } from '../../shared/types.js';
 import { effectiveMaxTurns, isCodexModel } from '../../shared/types.js';
-import { buildAssessPrompt, buildReviewPrompt, buildImplementPrompt, buildVerifyPrompt, buildWorkflowRepairPrompt, buildSimplifiedAssessRepairPrompt, type InlineWorkflowContext } from './WorkflowPrompts.js';
+import { buildAssessPrompt, buildWorkflowRepairPrompt, buildSimplifiedAssessRepairPrompt, type InlineWorkflowContext } from './WorkflowPrompts.js';
 import { getAvailableModel, getFallbackModel, getAlternateProviderModel, getModelProvider, markModelRateLimited, markProviderRateLimited } from './ModelClassifier.js';
 import { classifyJobFailure, isFallbackEligibleFailure, isSameModelRetryEligible, shouldMarkProviderUnavailable } from './FailureClassifier.js';
 import { nudgeQueue } from './WorkQueueManager.js';
 import { logResilienceEvent } from './ResilienceLogger.js';
 import { errMsg } from '../../shared/errors.js';
 import { validateTransition } from './StateTransitions.js';
+import { tryAcquireRecoverySlot, RecoveryKeys } from './WorkflowRecovery.js';
+import { getPhaseConfig } from './WorkflowPhaseConfig.js';
 
 // ─── Sub-module imports ────────────────────────────────────────────────────
 import { parseMilestones, meetsCompletionThreshold, recoverPlanFromAgentOutput } from './WorkflowMilestoneParser.js';
@@ -76,13 +78,13 @@ function _onJobCompleted(job: Job): void {
     return;
   }
 
-  let planNote = queries.getNote(`workflow/${workflow.id}/plan`);
+  let planNote = queries.getNote(RecoveryKeys.plan(workflow.id));
   let milestones = parseMilestones(planNote?.value ?? '');
 
   switch (job.workflow_phase) {
     case 'assess': {
       try {
-        const contractNote = queries.getNote(`workflow/${workflow.id}/contract`);
+        const contractNote = queries.getNote(RecoveryKeys.contract(workflow.id));
         let missingArtifacts = [
           !planNote?.value ? 'plan' : null,
           !contractNote?.value ? 'contract' : null,
@@ -91,7 +93,7 @@ function _onJobCompleted(job: Job): void {
         if (missingArtifacts.includes('plan')) {
           const recovered = recoverPlanFromAgentOutput(job, workflow.id);
           if (recovered) {
-            planNote = queries.getNote(`workflow/${workflow.id}/plan`);
+            planNote = queries.getNote(RecoveryKeys.plan(workflow.id));
             milestones = parseMilestones(planNote?.value ?? '');
             missingArtifacts = missingArtifacts.filter(a => a !== 'plan');
             console.log(`[workflow ${workflow.id}] recovered plan from agent output (${milestones.total} milestones)`);
@@ -139,7 +141,7 @@ function _onJobCompleted(job: Job): void {
         if (planNote?.value) {
           const fixLines = planNote.value.split('\n').filter(line => /^- \[ \] \*\*Fix/.test(line));
           if (fixLines.length > 0) {
-            queries.upsertNote(`workflow/${workflow.id}/review-feedback/cycle-${job.workflow_cycle ?? workflow.current_cycle}`, fixLines.join('\n'), null);
+            queries.upsertNote(RecoveryKeys.reviewFeedback(workflow.id, job.workflow_cycle ?? workflow.current_cycle), fixLines.join('\n'), null);
           }
         }
         const updated = queries.getWorkflowById(workflow.id)!;
@@ -179,7 +181,7 @@ function _onJobCompleted(job: Job): void {
     case 'verify': {
       try {
         const cycle = job.workflow_cycle ?? workflow.current_cycle;
-        const resultNote = queries.getNote(`workflow/${workflow.id}/verify-result/${cycle}`);
+        const resultNote = queries.getNote(RecoveryKeys.verifyResult(workflow.id, cycle));
         const resultContent = resultNote?.value ?? '';
         // Match "## Verify Result: PASS" on its own line (not "PASS | FAIL" template text)
         const passed = /^## Verify Result:\s*PASS\s*$/mi.test(resultContent);
@@ -202,7 +204,7 @@ function _onJobCompleted(job: Job): void {
 
         if (passed) {
           console.log(`[workflow ${workflow.id}] verify agent PASSED (cycle ${cycle}, attempt ${attempt}) — finalizing workflow`);
-          queries.deleteNote(`workflow/${workflow.id}/verify-failure/${cycle}`);
+          queries.deleteNote(RecoveryKeys.verifyFailure(workflow.id, cycle));
           updateAndEmit(workflow.id, { status: 'complete', current_phase: 'idle' as WorkflowPhase });
           finalizeWorkflow(queries.getWorkflowById(workflow.id)!).catch(err => console.error(`[workflow ${workflow.id}] finalizeWorkflow error:`, err));
         } else {
@@ -210,7 +212,7 @@ function _onJobCompleted(job: Job): void {
           console.log(`[workflow ${workflow.id}] verify agent FAILED (cycle ${cycle}, attempt ${attempt}) — ${attempt}/${maxRetries + 1} failures`);
 
           // Persist failure note for the next implement prompt
-          queries.upsertNote(`workflow/${workflow.id}/verify-failure/${cycle}`, resultContent, null);
+          queries.upsertNote(RecoveryKeys.verifyFailure(workflow.id, cycle), resultContent, null);
 
           if (attempt <= maxRetries) {
             console.log(`[workflow ${workflow.id}] verify failure ${attempt}/${maxRetries} — re-spawning implement for cycle ${cycle} (verify retry)`);
@@ -275,12 +277,6 @@ function handleFailedJob(job: Job, workflow: Workflow): void {
   const currentModel = job.model ?? workflow.implementer_model;
   const failureKind = classifyJobFailure(job.id);
 
-  // Helper: true when another job for this workflow is still queued/assigned/running.
-  // Used to distinguish true duplicate-completion events (active recovery job exists)
-  // from stale idempotency notes (recovery job already failed, no active job left).
-  const hasActiveJob = () => queries.getJobsForWorkflow(workflow.id).some(j =>
-    j.status === 'queued' || j.status === 'assigned' || j.status === 'running');
-
   if (isFallbackEligibleFailure(failureKind)) {
     markModelRateLimited(currentModel, 5 * 60 * 1000);
     if (shouldMarkProviderUnavailable(failureKind)) {
@@ -288,21 +284,21 @@ function handleFailedJob(job: Job, workflow: Workflow): void {
     }
     const fallbackModel = getWorkflowFallbackModel(workflow, phase, currentModel);
     if (fallbackModel && fallbackModel !== currentModel) {
-      const recoveryKey = `workflow/${workflow.id}/recovery/${phase}/cycle-${cycle}/model-fallback`;
-      if (!queries.insertNoteIfNotExists(recoveryKey, `fallback=${fallbackModel},from=${currentModel},failure=${failureKind}`, null)) {
-        if (hasActiveJob()) {
-          console.log(`[workflow ${workflow.id}] phase '${phase}' model-fallback already spawned (idempotency key exists) — skipping duplicate`);
-          return;
-        }
-        console.log(`[workflow ${workflow.id}] phase '${phase}' model-fallback recovery already failed (stale note, no active job) — blocking`);
-        // Fall through to noFallbackReason below
-      } else {
+      const recoveryKey = RecoveryKeys.modelFallback(workflow.id, phase, cycle);
+      const outcome = tryAcquireRecoverySlot(workflow.id, recoveryKey, `fallback=${fallbackModel},from=${currentModel},failure=${failureKind}`);
+      if (outcome === 'active_duplicate') {
+        console.log(`[workflow ${workflow.id}] phase '${phase}' model-fallback already spawned (idempotency key exists) — skipping duplicate`);
+        return;
+      }
+      if (outcome === 'acquired') {
         console.log(`[workflow ${workflow.id}] phase '${job.workflow_phase}' failed on ${currentModel} (${failureKind}) → retrying with ${fallbackModel}`);
         spawnPhaseJob(workflow, phase, cycle, fallbackModel);
         return;
       }
+      // outcome === 'stale_exhausted' — fall through to noFallbackReason below
+      console.log(`[workflow ${workflow.id}] phase '${phase}' model-fallback recovery already failed (stale note, no active job) — blocking`);
     }
-    const noFallbackReason = queries.getNote(`workflow/${workflow.id}/recovery/${phase as string}/cycle-${cycle}/model-fallback`)
+    const noFallbackReason = queries.getNote(RecoveryKeys.modelFallback(workflow.id, phase as string, cycle))
       ? `Phase '${job.workflow_phase}' job ${job.id.slice(0, 8)} failed (${failureKind}) — model-fallback recovery exhausted`
       : `Phase '${job.workflow_phase}' failed on ${currentModel} (${failureKind}) — no fallback model available`;
     console.log(`[workflow ${workflow.id}] ${noFallbackReason}`);
@@ -310,40 +306,40 @@ function handleFailedJob(job: Job, workflow: Workflow): void {
     return;
   }
   if (isSameModelRetryEligible(failureKind)) {
-    const attemptsKey = `workflow/${workflow.id}/cli-retry/${phase}/cycle-${cycle}`;
+    const attemptsKey = RecoveryKeys.cliAttempts(workflow.id, phase, cycle);
     const attempts = parseInt(queries.getNote(attemptsKey)?.value ?? '0', 10);
     const MAX_CLI_RETRIES = 3;
     if (attempts < MAX_CLI_RETRIES) {
-      const cliRetryKey = `workflow/${workflow.id}/recovery/${phase}/cycle-${cycle}/cli-retry-${attempts + 1}`;
-      if (!queries.insertNoteIfNotExists(cliRetryKey, `model=${currentModel},failure=${failureKind},attempt=${attempts + 1}`, null)) {
-        if (hasActiveJob()) {
-          console.log(`[workflow ${workflow.id}] phase '${phase}' cli-retry-${attempts + 1} already spawned (idempotency key exists) — skipping`);
-          return;
-        }
-        console.log(`[workflow ${workflow.id}] phase '${phase}' cli-retry-${attempts + 1} recovery already failed (stale note, no active job) — trying next option`);
-        // Fall through to alt-provider below
-      } else {
+      const cliRetryKey = RecoveryKeys.cliRetry(workflow.id, phase, cycle, attempts + 1);
+      const outcome = tryAcquireRecoverySlot(workflow.id, cliRetryKey, `model=${currentModel},failure=${failureKind},attempt=${attempts + 1}`);
+      if (outcome === 'active_duplicate') {
+        console.log(`[workflow ${workflow.id}] phase '${phase}' cli-retry-${attempts + 1} already spawned (idempotency key exists) — skipping`);
+        return;
+      }
+      if (outcome === 'acquired') {
         queries.upsertNote(attemptsKey, String(attempts + 1), null);
         console.log(`[workflow ${workflow.id}] phase '${phase}' hit ${failureKind} on ${currentModel} — same-model retry ${attempts + 1}/${MAX_CLI_RETRIES}`);
         spawnPhaseJob(workflow, phase, cycle);
         return;
       }
+      // outcome === 'stale_exhausted' — fall through to alt-provider below
+      console.log(`[workflow ${workflow.id}] phase '${phase}' cli-retry-${attempts + 1} recovery already failed (stale note, no active job) — trying next option`);
     }
     const altModel = getAlternateProviderModel(currentModel);
     if (altModel) {
-      const altProviderKey = `workflow/${workflow.id}/recovery/${phase}/cycle-${cycle}/alt-provider`;
-      if (!queries.insertNoteIfNotExists(altProviderKey, `alt=${altModel},from=${currentModel},failure=${failureKind}`, null)) {
-        if (hasActiveJob()) {
-          console.log(`[workflow ${workflow.id}] phase '${phase}' alt-provider already spawned (idempotency key exists) — skipping`);
-          return;
-        }
-        console.log(`[workflow ${workflow.id}] phase '${phase}' alt-provider recovery already failed (stale note, no active job) — will block`);
-        // Fall through to final block below
-      } else {
+      const altProviderKey = RecoveryKeys.altProvider(workflow.id, phase, cycle);
+      const outcome = tryAcquireRecoverySlot(workflow.id, altProviderKey, `alt=${altModel},from=${currentModel},failure=${failureKind}`);
+      if (outcome === 'active_duplicate') {
+        console.log(`[workflow ${workflow.id}] phase '${phase}' alt-provider already spawned (idempotency key exists) — skipping`);
+        return;
+      }
+      if (outcome === 'acquired') {
         console.log(`[workflow ${workflow.id}] phase '${phase}' exhausted ${MAX_CLI_RETRIES} retries on ${currentModel} (${failureKind}) → switching provider to ${altModel}`);
         spawnPhaseJob(workflow, phase, cycle, altModel);
         return;
       }
+      // outcome === 'stale_exhausted' — fall through to final block below
+      console.log(`[workflow ${workflow.id}] phase '${phase}' alt-provider recovery already failed (stale note, no active job) — will block`);
     }
     console.log(`[workflow ${workflow.id}] phase '${phase}' hit ${failureKind} on ${currentModel} — exhausted ${MAX_CLI_RETRIES} retries, no alternate provider available`);
   }
@@ -401,9 +397,9 @@ function handleZeroProgressAndAdvance(job: Job, workflow: Workflow, updated: Wor
     return;
   }
 
-  const preImplKey = `workflow/${workflow.id}/pre-implement-milestones/${updated.current_cycle}`;
+  const preImplKey = RecoveryKeys.preImplementMilestones(workflow.id, updated.current_cycle);
   const preImplNote = queries.getNote(preImplKey);
-  const zeroProgressKey = `workflow/${workflow.id}/zero-progress-count`;
+  const zeroProgressKey = RecoveryKeys.zeroProgressCount(workflow.id);
 
   if (preImplNote) {
     const preImplDone = parseInt(preImplNote.value, 10);
@@ -414,7 +410,7 @@ function handleZeroProgressAndAdvance(job: Job, workflow: Workflow, updated: Wor
       : false;
 
     if (milestones.done >= preImplDone && !hasWorkEvidence) {
-      queries.upsertNote(`workflow/${workflow.id}/cycle-progress/${updated.current_cycle}`, String(delta), null);
+      queries.upsertNote(RecoveryKeys.cycleProgress(workflow.id, updated.current_cycle), String(delta), null);
     }
 
     if (delta > 0) {
@@ -423,7 +419,7 @@ function handleZeroProgressAndAdvance(job: Job, workflow: Workflow, updated: Wor
       console.log(`[workflow ${workflow.id}] cycle ${updated.current_cycle} has work evidence (commits or worklog) but no milestone check-off — treating as reviewer rejection, not zero-progress`);
       queries.upsertNote(zeroProgressKey, '0', null);
     } else if (milestones.done >= preImplDone) {
-      const replanKey = `workflow/${workflow.id}/replan-attempted/${updated.current_cycle}`;
+      const replanKey = RecoveryKeys.replanAttempted(workflow.id, updated.current_cycle);
       const replanNote = queries.getNote(replanKey);
       if (!replanNote) {
         queries.upsertNote(replanKey, '1', null);
@@ -448,9 +444,9 @@ function handleZeroProgressAndAdvance(job: Job, workflow: Workflow, updated: Wor
     // Diminishing returns detector
     const cycle = updated.current_cycle;
     if (cycle >= 3) {
-      const cp1 = queries.getNote(`workflow/${workflow.id}/cycle-progress/${cycle}`);
-      const cp2 = queries.getNote(`workflow/${workflow.id}/cycle-progress/${cycle - 1}`);
-      const cp3 = queries.getNote(`workflow/${workflow.id}/cycle-progress/${cycle - 2}`);
+      const cp1 = queries.getNote(RecoveryKeys.cycleProgress(workflow.id, cycle));
+      const cp2 = queries.getNote(RecoveryKeys.cycleProgress(workflow.id, cycle - 1));
+      const cp3 = queries.getNote(RecoveryKeys.cycleProgress(workflow.id, cycle - 2));
       if (cp1 && cp2 && cp3) {
         const avg = (parseFloat(cp1.value) + parseFloat(cp2.value) + parseFloat(cp3.value)) / 3;
         if (avg < 0.3) {
@@ -496,7 +492,7 @@ function detectCycleEvidence(job: Job, workflow: Workflow, cycleNum: number): bo
     } catch { /* git error — fall through */ }
   }
 
-  const worklogNote = queries.getNote(`workflow/${workflow.id}/worklog/cycle-${cycleNum}`);
+  const worklogNote = queries.getNote(RecoveryKeys.worklog(workflow.id, cycleNum));
   if (worklogNote && isSubstantiveWorklog(worklogNote.value)) {
     console.log(`[workflow ${workflow.id}] cycle ${cycleNum} evidence: substantive worklog entry found`);
     return true;
@@ -518,7 +514,7 @@ function isSubstantiveWorklog(content: string): boolean {
 // ─── Phase Job Spawning ─────────────────────────────────────────────────────
 
 function repairAttemptsKey(workflowId: string, phase: 'assess' | 'review', cycle: number): string {
-  return `workflow/${workflowId}/repair/${phase}/cycle-${cycle}`;
+  return RecoveryKeys.repairAttempts(workflowId, phase, cycle);
 }
 
 const REPAIR_LEVELS = [
@@ -573,9 +569,9 @@ function spawnRepairJob(workflow: Workflow, phase: 'assess' | 'review', cycle: n
 }
 
 export function preReadWorkflowContext(workflowId: string, opts: { cycle?: number } = {}): InlineWorkflowContext {
-  const plan = queries.getNote(`workflow/${workflowId}/plan`);
-  const contract = queries.getNote(`workflow/${workflowId}/contract`);
-  const worklogNotes = queries.listNotes(`workflow/${workflowId}/worklog/`);
+  const plan = queries.getNote(RecoveryKeys.plan(workflowId));
+  const contract = queries.getNote(RecoveryKeys.contract(workflowId));
+  const worklogNotes = queries.listNotes(RecoveryKeys.worklogPrefix(workflowId));
   const recentDiff = queries.getLastImplementDiff(workflowId);
 
   let diffSummary: string | undefined;
@@ -589,7 +585,7 @@ export function preReadWorkflowContext(workflowId: string, opts: { cycle?: numbe
     } catch { /* skip */ }
   }
 
-  const reviewFeedbackNotes = queries.listNotes(`workflow/${workflowId}/review-feedback/`);
+  const reviewFeedbackNotes = queries.listNotes(RecoveryKeys.reviewFeedbackPrefix(workflowId));
   const reviewHistory = reviewFeedbackNotes.length > 0
     ? reviewFeedbackNotes.map(n => `**${n.key.split('/').pop()}:**\n${n.value}`).join('\n\n')
     : undefined;
@@ -598,7 +594,7 @@ export function preReadWorkflowContext(workflowId: string, opts: { cycle?: numbe
   let verifyFailure: InlineWorkflowContext['verifyFailure'] = null;
   const cycle = opts.cycle ?? workflow?.current_cycle;
   if (cycle !== undefined && cycle > 0) {
-    const failureNote = queries.getNote(`workflow/${workflowId}/verify-failure/${cycle}`);
+    const failureNote = queries.getNote(RecoveryKeys.verifyFailure(workflowId, cycle));
     if (failureNote?.value) {
       verifyFailure = failureNote.value;
     }
@@ -750,40 +746,17 @@ function spawnPhaseJob(workflow: Workflow, phase: WorkflowPhase, cycle: number, 
   const phaseLabels: Record<string, string> = { assess: 'Assess', review: 'Review', implement: 'Implement', verify: 'Verify' };
   const label = phaseLabels[phase] ?? phase;
 
-  let model: string;
-  let stopMode: StopMode;
-  let stopValue: number | null;
-  let prompt: string;
-
   const inlineContext = (phase === 'review' || phase === 'implement' || phase === 'verify')
     ? preReadWorkflowContext(activeWorkflow.id, { cycle }) : undefined;
 
-  switch (phase) {
-    case 'assess':
-      model = activeWorkflow.implementer_model;
-      if (isCodexModel(model)) { console.log(`[workflow ${activeWorkflow.id}] assess phase requires reliable MCP — falling back from Codex to Claude`); model = 'claude-sonnet-4-6'; }
-      stopMode = activeWorkflow.stop_mode_assess; stopValue = activeWorkflow.stop_value_assess;
-      prompt = buildAssessPrompt(activeWorkflow);
-      break;
-    case 'review':
-      model = activeWorkflow.reviewer_model;
-      stopMode = activeWorkflow.stop_mode_review; stopValue = activeWorkflow.stop_value_review;
-      prompt = buildReviewPrompt(activeWorkflow, cycle, inlineContext);
-      break;
-    case 'implement':
-      model = activeWorkflow.implementer_model;
-      stopMode = activeWorkflow.stop_mode_implement; stopValue = activeWorkflow.stop_value_implement;
-      prompt = buildImplementPrompt(activeWorkflow, cycle, inlineContext);
-      break;
-    case 'verify':
-      model = 'claude-opus-4-6';
-      stopMode = 'turns';
-      stopValue = 40;
-      prompt = buildVerifyPrompt(activeWorkflow, cycle, inlineContext);
-      break;
-    default:
-      throw new Error(`Invalid phase: ${phase}`);
-  }
+  const phaseConfig = getPhaseConfig(phase);
+  let model = phaseConfig.overrides?.model ?? (phaseConfig.modelKey ? (activeWorkflow[phaseConfig.modelKey] as string) : 'claude-sonnet-4-6');
+  let stopMode = (phaseConfig.overrides?.stopMode ?? (phaseConfig.stopModeKey ? activeWorkflow[phaseConfig.stopModeKey] : 'turns')) as StopMode;
+  let stopValue = (phaseConfig.overrides?.stopValue ?? (phaseConfig.stopValueKey ? activeWorkflow[phaseConfig.stopValueKey] : null)) as number | null;
+  const prompt = phaseConfig.buildPrompt(activeWorkflow, cycle, inlineContext);
+
+  // Apply post-resolution hook (e.g. assess phase falls back from Codex to Claude)
+  model = phaseConfig.postResolve?.(model) ?? model;
 
   if (modelOverride) model = modelOverride;
   model = getWorkflowFallbackModel(activeWorkflow, phase, model) ?? model;
@@ -799,9 +772,9 @@ function spawnPhaseJob(workflow: Workflow, phase: WorkflowPhase, cycle: number, 
   }
 
   if (phase === 'implement') {
-    const planNote = queries.getNote(`workflow/${activeWorkflow.id}/plan`);
+    const planNote = queries.getNote(RecoveryKeys.plan(activeWorkflow.id));
     const milestones = parseMilestones(planNote?.value ?? '');
-    queries.upsertNote(`workflow/${activeWorkflow.id}/pre-implement-milestones/${cycle}`, String(milestones.done), null);
+    queries.upsertNote(RecoveryKeys.preImplementMilestones(activeWorkflow.id, cycle), String(milestones.done), null);
     if (planNote?.value) {
       const firstUnchecked = planNote.value.split('\n').find(l => /^- \[ \]/.test(l));
       if (firstUnchecked) {
@@ -994,10 +967,10 @@ export function resumeWorkflow(workflow: Workflow, options: { phase?: WorkflowPh
 
   blockIfMissingRequiredWorktree(resumeState, phase, { throwOnBlock: true });
   updateAndEmit(workflow.id, { status: 'running', blocked_reason: null });
-  queries.upsertNote(`workflow/${workflow.id}/zero-progress-count`, '0', null);
+  queries.upsertNote(RecoveryKeys.zeroProgressCount(workflow.id), '0', null);
   for (let c = current.current_cycle; c >= 1 && c > current.current_cycle - 3; c--) {
-    queries.deleteNote(`workflow/${workflow.id}/cycle-progress/${c}`);
-    queries.deleteNote(`workflow/${workflow.id}/replan-attempted/${c}`);
+    queries.deleteNote(RecoveryKeys.cycleProgress(workflow.id, c));
+    queries.deleteNote(RecoveryKeys.replanAttempted(workflow.id, c));
   }
 
   if (options.phase || options.cycle) {
@@ -1006,38 +979,18 @@ export function resumeWorkflow(workflow: Workflow, options: { phase?: WorkflowPh
   }
 
   const updated = queries.getWorkflowById(workflow.id)!;
-  let model: string;
-  let stopMode: StopMode;
-  let stopValue: number | null;
-  let prompt: string;
 
   const inlineContext = (phase === 'review' || phase === 'implement' || phase === 'verify')
     ? preReadWorkflowContext(updated.id, { cycle }) : undefined;
 
-  switch (phase) {
-    case 'assess':
-      model = updated.implementer_model;
-      stopMode = updated.stop_mode_assess; stopValue = updated.stop_value_assess;
-      prompt = buildAssessPrompt(updated);
-      break;
-    case 'review':
-      model = updated.reviewer_model;
-      stopMode = updated.stop_mode_review; stopValue = updated.stop_value_review;
-      prompt = buildReviewPrompt(updated, cycle, inlineContext);
-      break;
-    case 'implement':
-      model = updated.implementer_model;
-      stopMode = updated.stop_mode_implement; stopValue = updated.stop_value_implement;
-      prompt = buildImplementPrompt(updated, cycle, inlineContext);
-      break;
-    case 'verify':
-      model = 'claude-opus-4-6';
-      stopMode = 'turns'; stopValue = 40;
-      prompt = buildVerifyPrompt(updated, cycle, inlineContext);
-      break;
-    default:
-      throw new Error(`Cannot resume from phase '${phase}'`);
-  }
+  const phaseConfig = getPhaseConfig(phase);
+  let model = phaseConfig.overrides?.model ?? (phaseConfig.modelKey ? (updated[phaseConfig.modelKey] as string) : 'claude-sonnet-4-6');
+  const stopMode = (phaseConfig.overrides?.stopMode ?? (phaseConfig.stopModeKey ? updated[phaseConfig.stopModeKey] : 'turns')) as StopMode;
+  const stopValue = (phaseConfig.overrides?.stopValue ?? (phaseConfig.stopValueKey ? updated[phaseConfig.stopValueKey] : null)) as number | null;
+  const prompt = phaseConfig.buildPrompt(updated, cycle, inlineContext);
+
+  // Apply post-resolution hook (e.g. assess phase falls back from Codex to Claude)
+  model = phaseConfig.postResolve?.(model) ?? model;
 
   model = getWorkflowFallbackModel(updated, phase as WorkflowPhase, model) ?? model;
   const job = queries.insertJob({

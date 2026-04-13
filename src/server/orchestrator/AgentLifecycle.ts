@@ -11,7 +11,7 @@ export enum AgentState {
 const TERMINAL_STATES = new Set([AgentState.Done, AgentState.Failed]);
 
 const VALID_TRANSITIONS: Record<AgentState, Set<AgentState>> = {
-  [AgentState.Spawning]:  new Set([AgentState.Attaching, AgentState.Failed]),
+  [AgentState.Spawning]:  new Set([AgentState.Attaching, AgentState.Polling, AgentState.Failed]),
   [AgentState.Attaching]: new Set([AgentState.Running, AgentState.Polling, AgentState.Failed]),
   [AgentState.Running]:   new Set([AgentState.Exiting, AgentState.Failed]),
   [AgentState.Polling]:   new Set([AgentState.Exiting, AgentState.Failed]),
@@ -60,6 +60,16 @@ export class AgentStateManager {
       if (s === state) count++;
     }
     return count;
+  }
+
+  /** Return all agent IDs currently in any of the given states. */
+  agentIdsInStates(...states: AgentState[]): Set<string> {
+    const stateSet = new Set(states);
+    const result = new Set<string>();
+    for (const [id, s] of this._states) {
+      if (stateSet.has(s)) result.add(id);
+    }
+    return result;
   }
 
   remove(agentId: string): void {

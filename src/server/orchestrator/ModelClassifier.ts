@@ -4,6 +4,7 @@ import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
 import type { Job } from '../../shared/types.js';
 import { isCodexModel } from '../../shared/types.js';
+import { CircuitBreaker } from './CircuitBreaker.js';
 
 // The model used to do the classification itself — always Haiku, cheap and fast
 const CLASSIFIER_MODEL = 'claude-haiku-4-5-20251001';
@@ -25,6 +26,23 @@ const MODEL_FALLBACK_CHAIN: string[] = [
   'claude-haiku-4-5-20251001',
   'codex',
 ];
+
+// Canonical model list for the circuit breaker — includes all models that may
+// be dispatched, not just those in the fallback chain (e.g. claude-opus-4-6
+// without the [1m] context window suffix).
+export const KNOWN_MODELS: readonly string[] = [
+  'claude-opus-4-6',
+  'claude-opus-4-6[1m]',
+  'claude-sonnet-4-6',
+  'claude-sonnet-4-6[1m]',
+  'claude-haiku-4-5-20251001',
+  'codex',
+] as const;
+
+// Module-level singleton — WorkQueueManager checks isOpen() in its tick loop;
+// ModelClassifier calls record* methods as events occur.
+const _circuitBreaker = new CircuitBreaker(KNOWN_MODELS);
+export function getCircuitBreaker(): CircuitBreaker { return _circuitBreaker; }
 
 const DEFAULT_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -81,11 +99,13 @@ export function markModelRateLimited(model: string, cooldownMs = DEFAULT_COOLDOW
   _rateLimitCooldowns.set(model, expiry);
   queries.upsertNote(`ratelimit:${model}`, String(expiry), null);
   console.log(`[classifier] marked ${model} as rate-limited for ${Math.round(cooldownMs / 1000)}s (until ${new Date(expiry).toISOString()})`);
+  getCircuitBreaker().recordModelLimited(model);
 }
 
 export function clearModelRateLimit(model: string): void {
   _rateLimitCooldowns.delete(model);
   try { queries.upsertNote(`ratelimit:${model}`, '0', null); } catch { /* ignore */ }
+  getCircuitBreaker().recordModelAvailable(model);
 }
 
 export function isModelRateLimited(model: string): boolean {
@@ -94,6 +114,8 @@ export function isModelRateLimited(model: string): boolean {
   if (memExpiry) {
     if (Date.now() < memExpiry) return true;
     _rateLimitCooldowns.delete(model);
+    // Cooldown expired — notify circuit breaker this model is available again
+    getCircuitBreaker().recordModelAvailable(model);
   }
   const note = queries.getNote(`ratelimit:${model}`);
   if (note) {
@@ -102,6 +124,8 @@ export function isModelRateLimited(model: string): boolean {
       _rateLimitCooldowns.set(model, exp);
       return true;
     }
+    // Persisted cooldown also expired — notify breaker
+    getCircuitBreaker().recordModelAvailable(model);
   }
   return false;
 }

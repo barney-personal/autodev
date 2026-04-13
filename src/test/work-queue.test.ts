@@ -26,6 +26,15 @@ vi.mock('../server/orchestrator/PtyManager.js', () => ({
   saveSnapshot: vi.fn(),
 }));
 vi.mock('../server/orchestrator/ModelClassifier.js', () => ({
+  getCircuitBreaker: vi.fn(() => ({
+    isOpen: () => false,
+    reason: () => 'circuit closed',
+    recordModelLimited: () => {},
+    recordModelAvailable: () => {},
+    recordInfraFailure: () => {},
+    recordSuccess: () => {},
+    consecutiveInfraFailures: () => 0,
+  })),
   resolveModel: vi.fn(async (job: any) => job.model ?? 'claude-sonnet-4-6'),
   getFallbackModel: vi.fn((m: string) => m),
   getModelProvider: vi.fn(() => 'anthropic'),

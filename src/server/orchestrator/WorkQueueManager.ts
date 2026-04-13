@@ -9,6 +9,7 @@ import * as socket from '../socket/SocketManager.js';
 import { runAgent } from './AgentRunner.js';
 import { startInteractiveAgent } from './PtyManager.js';
 import { resolveModel } from './ModelClassifier.js';
+import { getCircuitBreaker } from './ModelClassifier.js';
 import type { Job } from '../../shared/types.js';
 import { isCodexModel, isAutoExitJob } from '../../shared/types.js';
 
@@ -135,6 +136,11 @@ async function tick(): Promise<void> {
 
     // Count classifying jobs against the concurrency limit so we don't over-dispatch
     if (activeAgents.length + _classifying.size >= _maxConcurrent) break;
+
+    if (getCircuitBreaker().isOpen()) {
+      log.info({ reason: getCircuitBreaker().reason() }, 'circuit breaker open — pausing dispatch');
+      break;
+    }
 
     const job = queries.getNextQueuedJob();
     if (!job || _classifying.has(job.id)) break;

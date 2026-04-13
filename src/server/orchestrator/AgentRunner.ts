@@ -44,9 +44,10 @@ import type { Job, ClaudeStreamEvent, CodexStreamEvent } from '../../shared/type
 import { isCodexModel, codexModelName, effectiveMaxTurns } from '../../shared/types.js';
 import { buildEyePrompt, isEyeJob, computeAdaptiveEyeInterval } from './EyeConfig.js';
 import { getJobIfStatus, markJobRunning } from './JobLifecycle.js';
-import { ensureCodexTrusted } from './PtyManager.js';
 import { buildNiceSpawn, isNiceAvailable } from './ProcessPriority.js';
 import { registerCompletionHandler } from './JobCompletionNotifier.js';
+import { getCircuitBreaker } from './ModelClassifier.js';
+import { classifyJobFailure } from './FailureClassifier.js';
 import {
   CLAUDE,
   CODEX,
@@ -54,10 +55,14 @@ import {
   LOGS_DIR,
   HOOK_SETTINGS,
   SYSTEM_PROMPT,
-  MEMORY_BUDGET,
+  cancelledAgents,
+  readClaudeMd,
+  buildMemorySection,
+  ensureCodexTrusted,
 } from './AgentConfig.js';
+import type { RunOptions } from './AgentConfig.js';
 export type { RunOptions } from './AgentConfig.js';
-export { HOOK_SETTINGS, SYSTEM_PROMPT, MEMORY_BUDGET } from './AgentConfig.js';
+export { HOOK_SETTINGS, SYSTEM_PROMPT, MEMORY_BUDGET, cancelledAgents, readClaudeMd, buildMemorySection } from './AgentConfig.js';
 
 // Register handleJobCompletion so MCP finishJob can invoke it without importing AgentRunner.
 // handleJobCompletion is a hoisted function declaration, so this reference is safe at module level.
@@ -66,8 +71,7 @@ registerCompletionHandler(handleJobCompletion);
 // Map of agentId → active tailer cleanup handles
 const _tailers = new Map<string, { watcher?: fs.FSWatcher; interval: NodeJS.Timeout }>();
 
-// Agents that were explicitly cancelled — handleAgentExit checks this to avoid overwriting 'cancelled' status
-export const cancelledAgents = new Set<string>();
+
 
 // Track agents whose handleJobCompletion has already run to prevent double-processing
 // (e.g. race between finishJobHandler and handleAgentExit). Same pattern as WorkflowManager._processedJobs.
@@ -619,6 +623,20 @@ export async function handleJobCompletion(
   if (finalStatus === 'done') clearRecoveryState(activeJob);
   getFileLockRegistry().releaseAll(agentId);
 
+  // Notify circuit breaker of job outcome
+  try {
+    if (finalStatus === 'done') {
+      getCircuitBreaker().recordSuccess();
+    } else {
+      const failureKind = classifyJobFailure(activeJob.id);
+      if (failureKind === 'launch_environment') {
+        getCircuitBreaker().recordInfraFailure();
+      }
+    }
+  } catch (err) {
+    agentLogger(agentId).warn({ err }, 'circuit breaker update failed');
+  }
+
   // Triage any learnings the agent reported
   if (finalStatus === 'done') {
     triageLearnings(agentId, job).catch(err => {
@@ -934,32 +952,6 @@ function storeOutput(agentId: string, seq: number, eventType: string, content: s
  * Read CLAUDE.md and any docs it references from .claude/docs/ in the given directory.
  * Claude Code reads these natively; Codex does not, so we inject them into the prompt.
  */
-export function readClaudeMd(workDir: string): string | null {
-  const claudeMdPath = path.join(workDir, 'CLAUDE.md');
-  let content: string;
-  try {
-    content = fs.readFileSync(claudeMdPath, 'utf8');
-  } catch {
-    return null;
-  }
-
-  // Also read any .claude/docs/ files referenced in CLAUDE.md
-  const docsDir = path.join(workDir, '.claude', 'docs');
-  try {
-    const docFiles = fs.readdirSync(docsDir).filter(f => f.endsWith('.md'));
-    if (docFiles.length > 0) {
-      content += '\n\n---\n\n# Referenced Documentation\n';
-      for (const docFile of docFiles) {
-        try {
-          const docContent = fs.readFileSync(path.join(docsDir, docFile), 'utf8');
-          content += `\n## ${docFile}\n\n${docContent}\n`;
-        } catch { /* skip unreadable docs */ }
-      }
-    }
-  } catch { /* no .claude/docs directory */ }
-
-  return content;
-}
 
 function buildPrompt(job: Job): string {
   const model: string | null = job.model ?? null;
@@ -1018,27 +1010,3 @@ function buildPrompt(job: Job): string {
 }
 
 
-export function buildMemorySection(job: Job): string {
-  const projectId: string | null = job.project_id ?? null;
-  const workDir: string | null = job.work_dir ?? null;
-  const effectiveProjectId: string | null = projectId ?? workDir ?? null;
-  const memories = queries.getMemoryForJob(effectiveProjectId, job.title, job.description);
-  if (memories.length === 0) return '';
-
-  let section = '\n\n## Memory\nRelevant learnings from previous tasks:\n';
-  let budget = MEMORY_BUDGET - section.length;
-
-  for (const m of memories) {
-    const scope = m.project_id ? 'project' : 'global';
-    const header = `\n### ${m.title} [${scope}]\n`;
-    const remaining = budget - header.length - 5; // 5 for "...\n"
-    if (remaining <= 0) break;
-    const content = m.content.length > remaining ? m.content.slice(0, remaining) + '...' : m.content;
-    const entry = header + content + '\n';
-    budget -= entry.length;
-    section += entry;
-    if (budget <= 0) break;
-  }
-
-  return section;
-}

@@ -23,6 +23,9 @@ vi.mock('../server/orchestrator/PtyManager.js', () => ({
   isTmuxSessionAlive: vi.fn(() => false),
   startInteractiveAgent: vi.fn(),
   saveSnapshot: vi.fn(),
+}));
+
+vi.mock('../server/orchestrator/JobFinalizer.js', () => ({
   resolveStandalonePrintJobOutcome: vi.fn(() => null),
   reportStandaloneResolutionFailure: vi.fn(),
 }));
@@ -61,6 +64,15 @@ vi.mock('../server/orchestrator/RetryManager.js', () => ({
 }));
 
 vi.mock('../server/orchestrator/ModelClassifier.js', () => ({
+  getCircuitBreaker: vi.fn(() => ({
+    isOpen: () => false,
+    reason: () => 'circuit closed',
+    recordModelLimited: () => {},
+    recordModelAvailable: () => {},
+    recordInfraFailure: () => {},
+    recordSuccess: () => {},
+    consecutiveInfraFailures: () => 0,
+  })),
   markModelRateLimited: vi.fn(),
   getFallbackModel: vi.fn((model: string) => model),
   getModelProvider: vi.fn(() => 'anthropic'),
@@ -242,7 +254,7 @@ describe('StuckJobWatchdog terminal guards', () => {
   it('reports incomplete standalone terminal failures to Sentry', async () => {
     const queries = await import('../server/db/queries.js');
     const { _invokeWatchdogCheckForTest } = await import('../server/orchestrator/StuckJobWatchdog.js');
-    const { resolveStandalonePrintJobOutcome, reportStandaloneResolutionFailure } = await import('../server/orchestrator/PtyManager.js') as any;
+    const { resolveStandalonePrintJobOutcome, reportStandaloneResolutionFailure } = await import('../server/orchestrator/JobFinalizer.js') as any;
 
     const job = queries.insertJob({
       id: 'watchdog-incomplete-job',
@@ -284,7 +296,7 @@ describe('StuckJobWatchdog terminal guards', () => {
   it('extracts num_turns for incomplete standalone terminal failures', async () => {
     const queries = await import('../server/db/queries.js');
     const { _invokeWatchdogCheckForTest } = await import('../server/orchestrator/StuckJobWatchdog.js');
-    const { resolveStandalonePrintJobOutcome } = await import('../server/orchestrator/PtyManager.js') as any;
+    const { resolveStandalonePrintJobOutcome } = await import('../server/orchestrator/JobFinalizer.js') as any;
     const { getLogPath } = await import('../server/orchestrator/AgentRunner.js') as any;
 
     const job = queries.insertJob({

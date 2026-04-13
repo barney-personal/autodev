@@ -567,6 +567,8 @@ export function initDb(dbPath: string): DatabaseSync {
 
   // ── Performance indexes ────────────────────────────────────────────────────
   db.exec('CREATE INDEX IF NOT EXISTS idx_agents_job_id ON agents(job_id)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_jobs_workflow_phase ON jobs(workflow_id, workflow_phase)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_workflows_status_created ON workflows(status, created_at)');
   db.exec("CREATE INDEX IF NOT EXISTS idx_jobs_context_eye ON jobs(status) WHERE json_extract(context, '$.eye') = 1");
 
   // ── FTS optimization ────────────────────────────────────────────────────────
