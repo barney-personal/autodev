@@ -568,3 +568,76 @@ describe('PtyManager spawning state', () => {
     expect(captureWithContext).not.toHaveBeenCalled();
   });
 });
+
+describe('PtyManager stale-session cleanup skips monitored standalone jobs', () => {
+  beforeEach(async () => {
+    await setupTestDb();
+    vi.clearAllMocks();
+  });
+
+  afterEach(async () => {
+    const { _resetPtyManagerStateForTest } = await import('../server/orchestrator/PtyManager.js');
+    _resetPtyManagerStateForTest();
+    await cleanupTestDb();
+  });
+
+  it('does not kill tmux sessions for standalone jobs monitored via monitorStandalonePrintJobExit', async () => {
+    // Simulate three tmux sessions: one monitored standalone, one spawning, one stale
+    execFileSyncMock.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'tmux' && args[0] === 'list-sessions') {
+        return Buffer.from(
+          'orchestrator-monitored-agent\norchestrator-spawning-agent\norchestrator-stale-agent\n',
+        );
+      }
+      return Buffer.from('');
+    });
+
+    const {
+      _cleanupStaleTmuxSessionsForTest,
+      _seedSpawningAgentForTest,
+      _seedStandaloneExitPollForTest,
+    } = await import('../server/orchestrator/PtyManager.js');
+
+    _seedStandaloneExitPollForTest('monitored-agent');
+    _seedSpawningAgentForTest('spawning-agent');
+    _cleanupStaleTmuxSessionsForTest();
+
+    const killCalls = execFileSyncMock.mock.calls.filter(
+      ([cmd, args]: [string, string[]]) => cmd === 'tmux' && Array.isArray(args) && args[0] === 'kill-session',
+    );
+
+    // Only the genuinely stale session should be killed
+    expect(killCalls).toHaveLength(1);
+    expect(killCalls[0]?.[1]).toEqual(['kill-session', '-t', 'orchestrator-stale-agent']);
+  });
+
+  it('does not kill tmux sessions for standalone jobs using the PTY-attach fallback poll path', async () => {
+    // Simulate two tmux sessions: one with a fallback poll, one stale
+    execFileSyncMock.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'tmux' && args[0] === 'list-sessions') {
+        return Buffer.from(
+          'orchestrator-fallback-agent\norchestrator-orphan-agent\n',
+        );
+      }
+      return Buffer.from('');
+    });
+
+    const {
+      _cleanupStaleTmuxSessionsForTest,
+      _seedStandaloneExitPollForTest,
+    } = await import('../server/orchestrator/PtyManager.js');
+
+    // This simulates a standalone job where PTY attach failed but tmux is alive,
+    // so a fallback poll was registered in _standaloneExitPolls
+    _seedStandaloneExitPollForTest('fallback-agent');
+    _cleanupStaleTmuxSessionsForTest();
+
+    const killCalls = execFileSyncMock.mock.calls.filter(
+      ([cmd, args]: [string, string[]]) => cmd === 'tmux' && Array.isArray(args) && args[0] === 'kill-session',
+    );
+
+    // Only the orphan session should be killed
+    expect(killCalls).toHaveLength(1);
+    expect(killCalls[0]?.[1]).toEqual(['kill-session', '-t', 'orchestrator-orphan-agent']);
+  });
+});

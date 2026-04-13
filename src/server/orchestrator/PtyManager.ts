@@ -632,13 +632,13 @@ function cleanupStaleTmuxSessions(): void {
     const output = execFileSync(TMUX, ['list-sessions', '-F', '#{session_name}'], { stdio: 'pipe' }).toString();
     const sessions = output.trim().split('\n').filter(s => s.startsWith('orchestrator-'));
 
-    // Get all currently running agent IDs from the in-memory PTY map
-    const activeAgentIds = new Set(_ptys.keys());
+    // Get all currently running agent IDs from the in-memory PTY map,
+    // spawning agents, and standalone jobs being monitored via exit polls
+    const activeAgentIds = new Set([..._ptys.keys(), ..._spawningAgents, ..._standaloneExitPolls.keys()]);
 
     for (const session of sessions) {
       const agentId = session.replace('orchestrator-', '');
-      // Skip agents that are actively attached OR still spawning (tmux created, PTY not yet attached)
-      if (activeAgentIds.has(agentId) || _spawningAgents.has(agentId)) {
+      if (activeAgentIds.has(agentId)) {
         continue;
       }
       try {
@@ -1143,7 +1143,8 @@ export async function attachPty(agentId: string, job: Job, cols = 100, rows = 50
     if (isTmuxSessionAlive(agentId)) {
       const exitPoll = setInterval(() => {
         if (isTmuxSessionAlive(agentId)) return;
-        clearInterval(exitPoll);
+        // stopStandaloneExitPoll is called inside finalizeStandalonePrintJob,
+        // so we don't clearInterval manually here.
         console.log(`[pty ${agentId}] tmux session ended (detected via fallback poll)`);
         finalizeStandalonePrintJob(agentId, job, 'pty_attach_fallback_poll').catch(err2 => {
           console.error(`[pty ${agentId}] handleJobCompletion error:`, err2);
@@ -1151,6 +1152,7 @@ export async function attachPty(agentId: string, job: Job, cols = 100, rows = 50
         });
       }, 5000);
       exitPoll.unref();
+      _standaloneExitPolls.set(agentId, exitPoll);
     } else if (!isAutoExitJob(job)) {
       finalizeStandalonePrintJob(agentId, job, 'pty_attach_exhausted_and_tmux_gone').catch(err2 => {
         console.error(`[pty ${agentId}] standalone completion fallback error:`, err2);
@@ -1419,6 +1421,12 @@ export function _seedSpawningAgentForTest(agentId: string): void {
 
 export function _isAgentSpawningForTest(agentId: string): boolean {
   return _spawningAgents.has(agentId);
+}
+
+export function _seedStandaloneExitPollForTest(agentId: string): void {
+  // Seed a dummy interval so cleanupStaleTmuxSessions treats this agent as actively monitored.
+  // The interval is a no-op; _resetPtyManagerStateForTest clears it via disconnectAll.
+  _standaloneExitPolls.set(agentId, setInterval(() => {}, 1_000_000));
 }
 
 export function _resolveStandalonePrintJobOutcomeForTest(agentId: string, job: Pick<Job, 'id' | 'title' | 'work_dir' | 'is_interactive' | 'debate_role' | 'workflow_phase'>): StandalonePrintResolution {
