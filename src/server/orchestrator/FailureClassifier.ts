@@ -217,7 +217,7 @@ export function classifyJobFailure(jobId: string): FailureKind {
   // real infrastructure signal may only appear in the agent's output.
   if (errorResult !== 'unknown' && errorResult !== 'task_failure') return errorResult;
 
-  const tail = queries.getAgentOutput(latestAgent.id, 50);
+  const tail = queries.getAgentOutput(latestAgent.id, 200);
   const transcript = tail.map(row => row.content).join('\n');
   const transcriptResult = classifyFailureTextQuietly(transcript);
 

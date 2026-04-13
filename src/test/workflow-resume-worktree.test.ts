@@ -6,6 +6,9 @@
  * the workflow status to 'running' or inserting a phase job.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import path from 'path';
 import {
   setupTestDb,
   cleanupTestDb,
@@ -54,6 +57,16 @@ vi.mock('../server/orchestrator/FailureClassifier.js', () => ({
   _resetWarnedUnclassifiedForTest: vi.fn(),
 }));
 
+vi.mock('../server/orchestrator/WorkflowWorktreeManager.js', async () => {
+  const actual = await vi.importActual<typeof import('../server/orchestrator/WorkflowWorktreeManager.js')>(
+    '../server/orchestrator/WorkflowWorktreeManager.js',
+  );
+  return {
+    ...actual,
+    restoreWorkflowWorktree: vi.fn(actual.restoreWorkflowWorktree),
+  };
+});
+
 vi.mock('../server/instrument.js', () => ({
   captureWithContext: vi.fn(),
   Sentry: { captureException: vi.fn() },
@@ -74,9 +87,18 @@ const execSyncMock = vi.fn((cmd: string) => {
   return Buffer.from('');
 });
 
+const execFileSyncMock = vi.fn((_cmd: string, args: string[]) => {
+  // Default: git rev-parse --is-inside-work-tree succeeds
+  if (args && args.includes('rev-parse') && args.includes('--is-inside-work-tree')) {
+    return Buffer.from('true\n');
+  }
+  return Buffer.from('');
+});
+
 vi.mock('child_process', () => ({
   exec: vi.fn(),
   execSync: (...args: any[]) => execSyncMock(...args),
+  execFileSync: (...args: any[]) => execFileSyncMock(...args),
 }));
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -257,6 +279,96 @@ describe('WorkflowManager: resumeWorkflow worktree restoration', () => {
       'worktree_restore', 'workflow', workflow.id,
       expect.objectContaining({ action: 'restore', outcome: 'success' }),
     );
+  });
+
+  it('rehydrates worktree_branch for an existing worktree without restoring it', async () => {
+    const { resumeWorkflow } = await import('../server/orchestrator/WorkflowManager.js');
+    const queries = await import('../server/db/queries.js');
+    const { restoreWorkflowWorktree } = await import('../server/orchestrator/WorkflowWorktreeManager.js');
+
+    const project = await insertTestProject();
+    const workflow = await insertTestWorkflow({
+      project_id: project.id,
+      status: 'blocked',
+      current_phase: 'implement',
+      current_cycle: 1,
+      use_worktree: 1,
+    });
+    queries.upsertNote(`workflow/${workflow.id}/plan`, '- [ ] M1\n- [ ] M2', null);
+    queries.upsertNote(`workflow/${workflow.id}/contract`, '# contract', null);
+
+    const existingWorktreePath = mkdtempSync(path.join(tmpdir(), 'hurlicane-worktree-'));
+    try {
+      queries.updateWorkflow(workflow.id, {
+        worktree_path: existingWorktreePath,
+        worktree_branch: null,
+      });
+
+      const before = queries.getWorkflowById(workflow.id);
+      expect(before!.worktree_path).toBe(existingWorktreePath);
+      expect(before!.worktree_branch).toBeNull();
+
+      const job = resumeWorkflow(workflow);
+
+      const after = queries.getWorkflowById(workflow.id);
+      expect(after!.worktree_path).toBe(existingWorktreePath);
+      expect(after!.worktree_branch).toMatch(/^workflow\//);
+      expect(after!.status).toBe('running');
+      expect(job.work_dir).toBe(existingWorktreePath);
+      expect(restoreWorkflowWorktree).not.toHaveBeenCalled();
+
+      const worktreeAddCalls = execSyncMock.mock.calls.filter(
+        (c: any[]) => typeof c[0] === 'string' && c[0].includes('git worktree add'),
+      );
+      expect(worktreeAddCalls).toHaveLength(0);
+    } finally {
+      rmSync(existingWorktreePath, { recursive: true, force: true });
+    }
+  });
+
+  it('falls through to restore when worktree_path exists but is not a valid git worktree', async () => {
+    const { resumeWorkflow } = await import('../server/orchestrator/WorkflowManager.js');
+    const queries = await import('../server/db/queries.js');
+    const { restoreWorkflowWorktree } = await import('../server/orchestrator/WorkflowWorktreeManager.js');
+
+    const project = await insertTestProject();
+    const workflow = await insertTestWorkflow({
+      project_id: project.id,
+      status: 'blocked',
+      current_phase: 'implement',
+      current_cycle: 1,
+      use_worktree: 1,
+    });
+    queries.upsertNote(`workflow/${workflow.id}/plan`, '- [ ] M1\n- [ ] M2', null);
+    queries.upsertNote(`workflow/${workflow.id}/contract`, '# contract', null);
+
+    // Create a real temp directory so existsSync returns true,
+    // but it is NOT a git worktree.
+    const notAWorktree = mkdtempSync(path.join(tmpdir(), 'hurlicane-not-a-worktree-'));
+    try {
+      queries.updateWorkflow(workflow.id, { worktree_path: notAWorktree, worktree_branch: null });
+
+      // Make execFileSync fail for git rev-parse (directory exists but is not a git repo)
+      execFileSyncMock.mockImplementation((_cmd: string, args: string[]) => {
+        if (args && args.includes('rev-parse') && args.includes('--is-inside-work-tree')) {
+          throw new Error('fatal: not a git repository');
+        }
+        return Buffer.from('');
+      });
+
+      // Resume should fall through to restoreWorkflowWorktree since git check fails
+      const job = resumeWorkflow(workflow);
+
+      // Verify restoreWorkflowWorktree was called (the worktree was recreated)
+      expect(restoreWorkflowWorktree).toHaveBeenCalled();
+
+      const after = queries.getWorkflowById(workflow.id);
+      expect(after!.status).toBe('running');
+      expect(after!.worktree_path).toBeTruthy();
+      expect(after!.worktree_branch).toMatch(/^workflow\//);
+    } finally {
+      rmSync(notAWorktree, { recursive: true, force: true });
+    }
   });
 
   it('does not attempt worktree restoration when use_worktree=0', async () => {

@@ -624,3 +624,45 @@ export function closeDb(): void {
     _db = null;
   }
 }
+
+// Track whether we are inside a withTransaction call (node:sqlite DatabaseSync
+// does not expose an `inTransaction` property).
+let _inTransaction = false;
+
+/**
+ * Run `fn` inside a SQLite transaction. On success, COMMIT. On error, ROLLBACK
+ * and re-throw. Uses plain BEGIN (not BEGIN IMMEDIATE) so it plays nicely with
+ * WAL mode concurrent reads.
+ *
+ * Guards:
+ * - Nested calls: if already in a transaction, runs fn() directly (no nested BEGIN).
+ * - Async callbacks: rejects Promises immediately, because the transaction would
+ *   commit before awaits resolve, leading to silent data corruption.
+ */
+export function withTransaction<T>(fn: () => T): T {
+  const db = getDb();
+
+  // Guard: nested transactions -- just run the function directly
+  if (_inTransaction) {
+    return fn();
+  }
+
+  _inTransaction = true;
+  db.exec('BEGIN');
+  try {
+    const result = fn();
+    // Guard: async callbacks -- the transaction would commit before awaits resolve
+    if (result instanceof Promise) {
+      db.exec('ROLLBACK');
+      _inTransaction = false;
+      throw new Error('withTransaction does not support async callbacks -- the transaction would commit before awaits resolve');
+    }
+    db.exec('COMMIT');
+    _inTransaction = false;
+    return result;
+  } catch (e) {
+    try { db.exec('ROLLBACK'); } catch { /* ignore rollback errors */ }
+    _inTransaction = false;
+    throw e;
+  }
+}

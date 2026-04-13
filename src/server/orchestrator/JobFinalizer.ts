@@ -417,6 +417,9 @@ export function flushDebateNdjson(agentId: string): void {
 /** agentId -> active exit poll interval */
 const _standaloneExitPolls = new Map<string, NodeJS.Timeout>();
 
+/** Agents currently being finalized. Prevents concurrent calls to finalizeStandalonePrintJob. */
+const _finalizingAgents = new Set<string>();
+
 export function stopStandaloneExitPoll(agentId: string): void {
   const poll = _standaloneExitPolls.get(agentId);
   if (!poll) return;
@@ -453,31 +456,39 @@ export async function finalizeStandalonePrintJob(
     removeAgentState: (agentId: string) => void;
   },
 ): Promise<void> {
-  deps.removeAgentState(agentId);
-  stopStandaloneExitPoll(agentId);
-  stopTailing(agentId);
-  flushDebateNdjson(agentId);
+  // Guard against concurrent finalization calls
+  if (_finalizingAgents.has(agentId)) return;
+  _finalizingAgents.add(agentId);
 
-  const agentRec = queries.getAgentById(agentId);
-  const TERMINAL = ['done', 'failed', 'cancelled'];
-  if (agentRec && TERMINAL.includes(agentRec.status)) return;
-  if (cancelledAgents.has(agentId)) {
-    cancelledAgents.delete(agentId);
-    return;
+  try {
+    deps.removeAgentState(agentId);
+    stopStandaloneExitPoll(agentId);
+    stopTailing(agentId);
+    flushDebateNdjson(agentId);
+
+    const agentRec = queries.getAgentById(agentId);
+    const TERMINAL = ['done', 'failed', 'cancelled'];
+    if (agentRec && TERMINAL.includes(agentRec.status)) return;
+    if (cancelledAgents.has(agentId)) {
+      cancelledAgents.delete(agentId);
+      return;
+    }
+
+    const resolution = resolveStandalonePrintJobOutcome(agentId, job);
+    logStandalonePrintResolution(agentId, job, trigger, resolution);
+    reportStandaloneResolutionFailure(agentId, job.id, 'PtyManager', resolution, trigger);
+
+    const updateFields: Parameters<typeof queries.updateAgent>[1] = {
+      status: resolution.status,
+      finished_at: Date.now(),
+    };
+    if (resolution.errorMessage) updateFields.error_message = resolution.errorMessage;
+    queries.updateAgent(agentId, updateFields);
+
+    await handleJobCompletion(agentId, job, resolution.status);
+  } finally {
+    _finalizingAgents.delete(agentId);
   }
-
-  const resolution = resolveStandalonePrintJobOutcome(agentId, job);
-  logStandalonePrintResolution(agentId, job, trigger, resolution);
-  reportStandaloneResolutionFailure(agentId, job.id, 'PtyManager', resolution, trigger);
-
-  const updateFields: Parameters<typeof queries.updateAgent>[1] = {
-    status: resolution.status,
-    finished_at: Date.now(),
-  };
-  if (resolution.errorMessage) updateFields.error_message = resolution.errorMessage;
-  queries.updateAgent(agentId, updateFields);
-
-  await handleJobCompletion(agentId, job, resolution.status);
 }
 
 // ---------------------------------------------------------------------------
@@ -526,6 +537,10 @@ export function _resolveStandalonePrintJobOutcomeForTest(agentId: string, job: P
   return resolveStandalonePrintJobOutcome(agentId, job);
 }
 
+export function _isFinalizingForTest(agentId: string): boolean {
+  return _finalizingAgents.has(agentId);
+}
+
 export function _seedStandaloneExitPollForTest(agentId: string): void {
   _standaloneExitPolls.set(agentId, setInterval(() => {}, 1_000_000));
 }
@@ -533,4 +548,5 @@ export function _seedStandaloneExitPollForTest(agentId: string): void {
 export function _resetJobFinalizerStateForTest(): void {
   for (const [, poll] of _standaloneExitPolls) clearInterval(poll);
   _standaloneExitPolls.clear();
+  _finalizingAgents.clear();
 }

@@ -50,11 +50,16 @@ export function listAgents(status?: string): Agent[] {
   return rows.map((r: unknown) => cast<Agent>(r));
 }
 
+const AGENT_UPDATE_ALLOWED_FIELDS = new Set(['status', 'pid', 'session_id', 'exit_code', 'error_message', 'status_message', 'output_read', 'base_sha', 'diff', 'cost_usd', 'duration_ms', 'num_turns', 'estimated_input_tokens', 'estimated_output_tokens', 'finished_at', 'pending_wait_ids']);
+
 export function updateAgent(id: string, fields: Partial<Pick<Agent, 'status' | 'pid' | 'session_id' | 'exit_code' | 'error_message' | 'status_message' | 'output_read' | 'base_sha' | 'diff' | 'cost_usd' | 'duration_ms' | 'num_turns' | 'estimated_input_tokens' | 'estimated_output_tokens' | 'finished_at' | 'pending_wait_ids'>>): void {
   const db = getDb();
   const sets: string[] = ['updated_at = ?'];
   const values: unknown[] = [Date.now()];
   for (const [k, v] of Object.entries(fields)) {
+    if (!AGENT_UPDATE_ALLOWED_FIELDS.has(k)) {
+      throw new Error(`Field '${k}' is not allowed for updateAgent`);
+    }
     sets.push(`${k} = ?`);
     values.push(v);
   }

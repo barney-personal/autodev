@@ -246,7 +246,11 @@ export function archiveJob(id: string): void {
 export function updateJobStatus(id: string, status: JobStatus): void {
   const db = getDb();
   const current = getJobById(id);
-  validateTransition('job', current?.status, status, id);
+  try {
+    validateTransition('job', current?.status, status, id);
+  } catch (err) {
+    console.warn((err as Error).message);
+  }
   db.prepare('UPDATE jobs SET status = ?, updated_at = ? WHERE id = ?').run(status, Date.now(), id);
   notifyJobTerminal(id, status);
 }
@@ -403,11 +407,16 @@ export function getQuestionById(id: string): Question | null {
   return row ? cast<Question>(row) : null;
 }
 
+const QUESTION_UPDATE_ALLOWED_FIELDS = new Set(['answer', 'status', 'answered_at']);
+
 export function updateQuestion(id: string, fields: Partial<Pick<Question, 'answer' | 'status' | 'answered_at'>>): void {
   const db = getDb();
   const sets: string[] = [];
   const values: unknown[] = [];
   for (const [k, v] of Object.entries(fields)) {
+    if (!QUESTION_UPDATE_ALLOWED_FIELDS.has(k)) {
+      throw new Error(`Field '${k}' is not allowed for updateQuestion`);
+    }
     sets.push(`${k} = ?`);
     values.push(v);
   }

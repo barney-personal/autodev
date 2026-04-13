@@ -430,9 +430,20 @@ export function startInteractiveAgent(
   }
 
   // ── 9. Post-spawn setup (delayed to allow TUI initialisation) ─────────────
-  queries.updateAgent(agentId, { status: 'starting' });
-  const agentWithJob = queries.getAgentWithJob(agentId);
-  if (agentWithJob) socket.emitAgentUpdate(agentWithJob);
+  try {
+    queries.updateAgent(agentId, { status: 'starting' });
+    const agentWithJob = queries.getAgentWithJob(agentId);
+    if (agentWithJob) socket.emitAgentUpdate(agentWithJob);
+  } catch (err) {
+    try { ctx.transition(agentId, AgentState.Failed); } catch { /* already past Spawning */ }
+    console.error(`[pty ${agentId}] failed to update agent to starting state:`, errMsg(err));
+    captureWithContext(err, { agent_id: agentId, job_id: job.id, component: 'PtyManager' });
+    queries.updateAgent(agentId, { status: 'failed', error_message: errMsg(err), finished_at: Date.now() });
+    queries.updateJobStatus(job.id, 'failed');
+    const updated = queries.getAgentWithJob(agentId);
+    if (updated) socket.emitAgentUpdate(updated);
+    return;
+  }
 
   setTimeout(async () => {
     try {
@@ -471,6 +482,7 @@ export function startInteractiveAgent(
       // Attach node-pty to the tmux session
       ctx.attachPty(agentId, job, cols, rows);
     } catch (err) {
+      try { ctx.transition(agentId, AgentState.Failed); } catch { /* already transitioned */ }
       console.error(`[pty ${agentId}] error in post-start setup:`, errMsg(err));
       captureWithContext(err, { agent_id: agentId, job_id: job.id, component: 'PtyManager' });
       logPtyLifecycleEvent('pty_post_start_setup_failed', agentId, job, {

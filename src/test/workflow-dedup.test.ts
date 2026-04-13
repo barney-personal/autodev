@@ -1355,6 +1355,95 @@ describe('WorkflowManager: reconcileRunningWorkflows', () => {
     }
   });
 
+  it('does not double-fire recovery for the same terminal job within 60 seconds', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-13T12:00:00Z'));
+
+    try {
+      const { reconcileRunningWorkflows } = await import('../server/orchestrator/WorkflowManager.js');
+      const { getWorkflowById, updateWorkflow } = await import('../server/db/queries.js');
+
+      const project = await insertTestProject();
+      const workflow = await insertTestWorkflow({
+        project_id: project.id,
+        status: 'running',
+        current_phase: 'mystery-phase' as any,
+        current_cycle: 1,
+      });
+
+      await insertTestJob({
+        workflow_id: workflow.id,
+        workflow_cycle: 1,
+        workflow_phase: 'mystery-phase' as any,
+        status: 'done',
+      });
+
+      reconcileRunningWorkflows();
+
+      const afterFirstPass = getWorkflowById(workflow.id)!;
+      expect(afterFirstPass.status).toBe('blocked');
+      expect(afterFirstPass.blocked_reason).toContain('Workflow stuck after done mystery-phase job');
+
+      updateWorkflow(workflow.id, {
+        status: 'running',
+        current_phase: 'mystery-phase' as any,
+        current_cycle: 1,
+        blocked_reason: null,
+      });
+
+      reconcileRunningWorkflows();
+
+      const afterSecondPass = getWorkflowById(workflow.id)!;
+      expect(afterSecondPass.status).toBe('running');
+      expect(afterSecondPass.blocked_reason).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('allows the gap detector to retry the same terminal job after the dedupe window expires', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-13T12:00:00Z'));
+
+    try {
+      const { reconcileRunningWorkflows } = await import('../server/orchestrator/WorkflowManager.js');
+      const { getWorkflowById, updateWorkflow } = await import('../server/db/queries.js');
+
+      const project = await insertTestProject();
+      const workflow = await insertTestWorkflow({
+        project_id: project.id,
+        status: 'running',
+        current_phase: 'mystery-phase' as any,
+        current_cycle: 1,
+      });
+
+      await insertTestJob({
+        workflow_id: workflow.id,
+        workflow_cycle: 1,
+        workflow_phase: 'mystery-phase' as any,
+        status: 'done',
+      });
+
+      reconcileRunningWorkflows();
+
+      updateWorkflow(workflow.id, {
+        status: 'running',
+        current_phase: 'mystery-phase' as any,
+        current_cycle: 1,
+        blocked_reason: null,
+      });
+
+      vi.advanceTimersByTime(60_001);
+      reconcileRunningWorkflows();
+
+      const afterRetry = getWorkflowById(workflow.id)!;
+      expect(afterRetry.status).toBe('blocked');
+      expect(afterRetry.blocked_reason).toContain('Workflow stuck after done mystery-phase job');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('blocks a running workflow stuck in idle phase with no active jobs', async () => {
     const { reconcileRunningWorkflows } = await import('../server/orchestrator/WorkflowManager.js');
     const { getWorkflowById } = await import('../server/db/queries.js');

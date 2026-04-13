@@ -1,4 +1,4 @@
-import { getDb } from './database.js';
+import { getDb, withTransaction } from './database.js';
 import { validateTransition } from '../orchestrator/StateTransitions.js';
 import type { FileLock, Template, Note, Project, BatchTemplate, Debate, Job } from '../../shared/types.js';
 
@@ -160,11 +160,16 @@ export function listTemplates(): Template[] {
   return rows.map((r: any) => cast<Template>(r));
 }
 
+const TEMPLATE_UPDATE_ALLOWED_FIELDS = new Set(['name', 'content', 'work_dir', 'model']);
+
 export function updateTemplate(id: string, fields: Partial<Pick<Template, 'name' | 'content' | 'work_dir' | 'model'>>): Template | null {
   const db = getDb();
   const sets: string[] = ['updated_at = ?'];
   const values: unknown[] = [Date.now()];
   for (const [k, v] of Object.entries(fields)) {
+    if (!TEMPLATE_UPDATE_ALLOWED_FIELDS.has(k)) {
+      throw new Error(`Field '${k}' is not allowed for updateTemplate`);
+    }
     sets.push(`${k} = ?`);
     values.push(v);
   }
@@ -174,10 +179,12 @@ export function updateTemplate(id: string, fields: Partial<Pick<Template, 'name'
 }
 
 export function deleteTemplate(id: string): void {
-  const db = getDb();
-  // Null out any jobs that referenced this template before deleting
-  db.prepare('UPDATE jobs SET template_id = NULL WHERE template_id = ?').run(id);
-  db.prepare('DELETE FROM templates WHERE id = ?').run(id);
+  withTransaction(() => {
+    const db = getDb();
+    // Null out any jobs that referenced this template before deleting
+    db.prepare('UPDATE jobs SET template_id = NULL WHERE template_id = ?').run(id);
+    db.prepare('DELETE FROM templates WHERE id = ?').run(id);
+  });
 }
 
 // ─── Notes (shared scratchpad) ────────────────────────────────────────────────
@@ -272,11 +279,16 @@ export function listProjects(): Project[] {
   return rows.map((r: any) => cast<Project>(r));
 }
 
+const PROJECT_UPDATE_ALLOWED_FIELDS = new Set(['name', 'description']);
+
 export function updateProject(id: string, fields: Partial<Pick<Project, 'name' | 'description'>>): Project | null {
   const db = getDb();
   const sets: string[] = ['updated_at = ?'];
   const values: unknown[] = [Date.now()];
   for (const [k, v] of Object.entries(fields)) {
+    if (!PROJECT_UPDATE_ALLOWED_FIELDS.has(k)) {
+      throw new Error(`Field '${k}' is not allowed for updateProject`);
+    }
     sets.push(`${k} = ?`);
     values.push(v);
   }
@@ -286,15 +298,17 @@ export function updateProject(id: string, fields: Partial<Pick<Project, 'name' |
 }
 
 export function deleteProject(id: string): void {
-  const db = getDb();
-  const now = Date.now();
-  // Archive all jobs in this project and unlink them from it
-  db.prepare('UPDATE jobs SET archived_at = ?, project_id = NULL, updated_at = ? WHERE project_id = ? AND archived_at IS NULL').run(now, now, id);
-  db.prepare('UPDATE jobs SET project_id = NULL, updated_at = ? WHERE project_id = ?').run(now, id);
-  // Unlink debate jobs before deleting debates (debates.project_id is NOT NULL w/ FK constraint)
-  db.prepare('UPDATE jobs SET debate_id = NULL WHERE debate_id IN (SELECT id FROM debates WHERE project_id = ?)').run(id);
-  db.prepare('DELETE FROM debates WHERE project_id = ?').run(id);
-  db.prepare('DELETE FROM projects WHERE id = ?').run(id);
+  withTransaction(() => {
+    const db = getDb();
+    const now = Date.now();
+    // Archive all jobs in this project and unlink them from it
+    db.prepare('UPDATE jobs SET archived_at = ?, project_id = NULL, updated_at = ? WHERE project_id = ? AND archived_at IS NULL').run(now, now, id);
+    db.prepare('UPDATE jobs SET project_id = NULL, updated_at = ? WHERE project_id = ?').run(now, id);
+    // Unlink debate jobs before deleting debates (debates.project_id is NOT NULL w/ FK constraint)
+    db.prepare('UPDATE jobs SET debate_id = NULL WHERE debate_id IN (SELECT id FROM debates WHERE project_id = ?)').run(id);
+    db.prepare('DELETE FROM debates WHERE project_id = ?').run(id);
+    db.prepare('DELETE FROM projects WHERE id = ?').run(id);
+  });
 }
 
 // ─── Batch Templates ──────────────────────────────────────────────────────────
@@ -387,15 +401,24 @@ export function listDebates(): Debate[] {
   return rows.map((r: any) => cast<Debate>(r));
 }
 
+const DEBATE_UPDATE_ALLOWED_FIELDS = new Set(['current_round', 'status', 'consensus', 'post_action_job_id', 'verification_review_job_id', 'verification_response_job_id', 'verification_round', 'current_loop']);
+
 export function updateDebate(id: string, fields: Partial<Pick<Debate, 'current_round' | 'status' | 'consensus' | 'post_action_job_id' | 'verification_review_job_id' | 'verification_response_job_id' | 'verification_round' | 'current_loop'>>): Debate | null {
   if (fields.status) {
     const current = getDebateById(id);
-    validateTransition('debate', current?.status, fields.status, id);
+    try {
+      validateTransition('debate', current?.status, fields.status, id);
+    } catch (err) {
+      console.warn((err as Error).message);
+    }
   }
   const db = getDb();
   const sets: string[] = ['updated_at = ?'];
   const values: unknown[] = [Date.now()];
   for (const [k, v] of Object.entries(fields)) {
+    if (!DEBATE_UPDATE_ALLOWED_FIELDS.has(k)) {
+      throw new Error(`Field '${k}' is not allowed for updateDebate`);
+    }
     sets.push(`${k} = ?`);
     values.push(v);
   }

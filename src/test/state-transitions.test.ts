@@ -66,25 +66,21 @@ describe('StateTransitions', () => {
       ['job', 'cancelled', 'running'],
       ['job', 'queued', 'done'],
       ['job', 'assigned', 'queued'],
-    ] as const)('%s: %s → %s is invalid and warns', (entity, from, to) => {
-      const result = validateTransition(entity, from, to);
-      expect(result).toEqual({ valid: false, from, to });
-      expect(warnSpy).toHaveBeenCalledOnce();
-      expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining(`illegal ${entity} transition '${from}' → '${to}'`),
+    ] as const)('%s: %s → %s is invalid and throws', (entity, from, to) => {
+      expect(() => validateTransition(entity, from, to)).toThrow(
+        `illegal ${entity} transition '${from}' → '${to}'`,
       );
+      expect(warnSpy).not.toHaveBeenCalled();
     });
 
     it.each([
       ['workflow', 'complete', 'running'],
       ['workflow', 'cancelled', 'running'],
-    ] as const)('%s: %s → %s is invalid and warns', (entity, from, to) => {
-      const result = validateTransition(entity, from, to);
-      expect(result).toEqual({ valid: false, from, to });
-      expect(warnSpy).toHaveBeenCalledOnce();
-      expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining(`illegal ${entity} transition '${from}' → '${to}'`),
+    ] as const)('%s: %s → %s is invalid and throws', (entity, from, to) => {
+      expect(() => validateTransition(entity, from, to)).toThrow(
+        `illegal ${entity} transition '${from}' → '${to}'`,
       );
+      expect(warnSpy).not.toHaveBeenCalled();
     });
 
     it.each([
@@ -92,35 +88,29 @@ describe('StateTransitions', () => {
       ['debate', 'disagreement', 'running'],
       ['debate', 'failed', 'running'],
       ['debate', 'cancelled', 'running'],
-    ] as const)('%s: %s → %s is invalid and warns', (entity, from, to) => {
-      const result = validateTransition(entity, from, to);
-      expect(result).toEqual({ valid: false, from, to });
-      expect(warnSpy).toHaveBeenCalledOnce();
-      expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining(`illegal ${entity} transition '${from}' → '${to}'`),
+    ] as const)('%s: %s → %s is invalid and throws', (entity, from, to) => {
+      expect(() => validateTransition(entity, from, to)).toThrow(
+        `illegal ${entity} transition '${from}' → '${to}'`,
       );
+      expect(warnSpy).not.toHaveBeenCalled();
     });
   });
 
   // ── Unknown from-status ───────────────────────────────────────────────
 
   describe('unknown from-status', () => {
-    it('returns invalid and warns for unknown job status', () => {
-      const result = validateTransition('job', 'bogus', 'running');
-      expect(result).toEqual({ valid: false, from: 'bogus', to: 'running' });
-      expect(warnSpy).toHaveBeenCalledOnce();
-      expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining("unknown job status 'bogus' → 'running'"),
+    it('throws for unknown job status', () => {
+      expect(() => validateTransition('job', 'bogus', 'running')).toThrow(
+        "unknown job status 'bogus' → 'running'",
       );
+      expect(warnSpy).not.toHaveBeenCalled();
     });
 
-    it('returns invalid and warns for unknown workflow status', () => {
-      const result = validateTransition('workflow', 'nonsense', 'complete');
-      expect(result).toEqual({ valid: false, from: 'nonsense', to: 'complete' });
-      expect(warnSpy).toHaveBeenCalledOnce();
-      expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining("unknown workflow status 'nonsense' → 'complete'"),
+    it('throws for unknown workflow status', () => {
+      expect(() => validateTransition('workflow', 'nonsense', 'complete')).toThrow(
+        "unknown workflow status 'nonsense' → 'complete'",
       );
+      expect(warnSpy).not.toHaveBeenCalled();
     });
   });
 
@@ -131,7 +121,7 @@ describe('StateTransitions', () => {
       ['job', 'running'],
       ['workflow', 'blocked'],
       ['debate', 'running'],
-    ] as const)('%s: %s → %s is a valid no-op without warning', (entity, status) => {
+    ] as const)('%s: %s → %s is a valid no-op without throwing', (entity, status) => {
       const result = validateTransition(entity, status, status);
       expect(result).toEqual({ valid: true, from: status, to: status });
       expect(warnSpy).not.toHaveBeenCalled();
@@ -148,26 +138,24 @@ describe('StateTransitions', () => {
     });
   });
 
-  // ── entityId truncation in warnings ───────────────────────────────────
+  // ── entityId truncation in error messages ─────────────────────────────
 
   describe('entityId truncation', () => {
-    it('truncates entityId to 8 chars in warning messages', () => {
+    it('truncates entityId to 8 chars in error messages', () => {
       const longId = 'abcdef12-3456-7890-abcd-ef1234567890';
-      validateTransition('job', 'done', 'running', longId);
-      expect(warnSpy).toHaveBeenCalledOnce();
-      expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining('(abcdef12)'),
+      expect(() => validateTransition('job', 'done', 'running', longId)).toThrow(
+        '(abcdef12)',
       );
       // Should NOT contain the full ID
-      const msg = warnSpy.mock.calls[0][0] as string;
-      expect(msg).not.toContain(longId);
+      let thrownMessage = '';
+      try { validateTransition('job', 'done', 'running', longId); } catch (e) { thrownMessage = (e as Error).message; }
+      expect(thrownMessage).not.toContain(longId);
     });
 
     it('omits entityId parenthetical when not provided', () => {
-      validateTransition('job', 'done', 'running');
-      expect(warnSpy).toHaveBeenCalledOnce();
-      const msg = warnSpy.mock.calls[0][0] as string;
-      expect(msg).not.toContain('(');
+      let thrownMessage = '';
+      try { validateTransition('job', 'done', 'running'); } catch (e) { thrownMessage = (e as Error).message; }
+      expect(thrownMessage).not.toContain('(');
     });
   });
 });

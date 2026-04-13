@@ -27,11 +27,16 @@ export function getReviewsForJob(parentJobId: string): Review[] {
   return rows.map((r: any) => cast<Review>(r));
 }
 
+const REVIEW_UPDATE_ALLOWED_FIELDS = new Set(['reviewer_job_id', 'verdict', 'summary', 'completed_at']);
+
 export function updateReview(id: string, fields: Partial<Pick<Review, 'reviewer_job_id' | 'verdict' | 'summary' | 'completed_at'>>): void {
   const db = getDb();
   const sets: string[] = [];
   const values: unknown[] = [];
   for (const [k, v] of Object.entries(fields)) {
+    if (!REVIEW_UPDATE_ALLOWED_FIELDS.has(k)) {
+      throw new Error(`Field '${k}' is not allowed for updateReview`);
+    }
     sets.push(`${k} = ?`);
     values.push(v);
   }
@@ -121,11 +126,16 @@ export function listWorkflows(): Workflow[] {
   return rows.map((r: any) => cast<Workflow>(r));
 }
 
-export function updateWorkflow(id: string, fields: Partial<Pick<Workflow, 'current_cycle' | 'current_phase' | 'status' | 'milestones_total' | 'milestones_done' | 'worktree_path' | 'worktree_branch' | 'blocked_reason' | 'pr_url' | 'stop_mode_assess' | 'stop_value_assess' | 'stop_mode_review' | 'stop_value_review' | 'stop_mode_implement' | 'stop_value_implement'>>): Workflow | null {
+const WORKFLOW_UPDATE_ALLOWED_FIELDS = new Set(['title', 'task', 'work_dir', 'implementer_model', 'reviewer_model', 'max_cycles', 'current_cycle', 'current_phase', 'status', 'milestones_total', 'milestones_done', 'project_id', 'max_turns_assess', 'max_turns_review', 'max_turns_implement', 'stop_mode_assess', 'stop_value_assess', 'stop_mode_review', 'stop_value_review', 'stop_mode_implement', 'stop_value_implement', 'template_id', 'use_worktree', 'worktree_path', 'worktree_branch', 'blocked_reason', 'pr_url', 'completion_threshold', 'start_command', 'max_verify_retries']);
+
+export function updateWorkflow(id: string, fields: Partial<Pick<Workflow, 'title' | 'task' | 'work_dir' | 'implementer_model' | 'reviewer_model' | 'max_cycles' | 'current_cycle' | 'current_phase' | 'status' | 'milestones_total' | 'milestones_done' | 'project_id' | 'max_turns_assess' | 'max_turns_review' | 'max_turns_implement' | 'stop_mode_assess' | 'stop_value_assess' | 'stop_mode_review' | 'stop_value_review' | 'stop_mode_implement' | 'stop_value_implement' | 'template_id' | 'use_worktree' | 'worktree_path' | 'worktree_branch' | 'blocked_reason' | 'pr_url' | 'completion_threshold' | 'start_command' | 'max_verify_retries'>>): Workflow | null {
   const db = getDb();
   const sets: string[] = ['updated_at = ?'];
   const values: unknown[] = [Date.now()];
   for (const [k, v] of Object.entries(fields)) {
+    if (!WORKFLOW_UPDATE_ALLOWED_FIELDS.has(k)) {
+      throw new Error(`Field '${k}' is not allowed for updateWorkflow`);
+    }
     sets.push(`${k} = ?`);
     values.push(v);
   }

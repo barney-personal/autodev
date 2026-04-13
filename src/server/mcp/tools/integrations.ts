@@ -136,17 +136,44 @@ export const queryDbSchema = z.object({
   database: z.string().optional().describe('Database name (default: web)'),
 });
 
+/**
+ * Validates a SQL string for safe read-only use.
+ * Returns null if valid, or an error message string if invalid.
+ * Exported for testing.
+ */
+export function validateQueryDbSql(sql: string): string | null {
+  // SECURITY: Check for semicolons on the ORIGINAL input BEFORE stripping comments.
+  // Comment stripping can remove content inside SQL string literals (e.g. '--'),
+  // which would hide semicolons from the post-strip check. For example:
+  //   SELECT '--'; DELETE FROM users
+  // After stripping, the "--'"; DELETE... part disappears, leaving just "SELECT "
+  // with no semicolons. Checking the original input first prevents this bypass.
+  if (sql.includes(';')) {
+    return 'Semicolons are not allowed in queries (prevents statement chaining).';
+  }
+
+  // Strip single-line comments (-- to end of line)
+  let stripped = sql.replace(/--[^\n]*/g, '');
+  // Strip block comments (/* ... */)
+  stripped = stripped.replace(/\/\*[\s\S]*?\*\//g, '');
+  stripped = stripped.trim();
+
+  // Require statement to start with SELECT (whitelist approach)
+  if (!/^SELECT\b/i.test(stripped)) {
+    return 'Only SELECT statements are allowed. This tool is read-only.';
+  }
+
+  return null;
+}
+
 export async function queryDbHandler(_agentId: string, input: z.infer<typeof queryDbSchema>): Promise<string> {
   const scriptsPath = getConfig('scriptsPath');
   if (!scriptsPath) return JSON.stringify({ error: 'scriptsPath not configured. Set it in Eye > Configure.' });
 
-  // Safety: reject obviously dangerous queries
-  const upper = input.sql.toUpperCase().trim();
-  const forbidden = ['INSERT ', 'UPDATE ', 'DELETE ', 'DROP ', 'ALTER ', 'TRUNCATE ', 'CREATE ', 'GRANT ', 'REVOKE '];
-  for (const kw of forbidden) {
-    if (upper.startsWith(kw) || upper.includes(` ${kw}`)) {
-      return JSON.stringify({ error: `Write operations are not allowed. This tool is read-only. Blocked keyword: ${kw.trim()}` });
-    }
+  // Safety: enforce SELECT-only whitelist (strip comments first, reject semicolons)
+  const validationError = validateQueryDbSql(input.sql);
+  if (validationError) {
+    return JSON.stringify({ error: `Write operations are not allowed. This tool is read-only. ${validationError}` });
   }
 
   const env = input.env ?? 'dev';

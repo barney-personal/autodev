@@ -1,4 +1,4 @@
-import { getDb } from './database.js';
+import { getDb, withTransaction } from './database.js';
 import { getJobById } from './jobQueries.js';
 import { getAgentById } from './agentQueries.js';
 import type { Agent, AgentOutput, AgentOutputSegment, SearchResult } from '../../shared/types.js';
@@ -398,33 +398,35 @@ export function pruneOldAgentOutput(maxAgeMs: number = 24 * 60 * 60 * 1000, keep
   const db = getDb();
   const cutoff = Date.now() - maxAgeMs;
 
-  // Find agents that finished before the cutoff and have output rows beyond keepTail
-  const candidates = db.prepare(`
-    SELECT a.id as agent_id, COUNT(o.id) as output_count
-    FROM agents a
-    JOIN agent_output o ON o.agent_id = a.id
-    WHERE a.status IN ('done', 'failed', 'cancelled')
-      AND a.finished_at IS NOT NULL
-      AND a.finished_at < ?
-    GROUP BY a.id
-    HAVING output_count > ?
-  `).all(cutoff, keepTail) as Array<{ agent_id: string; output_count: number }>;
+  return withTransaction(() => {
+    // Find agents that finished before the cutoff and have output rows beyond keepTail
+    const candidates = db.prepare(`
+      SELECT a.id as agent_id, COUNT(o.id) as output_count
+      FROM agents a
+      JOIN agent_output o ON o.agent_id = a.id
+      WHERE a.status IN ('done', 'failed', 'cancelled')
+        AND a.finished_at IS NOT NULL
+        AND a.finished_at < ?
+      GROUP BY a.id
+      HAVING output_count > ?
+    `).all(cutoff, keepTail) as Array<{ agent_id: string; output_count: number }>;
 
-  let totalDeleted = 0;
-  for (const { agent_id, output_count } of candidates) {
-    const deleteCount = output_count - keepTail;
-    // Delete the oldest rows (lowest seq values) beyond the tail
-    const result = db.prepare(`
-      DELETE FROM agent_output
-      WHERE id IN (
-        SELECT id FROM agent_output
-        WHERE agent_id = ?
-        ORDER BY seq ASC
-        LIMIT ?
-      )
-    `).run(agent_id, deleteCount);
-    totalDeleted += result.changes;
-  }
+    let totalDeleted = 0;
+    for (const { agent_id, output_count } of candidates) {
+      const deleteCount = output_count - keepTail;
+      // Delete the oldest rows (lowest seq values) beyond the tail
+      const result = db.prepare(`
+        DELETE FROM agent_output
+        WHERE id IN (
+          SELECT id FROM agent_output
+          WHERE agent_id = ?
+          ORDER BY seq ASC
+          LIMIT ?
+        )
+      `).run(agent_id, deleteCount);
+      totalDeleted += result.changes;
+    }
 
-  return totalDeleted;
+    return totalDeleted;
+  });
 }

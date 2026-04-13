@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 import { existsSync, statSync } from 'fs';
 import path from 'path';
 import { captureWithContext, Sentry } from '../instrument.js';
@@ -34,6 +34,16 @@ export type { WriteNoteDiagnostic } from './WorkflowBlockedDiagnostics.js';
 // ─── Module-level state ────────────────────────────────────────────────────
 
 const _processedJobs = new Set<string>();
+const _reconciledJobIds = new Map<string, number>();
+const RECONCILED_JOB_WINDOW_MS = 60_000;
+
+function pruneReconciledJobIds(now: number): void {
+  for (const [jobId, reconciledAt] of _reconciledJobIds) {
+    if (now - reconciledAt >= RECONCILED_JOB_WINDOW_MS) {
+      _reconciledJobIds.delete(jobId);
+    }
+  }
+}
 
 // ─── Core Lifecycle ─────────────────────────────────────────────────────────
 
@@ -829,6 +839,8 @@ function getWorkflowFallbackModel(workflow: Workflow, phase: WorkflowPhase, curr
 
 export function reconcileRunningWorkflows(): void {
   const ACTIVE = new Set(['queued', 'assigned', 'running']);
+  const now = Date.now();
+  pruneReconciledJobIds(now);
   for (const workflow of queries.listWorkflows()) {
     if (workflow.status !== 'running') continue;
 
@@ -867,6 +879,12 @@ export function reconcileRunningWorkflows(): void {
     }
 
     if (latestPhaseJob.status === 'done' || latestPhaseJob.status === 'failed' || latestPhaseJob.status === 'cancelled') {
+      const lastReconciledAt = _reconciledJobIds.get(latestPhaseJob.id);
+      if (lastReconciledAt !== undefined && now - lastReconciledAt < RECONCILED_JOB_WINDOW_MS) {
+        continue;
+      }
+      _reconciledJobIds.set(latestPhaseJob.id, now);
+
       const before = queries.getWorkflowById(workflow.id);
       onJobCompleted(latestPhaseJob, { force: true });
       const after = queries.getWorkflowById(workflow.id);
@@ -957,7 +975,27 @@ export function resumeWorkflow(workflow: Workflow, options: { phase?: WorkflowPh
     if (!healthCheck.ok) throw new Error(`Worktree health check failed before resuming: ${healthCheck.error}`);
   }
 
-  if (current.use_worktree && getMissingRequiredWorktreeFields(current).length > 0 && current.work_dir) {
+  // Lighter rehydration: if worktree_path exists on disk but worktree_branch is missing,
+  // just rehydrate the branch metadata without recreating the entire worktree.
+  // IMPORTANT: Verify the directory is actually a valid git worktree, not just any directory.
+  if (current.use_worktree && current.worktree_path && !current.worktree_branch && existsSync(current.worktree_path)) {
+    let isValidWorktree = false;
+    try {
+      execFileSync('git', ['-C', current.worktree_path, 'rev-parse', '--is-inside-work-tree'], { stdio: 'pipe', timeout: 5000 });
+      isValidWorktree = true;
+    } catch {
+      console.log(`[workflow ${current.id}] worktree_path exists but is not a valid git worktree -- restoring`);
+    }
+    if (isValidWorktree) {
+      const expected = getExpectedWorkflowWorktree(current);
+      if (expected) {
+        queries.updateWorkflow(current.id, { worktree_branch: expected.worktree_branch });
+        console.log(`[workflow ${current.id}] rehydrated worktree branch ${expected.worktree_branch} for existing worktree`);
+      }
+    } else if (current.work_dir) {
+      restoreWorkflowWorktree(current);
+    }
+  } else if (current.use_worktree && getMissingRequiredWorktreeFields(current).length > 0 && current.work_dir) {
     restoreWorkflowWorktree(current);
   }
 
@@ -1029,6 +1067,7 @@ export async function reconcileBlockedPRs(): Promise<void> {
 
 export function _resetForTest(): void {
   _processedJobs.clear();
+  _reconciledJobIds.clear();
 }
 
 // Test-only export so unit tests can verify classification of nested/prefixed
@@ -1068,7 +1107,11 @@ function updateAndEmit(id: string, fields: Parameters<typeof queries.updateWorkf
   if (fields.status) {
     const current = queries.getWorkflowById(id);
     previousStatus = current?.status;
-    validateTransition('workflow', previousStatus, fields.status, id);
+    try {
+      validateTransition('workflow', previousStatus, fields.status, id);
+    } catch (err) {
+      console.warn((err as Error).message);
+    }
   }
   const updated = queries.updateWorkflow(id, fields);
   if (!updated) {

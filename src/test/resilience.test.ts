@@ -741,6 +741,39 @@ describe('Failure classification', () => {
   });
 });
 
+describe('classifyJobFailure tail scan depth', () => {
+  beforeEach(async () => { await setupTestDb(); });
+  afterEach(async () => { await cleanupTestDb(); });
+
+  it('detects rate-limit error at line 51 from end (previously missed with limit=50)', async () => {
+    const queries = await import('../server/db/queries.js');
+    const { classifyJobFailure, _resetWarnedUnclassifiedForTest } = await import('../server/orchestrator/FailureClassifier.js');
+    _resetWarnedUnclassifiedForTest();
+
+    // Insert a job and agent with no error_message (so transcript scan is triggered)
+    queries.insertJob({ id: 'tail-job', title: 'test', description: 'test', context: null, priority: 0 });
+    queries.insertAgent({ id: 'tail-agent', job_id: 'tail-job', status: 'failed' });
+
+    // Insert 60 rows of output. The rate-limit error is at seq=9 (10th from start),
+    // which is the 51st row from the END of 60 total rows.
+    // With limit=50, getAgentOutput returns rows 10-59 (last 50), missing seq 9.
+    // With limit=200, getAgentOutput returns all 60 rows, including seq 9.
+    const now = Date.now();
+    for (let i = 0; i < 60; i++) {
+      queries.insertAgentOutput({
+        agent_id: 'tail-agent',
+        seq: i,
+        event_type: 'assistant',
+        content: i === 9 ? 'rate_limit_error: too many requests' : `normal output line ${i}`,
+        created_at: now + i,
+      });
+    }
+
+    const result = classifyJobFailure('tail-job');
+    expect(result).toBe('rate_limit');
+  });
+});
+
 describe('DB integrity on init', () => {
   it('resets stale assigned jobs back to queued', async () => {
     const { initDb, closeDb } = await import('../server/db/database.js');

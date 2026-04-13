@@ -72,11 +72,16 @@ export function searchKB(query: string, projectId?: string, limit = 20): Array<K
   }
 }
 
+const KBENTRY_UPDATE_ALLOWED_FIELDS = new Set(['title', 'content', 'tags']);
+
 export function updateKBEntry(id: string, fields: Partial<Pick<KBEntry, 'title' | 'content' | 'tags'>>): KBEntry | null {
   const db = getDb();
   const sets: string[] = ['updated_at = ?'];
   const values: unknown[] = [Date.now()];
   for (const [k, v] of Object.entries(fields)) {
+    if (!KBENTRY_UPDATE_ALLOWED_FIELDS.has(k)) {
+      throw new Error(`Field '${k}' is not allowed for updateKBEntry`);
+    }
     sets.push(`${k} = ?`);
     values.push(v);
   }

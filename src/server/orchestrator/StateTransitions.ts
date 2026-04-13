@@ -38,7 +38,8 @@ const DEBATE_TRANSITIONS: Record<DebateStatus, readonly DebateStatus[]> = {
 /**
  * Validate a status transition for a given entity type.
  * Returns whether the transition is legal according to the transition map.
- * Logs a console.warn on illegal transitions — NEVER throws.
+ * Throws an Error for illegal transitions — callers should catch and log.
+ * Same-status no-ops return { valid: true } without throwing.
  */
 export function validateTransition(
   entity: 'job' | 'workflow' | 'debate',
@@ -63,13 +64,12 @@ export function validateTransition(
 
   const allowed = map[from as keyof typeof map];
   if (!allowed) {
-    console.warn(`[state-transition] unknown ${entity} status '${from}' → '${to}'${entityId ? ` (${entityId.slice(0, 8)})` : ''}`);
-    return { valid: false, from, to };
+    throw new Error(`[state-transition] unknown ${entity} status '${from}' → '${to}'${entityId ? ` (${entityId.slice(0, 8)})` : ''}`);
   }
 
   const valid = (allowed as readonly string[]).includes(to);
   if (!valid) {
-    console.warn(`[state-transition] illegal ${entity} transition '${from}' → '${to}'${entityId ? ` (${entityId.slice(0, 8)})` : ''}`);
+    throw new Error(`[state-transition] illegal ${entity} transition '${from}' → '${to}'${entityId ? ` (${entityId.slice(0, 8)})` : ''}`);
   }
 
   return { valid, from, to };

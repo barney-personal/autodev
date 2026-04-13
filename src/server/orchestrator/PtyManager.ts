@@ -46,10 +46,13 @@ export type { StartInteractiveOptions } from './AgentSpawner.js';
 export {
   resolveStandalonePrintJobOutcome,
   reportStandaloneResolutionFailure,
+  finalizeStandalonePrintJob,
   _statusFromNdjsonForTest,
   _checkCommitsSinceForTest,
   _seedStandaloneExitPollForTest,
   _resolveStandalonePrintJobOutcomeForTest,
+  _isFinalizingForTest,
+  _resetJobFinalizerStateForTest,
 } from './JobFinalizer.js';
 
 // ── PtyDiskLogger: log files, snapshots, FD management ─────────────────────

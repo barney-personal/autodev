@@ -657,3 +657,82 @@ describe('PtyManager stale-session cleanup skips monitored standalone jobs', () 
     expect(killCalls[0]?.[1]).toEqual(['kill-session', '-t', 'orchestrator-orphan-agent']);
   });
 });
+
+describe('JobFinalizer finalization mutex', () => {
+  beforeEach(async () => {
+    await setupTestDb();
+    vi.clearAllMocks();
+  });
+
+  afterEach(async () => {
+    const { _resetJobFinalizerStateForTest } = await import('../server/orchestrator/JobFinalizer.js');
+    _resetJobFinalizerStateForTest();
+    const { _resetPtyManagerStateForTest } = await import('../server/orchestrator/PtyManager.js');
+    _resetPtyManagerStateForTest();
+    await cleanupTestDb();
+  });
+
+  it('prevents concurrent calls to finalizeStandalonePrintJob', async () => {
+    const queries = await import('../server/db/queries.js');
+    const { finalizeStandalonePrintJob } = await import('../server/orchestrator/JobFinalizer.js');
+
+    const job = queries.insertJob({
+      id: 'concurrent-finalize-job',
+      title: 'Test concurrent finalize',
+      description: 'test',
+      context: null,
+      priority: 0,
+      status: 'running',
+      is_interactive: 0,
+      work_dir: null,
+    });
+    const agentId = 'concurrent-finalize-agent';
+    queries.insertAgent({ id: agentId, job_id: job.id, status: 'running' });
+
+    // Mock handleJobCompletion to ensure it's only called once
+    const handleJobCompletionCalls: unknown[] = [];
+    vi.mocked(handleJobCompletionMock).mockImplementation(async (...args) => {
+      handleJobCompletionCalls.push(args);
+    });
+
+    const removeAgentState = vi.fn();
+
+    // Call finalizeStandalonePrintJob twice concurrently
+    await Promise.all([
+      finalizeStandalonePrintJob(agentId, job as any, 'test-trigger-1', { removeAgentState }),
+      finalizeStandalonePrintJob(agentId, job as any, 'test-trigger-2', { removeAgentState }),
+    ]);
+
+    // Verify handleJobCompletion was called exactly once (not twice)
+    expect(handleJobCompletionCalls).toHaveLength(1);
+  });
+
+  it('clears finalization flag after completion', async () => {
+    const queries = await import('../server/db/queries.js');
+    const { finalizeStandalonePrintJob, _isFinalizingForTest } = await import('../server/orchestrator/JobFinalizer.js');
+
+    const job = queries.insertJob({
+      id: 'finalize-flag-clear-job',
+      title: 'Test flag clearing',
+      description: 'test',
+      context: null,
+      priority: 0,
+      status: 'running',
+      is_interactive: 0,
+      work_dir: null,
+    });
+    const agentId = 'finalize-flag-clear-agent';
+    queries.insertAgent({ id: agentId, job_id: job.id, status: 'running' });
+
+    // Verify flag is not set before finalization
+    expect(_isFinalizingForTest(agentId)).toBe(false);
+
+    const removeAgentState = vi.fn();
+
+    // Call finalizeStandalonePrintJob
+    await finalizeStandalonePrintJob(agentId, job as any, 'test-trigger', { removeAgentState });
+
+    // Verify flag is cleared after finalization completes
+    expect(_isFinalizingForTest(agentId)).toBe(false);
+  });
+});
