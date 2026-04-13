@@ -139,24 +139,33 @@ function isStartupToolListNoise(text: string): boolean {
   return identifierChars / text.length >= 0.35;
 }
 
+/**
+ * Match text against all infrastructure failure patterns.
+ * Returns the matched FailureKind, or null if no pattern matches.
+ */
+function matchInfraPatterns(text: string): FailureKind | null {
+  if (LAUNCH_ENVIRONMENT_PATTERNS.some(pattern => pattern.test(text))) return 'launch_environment';
+  if (RATE_LIMIT_PATTERNS.some(pattern => pattern.test(text))) return 'rate_limit';
+  if (PROVIDER_OVERLOAD_PATTERNS.some(pattern => pattern.test(text))) return 'provider_overload';
+  if (PROVIDER_CAPABILITY_PATTERNS.some(pattern => pattern.test(text))) return 'provider_capability';
+  if (PROVIDER_BILLING_PATTERNS.some(pattern => pattern.test(text))) return 'provider_billing';
+  if (AUTH_PATTERNS.some(pattern => pattern.test(text))) return 'auth_failure';
+  if (OOM_PATTERNS.some(pattern => pattern.test(text))) return 'out_of_memory';
+  if (DISK_FULL_PATTERNS.some(pattern => pattern.test(text))) return 'disk_full';
+  if (CONTEXT_OVERFLOW_PATTERNS.some(pattern => pattern.test(text))) return 'context_overflow';
+  if (MCP_DISCONNECT_PATTERNS.some(pattern => pattern.test(text))) return 'mcp_disconnect';
+  if (TIMEOUT_PATTERNS.some(pattern => pattern.test(text))) return 'timeout';
+  if (CODEX_CLI_CRASH_PATTERNS.some(pattern => pattern.test(text))) return 'codex_cli_crash';
+  return null;
+}
+
 export function classifyFailureText(text: string | null | undefined): FailureKind {
   if (!text) return 'unknown';
   const normalized = text.trim();
   if (!normalized) return 'unknown';
 
-  // Check patterns in order of specificity / priority
-  if (LAUNCH_ENVIRONMENT_PATTERNS.some(pattern => pattern.test(normalized))) return 'launch_environment';
-  if (RATE_LIMIT_PATTERNS.some(pattern => pattern.test(normalized))) return 'rate_limit';
-  if (PROVIDER_OVERLOAD_PATTERNS.some(pattern => pattern.test(normalized))) return 'provider_overload';
-  if (PROVIDER_CAPABILITY_PATTERNS.some(pattern => pattern.test(normalized))) return 'provider_capability';
-  if (PROVIDER_BILLING_PATTERNS.some(pattern => pattern.test(normalized))) return 'provider_billing';
-  if (AUTH_PATTERNS.some(pattern => pattern.test(normalized))) return 'auth_failure';
-  if (OOM_PATTERNS.some(pattern => pattern.test(normalized))) return 'out_of_memory';
-  if (DISK_FULL_PATTERNS.some(pattern => pattern.test(normalized))) return 'disk_full';
-  if (CONTEXT_OVERFLOW_PATTERNS.some(pattern => pattern.test(normalized))) return 'context_overflow';
-  if (MCP_DISCONNECT_PATTERNS.some(pattern => pattern.test(normalized))) return 'mcp_disconnect';
-  if (TIMEOUT_PATTERNS.some(pattern => pattern.test(normalized))) return 'timeout';
-  if (CODEX_CLI_CRASH_PATTERNS.some(pattern => pattern.test(normalized))) return 'codex_cli_crash';
+  const matched = matchInfraPatterns(normalized);
+  if (matched) return matched;
 
   if (isSessionStartLifecycleNoise(normalized) || isStartupToolListNoise(normalized)) {
     return 'unknown';
@@ -175,6 +184,23 @@ export function classifyFailureText(text: string | null | undefined): FailureKin
   return 'task_failure';
 }
 
+/**
+ * Classify failure text without logging warnings for unrecognised text.
+ * Used when scanning raw agent transcript output (code, conversation, test
+ * results) which is expected to contain non-error content. Only infrastructure
+ * patterns matter; the SessionStart/tool-list noise filters are intentionally
+ * omitted since those inputs would return 'task_failure' here anyway (both
+ * 'unknown' and 'task_failure' are non-fallback-eligible, so downstream
+ * retry/fallback decisions are identical).
+ */
+export function classifyFailureTextQuietly(text: string | null | undefined): FailureKind {
+  if (!text) return 'unknown';
+  const normalized = text.trim();
+  if (!normalized) return 'unknown';
+
+  return matchInfraPatterns(normalized) ?? 'task_failure';
+}
+
 /** Reset the dedup set — for tests only */
 export function _resetWarnedUnclassifiedForTest(): void {
   _warnedUnclassified.clear();
@@ -184,11 +210,21 @@ export function classifyJobFailure(jobId: string): FailureKind {
   const latestAgent = queries.getAgentsWithJobByJobId(jobId)[0] ?? null;
   if (!latestAgent) return 'unknown';
 
+  // Classify the structured error_message first — this is the reliable signal.
+  const errorResult = classifyFailureText(latestAgent.error_message);
+  // Early-return only for specific infrastructure failures. If error_message is
+  // generic (task_failure) or absent (unknown), scan the transcript too — the
+  // real infrastructure signal may only appear in the agent's output.
+  if (errorResult !== 'unknown' && errorResult !== 'task_failure') return errorResult;
+
   const tail = queries.getAgentOutput(latestAgent.id, 50);
   const transcript = tail.map(row => row.content).join('\n');
-  const combined = [latestAgent.error_message, transcript].filter(Boolean).join('\n');
+  const transcriptResult = classifyFailureTextQuietly(transcript);
 
-  return classifyFailureText(combined);
+  // If transcript found an infrastructure pattern, use it. Otherwise prefer
+  // the error_message classification (task_failure > unknown).
+  if (transcriptResult !== 'task_failure') return transcriptResult;
+  return errorResult === 'unknown' ? transcriptResult : errorResult;
 }
 
 export function isFallbackEligibleFailure(kind: FailureKind): boolean {

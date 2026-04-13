@@ -63,9 +63,11 @@ const _standaloneExitPolls = new Map<string, NodeJS.Timeout>();
 const PTY_BUFFER_MAX = 2000;
 
 // PTY spawn resilience constants
-const MAX_PTY_SESSIONS = Number(process.env.MAX_PTY_SESSIONS ?? 50);
+const MAX_PTY_SESSIONS = Number(process.env.MAX_PTY_SESSIONS ?? 20);
 const PTY_SPAWN_MAX_RETRIES = 3;
 const PTY_SPAWN_BASE_DELAY_MS = 2000;
+
+console.log(`[pty] MAX_PTY_SESSIONS=${MAX_PTY_SESSIONS} (env MAX_PTY_SESSIONS=${process.env.MAX_PTY_SESSIONS ?? 'unset, using default'})`);
 
 // Resource exhaustion backoff — escalates exponentially on repeated PTY failures
 let _resourceBackoffMs = 0;
@@ -88,14 +90,28 @@ function resetResourceBackoff(): void {
 }
 
 function checkPtyResourceAvailability(): { ok: boolean; reason?: string } {
-  const active = _ptys.size;
+  const active = _ptys.size + _spawningAgents.size;
   if (active >= MAX_PTY_SESSIONS) {
-    return { ok: false, reason: `Active PTY sessions (${active}) at limit (${MAX_PTY_SESSIONS})` };
+    return { ok: false, reason: `Active PTY sessions (${_ptys.size} attached + ${_spawningAgents.size} spawning = ${active}) at limit (${MAX_PTY_SESSIONS})` };
   }
 
   // Backoff check — don't spawn if we recently hit resource exhaustion
   if (_resourceBackoffMs > 0 && Date.now() - _lastResourceErrorTime < _resourceBackoffMs) {
     return { ok: false, reason: `Resource backoff active (${Math.ceil((_resourceBackoffMs - (Date.now() - _lastResourceErrorTime)) / 1000)}s remaining)` };
+  }
+
+  // Ground-truth check: count actual tmux sessions to catch leaked sessions
+  // not tracked in _ptys or _spawningAgents
+  try {
+    const out = execFileSync(TMUX, ['list-sessions', '-F', '#{session_name}'], {
+      stdio: 'pipe', timeout: 3000,
+    }).toString();
+    const tmuxCount = out.trim().split('\n').filter(s => s.startsWith('orchestrator-')).length;
+    if (tmuxCount >= MAX_PTY_SESSIONS) {
+      return { ok: false, reason: `Live tmux sessions (${tmuxCount}) at limit (${MAX_PTY_SESSIONS}) — possible session leak` };
+    }
+  } catch {
+    // tmux not running or no sessions — that's fine, proceed
   }
 
   // System-level PTY probe — try to open a PTY to verify the system can allocate one
@@ -1076,6 +1092,7 @@ export async function attachPty(agentId: string, job: Job, cols = 100, rows = 50
   }
 
   if (!isTmuxSessionAlive(agentId)) {
+    _spawningAgents.delete(agentId);
     console.warn(`[pty ${agentId}] tmux session not alive, cannot attach`);
     markJobRunning(job.id);
     queries.updateAgent(agentId, { status: 'done', finished_at: Date.now() });
@@ -1201,6 +1218,7 @@ export async function attachPty(agentId: string, job: Job, cols = 100, rows = 50
       socket.emitPtyClosed(agentId);
 
       if (!isTmuxSessionAlive(agentId)) {
+    _spawningAgents.delete(agentId);
         // If finish_job already ran, the agent is already in a terminal state — don't double-process
         const agentRec = queries.getAgentById(agentId);
         const TERMINAL = ['done', 'failed', 'cancelled'];

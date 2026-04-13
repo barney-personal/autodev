@@ -32,7 +32,7 @@ import { orphanedWaits, disconnectedAgents, hasActiveTransport } from '../mcp/Mc
 import { isAutoExitJob } from '../../shared/types.js';
 import { markModelRateLimited, getFallbackModel, getModelProvider, markProviderRateLimited } from './ModelClassifier.js';
 import { claimRecovery } from './RecoveryLedger.js';
-import { classifyFailureText, isFallbackEligibleFailure, shouldMarkProviderUnavailable } from './FailureClassifier.js';
+import { classifyFailureText, classifyFailureTextQuietly, isFallbackEligibleFailure, shouldMarkProviderUnavailable } from './FailureClassifier.js';
 import { nudgeQueue } from './WorkQueueManager.js';
 import { getJobIfStatus } from './JobLifecycle.js';
 import { parseMilestones, writeBlockedDiagnostic } from './WorkflowManager.js';
@@ -620,7 +620,7 @@ function check(): void {
         ], { encoding: 'utf8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] });
       } catch { continue; }
 
-      const failureKind = classifyFailureText(output);
+      const failureKind = classifyFailureTextQuietly(output);
       if (!isFallbackEligibleFailure(failureKind)) continue;
 
       // Check how long the agent has been stuck (last MCP heartbeat)

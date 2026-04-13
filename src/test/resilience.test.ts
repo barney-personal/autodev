@@ -713,6 +713,32 @@ describe('Failure classification', () => {
     expect(classifyFailureText('')).toBe('unknown');
     expect(classifyFailureText(undefined)).toBe('unknown');
   });
+
+  it('classifyFailureTextQuietly matches infra patterns without warnings', async () => {
+    const { classifyFailureTextQuietly, _resetWarnedUnclassifiedForTest } = await import('../server/orchestrator/FailureClassifier.js');
+    _resetWarnedUnclassifiedForTest();
+
+    expect(classifyFailureTextQuietly('rate_limit_error: too many requests')).toBe('rate_limit');
+    expect(classifyFailureTextQuietly('overloaded_error')).toBe('provider_overload');
+    expect(classifyFailureTextQuietly('ENOSPC: no space left')).toBe('disk_full');
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('classifyFailureTextQuietly returns task_failure without warning for unrecognised text', async () => {
+    const { classifyFailureTextQuietly, _resetWarnedUnclassifiedForTest } = await import('../server/orchestrator/FailureClassifier.js');
+    _resetWarnedUnclassifiedForTest();
+
+    expect(classifyFailureTextQuietly('const x = 42; function foo() { return x; }')).toBe('task_failure');
+    expect(classifyFailureTextQuietly('✓ src/lib/api/queries.test.ts > passes')).toBe('task_failure');
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('classifyFailureTextQuietly returns unknown for null/empty input', async () => {
+    const { classifyFailureTextQuietly } = await import('../server/orchestrator/FailureClassifier.js');
+    expect(classifyFailureTextQuietly(null)).toBe('unknown');
+    expect(classifyFailureTextQuietly('')).toBe('unknown');
+    expect(classifyFailureTextQuietly(undefined)).toBe('unknown');
+  });
 });
 
 describe('DB integrity on init', () => {
