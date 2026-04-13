@@ -1141,6 +1141,8 @@ export async function attachPty(agentId: string, job: Job, cols = 100, rows = 50
       fallback: isAutoExitJob(job) ? 'wait_for_tmux_exit_poll' : 'finalize_if_tmux_gone',
     });
     if (isTmuxSessionAlive(agentId)) {
+      // Clear any prior fallback poll for this agent to avoid orphaned timers
+      stopStandaloneExitPoll(agentId);
       const exitPoll = setInterval(() => {
         if (isTmuxSessionAlive(agentId)) return;
         // stopStandaloneExitPoll is called inside finalizeStandalonePrintJob,

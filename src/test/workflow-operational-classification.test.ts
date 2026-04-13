@@ -24,13 +24,26 @@ describe('isOperationalBlockedReason', () => {
       'Draft PR creation failed — worktree preserved',
       'was cancelled by user',
       'no fallback model available',
-      'model-fallback recovery exhausted',
     ];
     for (const reason of cases) {
       it(`classifies "${reason}" as operational`, () => {
         expect(isOperationalBlockedReason(reason)).toBe(true);
       });
     }
+  });
+
+  describe('model-fallback recovery exhausted — kind-dependent', () => {
+    it('classifies model-fallback exhausted with operational kind as operational', () => {
+      expect(isOperationalBlockedReason(
+        "Phase 'implement' job abcdef12 failed (rate_limit) — model-fallback recovery exhausted",
+      )).toBe(true);
+    });
+
+    it('does NOT classify model-fallback exhausted with non-operational kind as operational', () => {
+      expect(isOperationalBlockedReason(
+        "Phase 'implement' job abcdef12 failed (auth_failure) — model-fallback recovery exhausted",
+      )).toBe(false);
+    });
   });
 
   describe('Phase failed (kind) regex — bare form', () => {

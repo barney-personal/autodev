@@ -984,7 +984,7 @@ export function resumeWorkflow(workflow: Workflow, options: { phase?: WorkflowPh
     if (!healthCheck.ok) throw new Error(`Worktree health check failed before resuming: ${healthCheck.error}`);
   }
 
-  if (current.use_worktree && !current.worktree_path && current.work_dir) {
+  if (current.use_worktree && getMissingRequiredWorktreeFields(current).length > 0 && current.work_dir) {
     restoreWorkflowWorktree(current);
   }
 
@@ -1085,7 +1085,7 @@ export const _isOperationalBlockedReasonForTest = isOperationalBlockedReason;
 const OPERATIONAL_BLOCK_SUBSTRINGS = [
   'Reached max cycles', 'no milestone progress', 'Diminishing returns',
   'PR creation failed', 'Draft PR creation failed', 'was cancelled',
-  'no fallback model available', 'model-fallback recovery exhausted',
+  'no fallback model available',
   'verify_failed',
 ] as const;
 
