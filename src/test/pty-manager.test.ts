@@ -321,6 +321,50 @@ describe('PtyManager spawning state', () => {
     );
   });
 
+  it('reports incomplete_run to Sentry with trigger context when trigger is tmux_session_gone', async () => {
+    const { reportStandaloneResolutionFailure } = await import('../server/orchestrator/PtyManager.js');
+    const { captureWithContext } = await import('../server/instrument.js');
+
+    vi.mocked(captureWithContext).mockClear();
+
+    reportStandaloneResolutionFailure('agent-1', 'job-1', 'PtyManager', {
+      status: 'failed',
+      source: 'incomplete_run',
+      errorMessage: 'Agent session ended before emitting a final result event.',
+      detail: 'terminal evidence collected without final result (3 ndjson events)',
+    }, 'tmux_session_gone');
+
+    expect(captureWithContext).toHaveBeenCalledTimes(1);
+    expect(captureWithContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: expect.stringContaining('Standalone print job failed via incomplete_run'),
+      }),
+      expect.objectContaining({
+        agent_id: 'agent-1',
+        job_id: 'job-1',
+        component: 'PtyManager',
+        resolution_source: 'incomplete_run',
+        resolution_trigger: 'tmux_session_gone',
+      }),
+    );
+  });
+
+  it('suppresses Sentry for incomplete_run when trigger is pty_attach_fallback_poll', async () => {
+    const { reportStandaloneResolutionFailure } = await import('../server/orchestrator/PtyManager.js');
+    const { captureWithContext } = await import('../server/instrument.js');
+
+    vi.mocked(captureWithContext).mockClear();
+
+    reportStandaloneResolutionFailure('agent-1', 'job-1', 'PtyManager', {
+      status: 'failed',
+      source: 'incomplete_run',
+      errorMessage: 'Agent session ended before emitting a final result event.',
+      detail: 'terminal evidence collected without final result (36 ndjson events)',
+    }, 'pty_attach_fallback_poll');
+
+    expect(captureWithContext).not.toHaveBeenCalled();
+  });
+
   it('classifies stderr-only standalone runs as incomplete_run', async () => {
     const queries = await import('../server/db/queries.js');
     const { _resolveStandalonePrintJobOutcomeForTest } = await import('../server/orchestrator/PtyManager.js');

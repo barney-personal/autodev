@@ -531,6 +531,7 @@ export function reportStandaloneResolutionFailure(
   jobId: string,
   component: string,
   resolution: StandalonePrintResolution,
+  trigger?: string,
 ): void {
   if (resolution.status !== 'failed') return;
   if (
@@ -538,6 +539,11 @@ export function reportStandaloneResolutionFailure(
     || resolution.source === 'commits'
     || resolution.source === 'rate_limit'
   ) return;
+
+  // Suppress Sentry noise from PTY-exhaustion: when all PTY attach retries fail,
+  // the fallback poll finalizes the job as incomplete_run — this is expected and
+  // already handled by workflow recovery (infrastructure failure skip).
+  if (resolution.source === 'incomplete_run' && trigger === 'pty_attach_fallback_poll') return;
 
   const message = [
     `Standalone print job failed via ${resolution.source}`,
@@ -550,6 +556,7 @@ export function reportStandaloneResolutionFailure(
     job_id: jobId,
     component,
     resolution_source: resolution.source,
+    ...(trigger && { resolution_trigger: trigger }),
   });
 }
 
@@ -1007,7 +1014,7 @@ async function finalizeStandalonePrintJob(agentId: string, job: Job, trigger: st
 
   const resolution = resolveStandalonePrintJobOutcome(agentId, job);
   logStandalonePrintResolution(agentId, job, trigger, resolution);
-  reportStandaloneResolutionFailure(agentId, job.id, 'PtyManager', resolution);
+  reportStandaloneResolutionFailure(agentId, job.id, 'PtyManager', resolution, trigger);
 
   const updateFields: Parameters<typeof queries.updateAgent>[1] = {
     status: resolution.status,
