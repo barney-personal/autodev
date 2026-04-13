@@ -1,8 +1,8 @@
 /**
  * WorkflowManager spawnPhaseJob worktree safety guard test.
  *
- * Proves that when use_worktree=1 but worktree_path is null, spawnPhaseJob
- * blocks the workflow instead of silently falling back to work_dir.
+ * Proves that phase handoff repairs recoverable worktree metadata gaps before
+ * spawning the next job, while still blocking unrecoverable cases.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
@@ -53,14 +53,19 @@ vi.mock('../server/instrument.js', () => ({
   Sentry: { captureException: vi.fn() },
 }));
 
+const execSyncMock = vi.fn((cmd: string) => {
+  if (typeof cmd === 'string' && cmd.includes('rev-parse --abbrev-ref HEAD')) {
+    return Buffer.from('expected-branch\n');
+  }
+  if (typeof cmd === 'string' && cmd.includes('rev-parse --verify') && cmd.includes('refs/heads/')) {
+    throw new Error('fatal: Needed a single revision');
+  }
+  return Buffer.from('');
+});
+
 vi.mock('child_process', () => ({
   exec: vi.fn(),
-  execSync: vi.fn((cmd: string) => {
-    if (typeof cmd === 'string' && cmd.includes('rev-parse --abbrev-ref HEAD')) {
-      return Buffer.from('expected-branch\n');
-    }
-    return Buffer.from('');
-  }),
+  execSync: (...args: any[]) => execSyncMock(...args),
 }));
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -76,11 +81,10 @@ describe('WorkflowManager: spawnPhaseJob worktree safety guard', () => {
     await cleanupTestDb();
   });
 
-  it('blocks workflow when use_worktree=1 but worktree_path is null', async () => {
+  it('rehydrates missing worktree metadata and spawns the next phase job', async () => {
     const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
     const queries = await import('../server/db/queries.js');
 
-    // Set up a workflow with use_worktree=1 but no worktree_path (simulates DB recovery)
     const project = await insertTestProject();
     const workflow = await insertTestWorkflow({
       project_id: project.id,
@@ -95,8 +99,8 @@ describe('WorkflowManager: spawnPhaseJob worktree safety guard', () => {
     // Verify worktree_path is null
     const before = queries.getWorkflowById(workflow.id);
     expect(before!.worktree_path).toBeNull();
+    expect(before!.worktree_branch).toBeNull();
 
-    // Complete the assess job — this triggers spawnPhaseJob for review
     const job = await insertTestJob({
       workflow_id: workflow.id,
       workflow_cycle: 0,
@@ -105,13 +109,56 @@ describe('WorkflowManager: spawnPhaseJob worktree safety guard', () => {
     });
     onJobCompleted(job);
 
-    // Workflow should be blocked, not running
+    const updated = queries.getWorkflowById(workflow.id);
+    expect(updated!.status).toBe('running');
+    expect(updated!.blocked_reason).toBeNull();
+    expect(updated!.worktree_path).toBeTruthy();
+    expect(updated!.worktree_branch).toBeTruthy();
+    expect(updated!.worktree_branch).toMatch(/^workflow\//);
+
+    const allJobs = queries.listJobs();
+    const reviewJob = allJobs.find(j =>
+      j.workflow_id === workflow.id && j.workflow_phase === 'review'
+    );
+    expect(reviewJob).toBeDefined();
+    expect(reviewJob!.work_dir).toBe(updated!.worktree_path);
+
+    const worktreeAddCalls = execSyncMock.mock.calls.filter(
+      (c: any[]) => typeof c[0] === 'string' && c[0].includes('git worktree add'),
+    );
+    expect(worktreeAddCalls.length).toBeGreaterThan(0);
+  });
+
+  it('blocks workflow when use_worktree=1 but repair cannot run without work_dir', async () => {
+    const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    const queries = await import('../server/db/queries.js');
+
+    const project = await insertTestProject();
+    const workflow = await insertTestWorkflow({
+      project_id: project.id,
+      status: 'running',
+      current_phase: 'assess',
+      current_cycle: 0,
+      use_worktree: 1,
+    });
+    queries.upsertNote(`workflow/${workflow.id}/plan`, '- [ ] M1\n- [ ] M2', null);
+    queries.upsertNote(`workflow/${workflow.id}/contract`, '# contract', null);
+    queries.updateWorkflow(workflow.id, { work_dir: null, worktree_path: null, worktree_branch: null });
+
+    const job = await insertTestJob({
+      workflow_id: workflow.id,
+      workflow_cycle: 0,
+      workflow_phase: 'assess',
+      status: 'done',
+    });
+    onJobCompleted(job);
+
     const updated = queries.getWorkflowById(workflow.id);
     expect(updated!.status).toBe('blocked');
-    expect(updated!.blocked_reason).toContain('Worktree required (use_worktree=1) but worktree_path is null');
-    expect(updated!.blocked_reason).toContain('review');
+    expect(updated!.blocked_reason).toContain('Worktree metadata repair failed before review');
+    expect(updated!.blocked_reason).toContain('worktree_path and worktree_branch');
+    expect(updated!.blocked_reason).toContain('work_dir is unavailable');
 
-    // No review job should have been inserted
     const allJobs = queries.listJobs();
     const reviewJob = allJobs.find(j =>
       j.workflow_id === workflow.id && j.workflow_phase === 'review'
@@ -134,6 +181,7 @@ describe('WorkflowManager: spawnPhaseJob worktree safety guard', () => {
     });
     queries.upsertNote(`workflow/${workflow.id}/plan`, '- [ ] M1\n- [ ] M2', null);
     queries.upsertNote(`workflow/${workflow.id}/contract`, '# contract', null);
+    queries.updateWorkflow(workflow.id, { work_dir: null, worktree_path: null, worktree_branch: null });
 
     const job = await insertTestJob({
       workflow_id: workflow.id,
@@ -253,7 +301,7 @@ describe('WorkflowManager: spawnPhaseJob worktree safety guard', () => {
     expect(Sentry.captureException).not.toHaveBeenCalled();
   });
 
-  it('does NOT call Sentry for "duplicate completion skipped" blocks', async () => {
+  it('does NOT call Sentry for model-fallback recovery exhausted blocks (operational)', async () => {
     const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
     const queries = await import('../server/db/queries.js');
     const { Sentry } = await import('../server/instrument.js');
@@ -273,7 +321,7 @@ describe('WorkflowManager: spawnPhaseJob worktree safety guard', () => {
     queries.upsertNote(`workflow/${workflow.id}/plan`, '- [ ] M1', null);
     queries.upsertNote(`workflow/${workflow.id}/contract`, '# contract', null);
 
-    // Pre-insert the model-fallback recovery note so the code hits the "duplicate completion" path
+    // Pre-insert the model-fallback recovery note so the code hits the exhausted-recovery path
     queries.upsertNote(
       `workflow/${workflow.id}/recovery/review/cycle-1/model-fallback`,
       'fallback=codex,from=claude-sonnet-4-6,failure=rate_limit',
@@ -296,7 +344,9 @@ describe('WorkflowManager: spawnPhaseJob worktree safety guard', () => {
 
     const updated = queries.getWorkflowById(workflow.id);
     expect(updated!.status).toBe('blocked');
-    expect(updated!.blocked_reason).toContain('duplicate completion skipped');
+    // Blocked reason now includes failure kind in phase-failure format for operational classification
+    expect(updated!.blocked_reason).toContain('model-fallback recovery exhausted');
+    expect(updated!.blocked_reason).toContain('rate_limit');
     expect(Sentry.captureException).not.toHaveBeenCalled();
   });
 

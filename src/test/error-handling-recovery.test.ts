@@ -7,6 +7,9 @@
  * (d) startWorkflow socket error isolation: returns job when emitJobNew throws
  * (e) resumeWorkflow socket error isolation: returns job when emitJobNew throws
  * (f) updateAndEmit null-return path: no throw when DB update returns null
+ * (g) Model-fallback stale note: blocks when note exists but no active job remains
+ * (h) CLI-retry stale note: falls through to alt-provider when note exists but no active job
+ * (i) Alt-provider stale note: blocks with phase-failure reason when note exists but no active job
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
@@ -243,6 +246,200 @@ describe('WorkflowManager: recovery idempotency (Fix-M4b)', () => {
     // Workflow still running — duplicate returned early
     const wf = queries.getWorkflowById(workflow.id);
     expect(wf!.status).toBe('running');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Suite 1b: Stale-note / no-active-job regressions (validates M3 fix)
+//
+// When a recovery note exists but the recovery job has already failed and no
+// active job remains, handleFailedJob must NOT silently return. It must either
+// continue to the next recovery option or block the workflow.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('WorkflowManager: stale recovery note regressions (M3)', () => {
+  beforeEach(async () => {
+    await setupTestDb();
+    await resetManagerState();
+    vi.clearAllMocks();
+  });
+
+  afterEach(async () => {
+    await cleanupTestDb();
+  });
+
+  it('(g) model-fallback stale note: blocks with exhausted reason when no active job remains', async () => {
+    const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    const queries = await import('../server/db/queries.js');
+    const { isFallbackEligibleFailure, classifyJobFailure } = await import('../server/orchestrator/FailureClassifier.js');
+    const { getAvailableModel, getFallbackModel } = await import('../server/orchestrator/ModelClassifier.js');
+
+    vi.mocked(isFallbackEligibleFailure).mockReturnValue(true);
+    vi.mocked(classifyJobFailure).mockReturnValue('rate_limit');
+    vi.mocked(getAvailableModel).mockImplementation((m: string) =>
+      m === 'claude-sonnet-4-6' ? 'codex' : m
+    );
+    vi.mocked(getFallbackModel).mockReturnValue('codex');
+
+    const project = await insertTestProject();
+    const workflow = await insertTestWorkflow({
+      project_id: project.id,
+      status: 'running',
+      current_phase: 'implement',
+      current_cycle: 1,
+      implementer_model: 'claude-sonnet-4-6',
+    });
+    queries.upsertNote(`workflow/${workflow.id}/plan`, '- [ ] M1', null);
+    queries.upsertNote(`workflow/${workflow.id}/contract`, '# contract', null);
+
+    // Pre-plant the idempotency note (simulating a recovery that was already attempted)
+    queries.upsertNote(
+      `workflow/${workflow.id}/recovery/implement/cycle-1/model-fallback`,
+      'fallback=codex,from=claude-sonnet-4-6,failure=rate_limit',
+      null,
+    );
+
+    // The original failed job — no other active jobs exist for this workflow
+    const failedJob = await insertTestJob({
+      id: 'stale-fb-job-1',
+      workflow_id: workflow.id,
+      workflow_cycle: 1,
+      workflow_phase: 'implement',
+      status: 'failed',
+      model: 'claude-sonnet-4-6',
+    });
+
+    onJobCompleted(failedJob, { force: true });
+
+    // The workflow must be BLOCKED (not silently stuck in running)
+    const wf = queries.getWorkflowById(workflow.id);
+    expect(wf!.status).toBe('blocked');
+    // The blocked reason must include the phase-failure fragment for operational classification
+    expect(wf!.blocked_reason).toContain('model-fallback recovery exhausted');
+    expect(wf!.blocked_reason).toContain('rate_limit');
+
+    // No new jobs should have been spawned (recovery is exhausted)
+    const allJobs = queries.listJobs().filter(j => j.workflow_id === workflow.id && j.id !== failedJob.id);
+    expect(allJobs).toHaveLength(0);
+  });
+
+  it('(h) cli-retry stale note: falls through to alt-provider instead of silently returning', async () => {
+    const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    const queries = await import('../server/db/queries.js');
+    const { isFallbackEligibleFailure, isSameModelRetryEligible, classifyJobFailure } = await import('../server/orchestrator/FailureClassifier.js');
+    const { getAvailableModel, getAlternateProviderModel } = await import('../server/orchestrator/ModelClassifier.js');
+
+    // Explicitly disable fallback path so we enter same-model-retry path
+    vi.mocked(isFallbackEligibleFailure).mockReturnValue(false);
+    vi.mocked(isSameModelRetryEligible).mockReturnValue(true);
+    vi.mocked(classifyJobFailure).mockReturnValue('provider_overload');
+    vi.mocked(getAlternateProviderModel).mockReturnValue('codex');
+    vi.mocked(getAvailableModel).mockImplementation((m: string) =>
+      m === 'claude-sonnet-4-6' ? 'codex' : m
+    );
+
+    const project = await insertTestProject();
+    const workflow = await insertTestWorkflow({
+      project_id: project.id,
+      status: 'running',
+      current_phase: 'review',
+      current_cycle: 2,
+      implementer_model: 'claude-sonnet-4-6',
+    });
+    queries.upsertNote(`workflow/${workflow.id}/plan`, '- [ ] M1', null);
+    queries.upsertNote(`workflow/${workflow.id}/contract`, '# contract', null);
+
+    // Set CLI retry count below MAX (attempt 1 of 3) — we're in the retry window
+    queries.upsertNote(`workflow/${workflow.id}/cli-retry/review/cycle-2`, '0', null);
+
+    // Pre-plant the cli-retry-1 idempotency note (simulating a retry that already ran and failed)
+    queries.upsertNote(
+      `workflow/${workflow.id}/recovery/review/cycle-2/cli-retry-1`,
+      'model=claude-sonnet-4-6,failure=provider_overload,attempt=1',
+      null,
+    );
+
+    // The original failed job — no other active jobs exist
+    const failedJob = await insertTestJob({
+      id: 'stale-cli-job-1',
+      workflow_id: workflow.id,
+      workflow_cycle: 2,
+      workflow_phase: 'review',
+      status: 'failed',
+      model: 'claude-sonnet-4-6',
+    });
+
+    onJobCompleted(failedJob, { force: true });
+
+    // Should have fallen through to alt-provider and spawned an alt-provider job
+    const allJobs = queries.listJobs().filter(j => j.workflow_id === workflow.id && j.id !== failedJob.id);
+    expect(allJobs).toHaveLength(1);
+    expect(allJobs[0].model).toBe('codex');
+
+    // Workflow should still be running (recovery succeeded via alt-provider)
+    const wf = queries.getWorkflowById(workflow.id);
+    expect(wf!.status).toBe('running');
+  });
+
+  it('(i) alt-provider stale note: blocks with phase-failure reason when no active job remains', async () => {
+    const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    const queries = await import('../server/db/queries.js');
+    const { isFallbackEligibleFailure, isSameModelRetryEligible, classifyJobFailure } = await import('../server/orchestrator/FailureClassifier.js');
+    const { getAvailableModel, getAlternateProviderModel } = await import('../server/orchestrator/ModelClassifier.js');
+
+    // Explicitly disable fallback path so we enter same-model-retry path
+    vi.mocked(isFallbackEligibleFailure).mockReturnValue(false);
+    vi.mocked(isSameModelRetryEligible).mockReturnValue(true);
+    vi.mocked(classifyJobFailure).mockReturnValue('provider_overload');
+    vi.mocked(getAlternateProviderModel).mockReturnValue('codex');
+    vi.mocked(getAvailableModel).mockImplementation((m: string) =>
+      m === 'claude-sonnet-4-6' ? 'codex' : m
+    );
+
+    const project = await insertTestProject();
+    const workflow = await insertTestWorkflow({
+      project_id: project.id,
+      status: 'running',
+      current_phase: 'implement',
+      current_cycle: 1,
+      implementer_model: 'claude-sonnet-4-6',
+    });
+    queries.upsertNote(`workflow/${workflow.id}/plan`, '- [ ] M1', null);
+    queries.upsertNote(`workflow/${workflow.id}/contract`, '# contract', null);
+
+    // Set CLI retry count to MAX (3) so we skip straight to alt-provider
+    queries.upsertNote(`workflow/${workflow.id}/cli-retry/implement/cycle-1`, '3', null);
+
+    // Pre-plant the alt-provider idempotency note (simulating alt-provider already ran and failed)
+    queries.upsertNote(
+      `workflow/${workflow.id}/recovery/implement/cycle-1/alt-provider`,
+      'alt=codex,from=claude-sonnet-4-6,failure=provider_overload',
+      null,
+    );
+
+    // The original failed job — no other active jobs exist
+    const failedJob = await insertTestJob({
+      id: 'stale-alt-job-1',
+      workflow_id: workflow.id,
+      workflow_cycle: 1,
+      workflow_phase: 'implement',
+      status: 'failed',
+      model: 'claude-sonnet-4-6',
+    });
+
+    onJobCompleted(failedJob, { force: true });
+
+    // The workflow must be BLOCKED (not silently stuck in running)
+    const wf = queries.getWorkflowById(workflow.id);
+    expect(wf!.status).toBe('blocked');
+    // The blocked reason must contain the standard phase-failure fragment
+    expect(wf!.blocked_reason).toContain("Phase 'implement'");
+    expect(wf!.blocked_reason).toContain('failed');
+    expect(wf!.blocked_reason).toContain('provider_overload');
+
+    // No new jobs should have been spawned (all recovery options exhausted)
+    const allJobs = queries.listJobs().filter(j => j.workflow_id === workflow.id && j.id !== failedJob.id);
+    expect(allJobs).toHaveLength(0);
   });
 });
 

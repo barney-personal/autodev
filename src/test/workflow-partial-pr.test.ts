@@ -1297,7 +1297,7 @@ describe('finalizeWorkflow: Sentry gating on PR failure blocks', () => {
     const queries = await import('../server/db/queries.js');
     const { Sentry } = await import('../server/instrument.js');
 
-    // Worktree guard: use_worktree=1 but worktree_path is null → non-operational block
+    // Unrecoverable worktree repair: metadata is missing and work_dir is unavailable.
     const project = await insertTestProject();
     const workflow = await insertTestWorkflow({
       project_id: project.id,
@@ -1308,6 +1308,7 @@ describe('finalizeWorkflow: Sentry gating on PR failure blocks', () => {
     });
     queries.upsertNote(`workflow/${workflow.id}/plan`, '- [ ] M1\n- [ ] M2', null);
     queries.upsertNote(`workflow/${workflow.id}/contract`, '# contract', null);
+    queries.updateWorkflow(workflow.id, { work_dir: null, worktree_path: null, worktree_branch: null });
 
     const job = await insertTestJob({
       workflow_id: workflow.id,
@@ -1317,10 +1318,11 @@ describe('finalizeWorkflow: Sentry gating on PR failure blocks', () => {
     });
     onJobCompleted(job);
 
-    // Workflow must be blocked (worktree guard fired)
+    // Workflow must be blocked (repair path could not proceed)
     const updated = queries.getWorkflowById(workflow.id);
     expect(updated!.status).toBe('blocked');
-    expect(updated!.blocked_reason).toContain('worktree_path is null');
+    expect(updated!.blocked_reason).toContain('Worktree metadata repair failed before review');
+    expect(updated!.blocked_reason).toContain('work_dir is unavailable');
 
     // Non-operational block → Sentry MUST fire
     expect(Sentry.captureException).toHaveBeenCalled();

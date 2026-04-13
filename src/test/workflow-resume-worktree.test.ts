@@ -189,13 +189,13 @@ describe('WorkflowManager: resumeWorkflow worktree restoration', () => {
     queries.updateWorkflow(workflow.id, { work_dir: null, worktree_path: null, worktree_branch: null });
 
     expect(() => resumeWorkflow(workflow)).toThrow(
-      'Worktree required (use_worktree=1) but worktree_path is null',
+      'Worktree required (use_worktree=1) but worktree_path and worktree_branch are null',
     );
 
     const after = queries.getWorkflowById(workflow.id);
     expect(after!.status).toBe('blocked');
     expect(after!.worktree_path).toBeNull();
-    expect(after!.blocked_reason).toContain('Worktree required (use_worktree=1) but worktree_path is null');
+    expect(after!.blocked_reason).toContain('Worktree required (use_worktree=1) but worktree_path and worktree_branch are null');
     expect(after!.blocked_reason).toContain('review');
 
     const allJobs = queries.listJobs();
