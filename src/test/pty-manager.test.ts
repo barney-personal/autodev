@@ -365,6 +365,22 @@ describe('PtyManager spawning state', () => {
     expect(captureWithContext).not.toHaveBeenCalled();
   });
 
+  it('suppresses Sentry for incomplete_run when trigger is pty_attach_exhausted_and_tmux_gone', async () => {
+    const { reportStandaloneResolutionFailure } = await import('../server/orchestrator/PtyManager.js');
+    const { captureWithContext } = await import('../server/instrument.js');
+
+    vi.mocked(captureWithContext).mockClear();
+
+    reportStandaloneResolutionFailure('agent-1', 'job-1', 'PtyManager', {
+      status: 'failed',
+      source: 'incomplete_run',
+      errorMessage: 'Agent session ended before emitting a final result event.',
+      detail: 'terminal evidence collected without final result (60 ndjson events)',
+    }, 'pty_attach_exhausted_and_tmux_gone');
+
+    expect(captureWithContext).not.toHaveBeenCalled();
+  });
+
   it('classifies stderr-only standalone runs as incomplete_run', async () => {
     const queries = await import('../server/db/queries.js');
     const { _resolveStandalonePrintJobOutcomeForTest } = await import('../server/orchestrator/PtyManager.js');

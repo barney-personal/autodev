@@ -6,7 +6,8 @@ import * as path from 'path';
 import { captureWithContext } from '../instrument.js';
 import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
-import { SYSTEM_PROMPT, HOOK_SETTINGS, handleJobCompletion, cancelledAgents, startTailing, stopTailing, readClaudeMd, buildMemorySection } from './AgentRunner.js';
+import { SYSTEM_PROMPT, HOOK_SETTINGS } from './AgentConfig.js';
+import { handleJobCompletion, cancelledAgents, startTailing, stopTailing, readClaudeMd, buildMemorySection } from './AgentRunner.js';
 import type { Job } from '../../shared/types.js';
 import { isCodexModel, codexModelName, isAutoExitJob } from '../../shared/types.js';
 import { markJobRunning } from './JobLifecycle.js';
@@ -557,9 +558,12 @@ export function reportStandaloneResolutionFailure(
   ) return;
 
   // Suppress Sentry noise from PTY-exhaustion: when all PTY attach retries fail,
-  // the fallback poll finalizes the job as incomplete_run — this is expected and
-  // already handled by workflow recovery (infrastructure failure skip).
-  if (resolution.source === 'incomplete_run' && trigger === 'pty_attach_fallback_poll') return;
+  // the fallback poll or exhaustion handler finalizes the job as incomplete_run —
+  // this is expected and already handled by workflow recovery (infrastructure failure skip).
+  if (
+    resolution.source === 'incomplete_run'
+    && (trigger === 'pty_attach_fallback_poll' || trigger === 'pty_attach_exhausted_and_tmux_gone')
+  ) return;
 
   const message = [
     `Standalone print job failed via ${resolution.source}`,
