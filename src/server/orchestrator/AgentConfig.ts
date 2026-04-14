@@ -134,20 +134,68 @@ export interface RunOptions {
  * Ensure a directory is marked as trusted in Codex's config.toml so the
  * "Do you trust this directory?" prompt doesn't appear. The bypass flag
  * doesn't suppress this prompt in codex v0.115.0+.
+ *
+ * Idempotent + self-healing: if concurrent spawns have previously written
+ * duplicate `[projects."..."]` sections (which cause codex to fail with a
+ * duplicate-key TOML parse error on every subsequent launch), this will
+ * dedupe them on the next call. See issue: concurrent ensureCodexTrusted
+ * calls across parallel workflow phases can race between read-check and
+ * append-write, producing duplicate sections.
  */
 export function ensureCodexTrusted(workDir: string): void {
   const configPath = path.join(process.env.HOME ?? '', '.codex', 'config.toml');
   try {
     let content = '';
     try { content = fs.readFileSync(configPath, 'utf8'); } catch { /* file doesn't exist yet */ }
+
+    // Normalize: ensure trailing newline so the section regex captures the
+    // final section's body even if the file was hand-edited without a
+    // trailing newline. Writers in this function always emit a trailing
+    // newline, so this only matters for externally-edited files.
+    if (content.length > 0 && !content.endsWith('\n')) content += '\n';
+
     const key = `[projects.${JSON.stringify(workDir)}]`;
-    if (content.includes(key)) return; // already trusted
-    const entry = `\n${key}\ntrust_level = "trusted"\n`;
-    fs.mkdirSync(path.dirname(configPath), { recursive: true });
-    fs.appendFileSync(configPath, entry);
+    const sectionRe = buildSectionRegex(key);
+    const matches = [...content.matchAll(sectionRe)];
+
+    if (matches.length === 0) {
+      // Not trusted yet — append a fresh entry.
+      const entry = `\n${key}\ntrust_level = "trusted"\n`;
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+      fs.appendFileSync(configPath, entry);
+      return;
+    }
+
+    if (matches.length === 1) return; // already trusted, single entry
+
+    // Multiple entries — dedupe. Keep the first occurrence, remove the rest.
+    // This self-heals any past race damage on the next call.
+    let deduped = content;
+    for (const m of matches.slice(1).reverse()) {
+      deduped = deduped.slice(0, m.index!) + deduped.slice(m.index! + m[0].length);
+    }
+    // Collapse 3+ consecutive newlines (left over from removal) into 2.
+    deduped = deduped.replace(/\n{3,}/g, '\n\n');
+
+    // Atomic rewrite: write to a sibling temp file, then rename over the
+    // original. `fs.renameSync` is atomic on POSIX, so the config file is
+    // never observed in a half-written state if the process is killed mid-write.
+    const tmpPath = `${configPath}.tmp-${process.pid}`;
+    fs.writeFileSync(tmpPath, deduped);
+    fs.renameSync(tmpPath, configPath);
   } catch (err) {
     console.warn(`[codex] failed to add trust for ${workDir}:`, err);
   }
+}
+
+/**
+ * Build a regex that matches a TOML `[projects."..."]` section: the header
+ * line, all following body lines up to (but excluding) the next `[section]`
+ * header or end-of-file.
+ */
+function buildSectionRegex(key: string): RegExp {
+  const esc = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`\\n?${esc}\\n(?:(?!\\[)[^\\n]*\\n)*`, 'g');
 }
 
 // ── Cancelled agents ─────────────────────────────────────────────────────────
