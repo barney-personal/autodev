@@ -17,19 +17,25 @@ const COMPLEXITY_TO_MODEL: Record<string, string> = {
 
 // ─── Rate Limit Fallback Chain ──────────────────────────────────────────────
 // When a model is rate-limited, fall through to the next available model.
+// Both [1m] and non-[1m] variants of a family are listed so that a job
+// explicitly pinned to either variant has a defined starting index for the
+// fallback loop. Family aliasing (getModelFamily) already shares rate-limit
+// state across variants, so the extra entries are a no-op at lookup time.
 // Codex (GPT-5.4 via OpenAI) is the final fallback — different API provider,
 // so Anthropic rate limits don't affect it.
 const MODEL_FALLBACK_CHAIN: string[] = [
   'claude-opus-4-6[1m]',
+  'claude-opus-4-6',
   'claude-sonnet-4-6[1m]',
   'claude-sonnet-4-6',
   'claude-haiku-4-5-20251001',
   'codex',
 ];
 
-// Canonical model list for the circuit breaker — includes all models that may
-// be dispatched, not just those in the fallback chain (e.g. claude-opus-4-6
-// without the [1m] context window suffix).
+// Canonical model list for the circuit breaker. Kept as a distinct constant
+// (not derived from MODEL_FALLBACK_CHAIN) so that any model that may be
+// dispatched outside the fallback chain — e.g. a classifier-only model — is
+// still tracked by the breaker.
 export const KNOWN_MODELS: readonly string[] = [
   'claude-opus-4-6',
   'claude-opus-4-6[1m]',

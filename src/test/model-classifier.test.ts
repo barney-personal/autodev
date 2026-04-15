@@ -231,3 +231,48 @@ describe('ModelClassifier family-level rate-limit aliasing', () => {
     expect(fallback).toBe('claude-haiku-4-5-20251001');
   });
 });
+
+describe('ModelClassifier explicit non-[1m] opus fallback', () => {
+  beforeEach(async () => {
+    await setupTestDb();
+    const { _resetForTest } = await import('../server/orchestrator/ModelClassifier.js');
+    _resetForTest();
+  });
+
+  afterEach(async () => {
+    await cleanupTestDb();
+  });
+
+  // Real-world motivation: a job may be explicitly pinned to `claude-opus-4-6`
+  // (non-[1m] context window) via job.model. If the opus family then hits a
+  // shared rate limit, we need to gracefully downgrade to sonnet/haiku/codex
+  // rather than return null and bounce the job back through the scheduler.
+  // Regression guard for the case where `claude-opus-4-6` was in KNOWN_MODELS
+  // but absent from MODEL_FALLBACK_CHAIN, making getAvailableModel return null.
+
+  it('returns the requested model when nothing is rate-limited', async () => {
+    const { getAvailableModel } = await import('../server/orchestrator/ModelClassifier.js');
+    expect(getAvailableModel('claude-opus-4-6')).toBe('claude-opus-4-6');
+  });
+
+  it('falls back to sonnet[1m] when opus family is rate-limited', async () => {
+    const { markModelRateLimited, getAvailableModel } = await import(
+      '../server/orchestrator/ModelClassifier.js'
+    );
+
+    // Family aliasing: marking either opus variant limits the whole opus family.
+    markModelRateLimited('claude-opus-4-6[1m]', 60_000);
+
+    expect(getAvailableModel('claude-opus-4-6')).toBe('claude-sonnet-4-6[1m]');
+  });
+
+  it('falls back to codex when all Anthropic models are rate-limited', async () => {
+    const { markProviderRateLimited, getAvailableModel } = await import(
+      '../server/orchestrator/ModelClassifier.js'
+    );
+
+    markProviderRateLimited('anthropic', 60_000);
+
+    expect(getAvailableModel('claude-opus-4-6')).toBe('codex');
+  });
+});
