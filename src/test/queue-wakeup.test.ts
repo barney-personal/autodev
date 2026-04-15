@@ -154,6 +154,80 @@ describe('WorkQueueManager: capacity-aware dispatch', () => {
     const agentNewCalls = vi.mocked(socket.emitAgentNew).mock.calls;
     expect(agentNewCalls.length).toBe(1);
   });
+
+  it('bails when a job is cancelled during the resolveModel await (no resurrect)', async () => {
+    const { _tickForTest, setMaxConcurrent } = await import('../server/orchestrator/WorkQueueManager.js');
+    const { resolveModel } = await import('../server/orchestrator/ModelClassifier.js');
+    const queries = await import('../server/db/queries.js');
+
+    setMaxConcurrent(10);
+
+    const job = await insertTestJob({ title: 'Cancelled Mid-Classify', model: 'claude-sonnet-4-6', work_dir: '/tmp/nonexistent' });
+
+    // Simulate a user calling DELETE /api/jobs/:id while resolveModel is
+    // pending — the cancel endpoint transitions queued → cancelled.
+    vi.mocked(resolveModel).mockImplementationOnce(async () => {
+      queries.updateJobStatus(job.id, 'cancelled');
+      return 'claude-sonnet-4-6';
+    });
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await _tickForTest();
+
+    const fresh = queries.getJobById(job.id);
+    expect(fresh?.status).toBe('cancelled'); // must NOT be 'assigned'
+
+    // And the state-transition validator must not have fired the illegal
+    // cancelled → assigned warning, which would mean we tried anyway.
+    const illegal = warnSpy.mock.calls.filter(args =>
+      String(args[0] ?? '').includes("illegal job transition 'cancelled'"),
+    );
+    expect(illegal).toEqual([]);
+
+    warnSpy.mockRestore();
+  });
+
+  it('does not mark a job "assigned" if its model is unresolvable (no illegal transition)', async () => {
+    const { _tickForTest, setMaxConcurrent } = await import('../server/orchestrator/WorkQueueManager.js');
+    const { resolveModel } = await import('../server/orchestrator/ModelClassifier.js');
+    const queries = await import('../server/db/queries.js');
+
+    setMaxConcurrent(10);
+
+    // Capture the state history for this job by observing every updateJobStatus call.
+    const statusHistory: string[] = [];
+    const origUpdate = queries.updateJobStatus;
+    const updateSpy = vi.spyOn(queries, 'updateJobStatus').mockImplementation((id: string, status: any) => {
+      statusHistory.push(`${id}:${status}`);
+      return origUpdate(id, status);
+    });
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const job = await insertTestJob({ title: 'No Model', model: null, work_dir: '/tmp/nonexistent' });
+    vi.mocked(resolveModel).mockImplementationOnce(async () => null);
+
+    await _tickForTest();
+
+    const statuses = statusHistory.filter(s => s.startsWith(`${job.id}:`)).map(s => s.split(':')[1]);
+
+    // The job must never have been marked 'assigned' — if it was, we'd see the
+    // illegal 'assigned' → 'queued' transition when it got undispatched.
+    expect(statuses).not.toContain('assigned');
+
+    // And the validator must never have complained about an illegal transition for this job.
+    const illegalWarnings = warnSpy.mock.calls.filter(args =>
+      String(args[0] ?? '').includes('[state-transition] illegal'),
+    );
+    expect(illegalWarnings).toEqual([]);
+
+    // Job should still be queued so another tick can pick it up once the model frees up.
+    const fresh = queries.getJobById(job.id);
+    expect(fresh?.status).toBe('queued');
+
+    updateSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
 });
 
 describe('WorkQueueManager: nudgeQueue', () => {

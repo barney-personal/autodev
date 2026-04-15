@@ -165,29 +165,44 @@ async function tick(): Promise<void> {
     const fresh = queries.getJobById(job.id);
     if (!fresh || fresh.status !== 'queued') continue;
 
-    // Mark assigned immediately to prevent double-dispatch across ticks
-    queries.updateJobStatus(job.id, 'assigned');
-    socket.emitJobUpdate(queries.getJobById(job.id)!);
+    // Claim in-process so this same tick's while-loop can't re-grab the job
+    // while resolveModel is awaited. Cross-tick reentrancy is already prevented
+    // by _tickInProgress. The DB 'assigned' transition is deferred until after
+    // resolveModel succeeds, so a null-model outcome leaves the job in 'queued'
+    // rather than producing an illegal 'assigned' → 'queued' transition.
     _classifying.add(job.id);
 
     // Hoist agentId so the catch block can clean up the agent row on failure
     let agentId: string | null = null;
     try {
       // Classify & resolve model (no-op if user already picked one)
-      const model = await resolveModel(job);
+      const model = await resolveModel(fresh);
       if (model == null) {
-        log.warn({ jobId: job.id, cooldownSec: Math.round(PROVIDER_PAUSE_RETRY_MS / 1000) }, 'no model — cooling');
-        queries.updateJobStatus(job.id, 'queued');
-        queries.updateJobScheduledAt(job.id, Date.now() + PROVIDER_PAUSE_RETRY_MS);
-        socket.emitJobUpdate(queries.getJobById(job.id)!);
+        log.warn({ jobId: fresh.id, cooldownSec: Math.round(PROVIDER_PAUSE_RETRY_MS / 1000) }, 'no model — cooling');
+        queries.updateJobScheduledAt(fresh.id, Date.now() + PROVIDER_PAUSE_RETRY_MS);
+        socket.emitJobUpdate(queries.getJobById(fresh.id)!);
         continue;
       }
 
+      // Re-read status after the (potentially multi-second) resolveModel await:
+      // the DELETE /api/jobs/:id cancel endpoint or another cascade-fail tick
+      // could have transitioned the row while we were waiting. Bail without
+      // emitting an illegal transition if the job is no longer queued.
+      const afterResolve = queries.getJobById(fresh.id);
+      if (!afterResolve || afterResolve.status !== 'queued') {
+        log.info({ jobId: fresh.id, newStatus: afterResolve?.status ?? 'missing' }, 'job left queue during classify — abandoning dispatch');
+        continue;
+      }
+
+      // Model resolved and job still queued — mark assigned. Legal queued → assigned.
+      queries.updateJobStatus(fresh.id, 'assigned');
+      socket.emitJobUpdate(queries.getJobById(fresh.id)!);
+
       // Re-fetch so the agent sees the now-resolved model field
-      const readyJob = queries.getJobById(job.id)!;
+      const readyJob = queries.getJobById(fresh.id)!;
 
       agentId = randomUUID();
-      queries.insertAgent({ id: agentId, job_id: job.id, status: 'starting', parent_agent_id: readyJob.created_by_agent_id ?? undefined });
+      queries.insertAgent({ id: agentId, job_id: fresh.id, status: 'starting', parent_agent_id: readyJob.created_by_agent_id ?? undefined });
       socket.emitAgentNew(queries.getAgentWithJob(agentId)!);
 
       // If worktree requested, create one and override the working directory
@@ -228,9 +243,9 @@ async function tick(): Promise<void> {
       if (resumeSessionId) queries.upsertNote(`job-resume:${job.id}`, '', null);
     } catch (err: any) {
       _totalFailed++;
-      log.error({ err, jobId: job.id }, 'dispatch failed');
-      captureWithContext(err, { job_id: job.id, component: 'WorkQueueManager' });
-      queries.updateJobStatus(job.id, 'failed');
+      log.error({ err, jobId: fresh.id }, 'dispatch failed');
+      captureWithContext(err, { job_id: fresh.id, component: 'WorkQueueManager' });
+      queries.updateJobStatus(fresh.id, 'failed');
       // If an agent row was already inserted, mark it as failed so it doesn't
       // consume a concurrency slot or mislead workflow state.
       if (agentId) {
@@ -238,7 +253,7 @@ async function tick(): Promise<void> {
         const failedAgent = queries.getAgentWithJob(agentId);
         if (failedAgent) socket.emitAgentUpdate(failedAgent);
       }
-      socket.emitJobUpdate(queries.getJobById(job.id)!);
+      socket.emitJobUpdate(queries.getJobById(fresh.id)!);
     } finally {
       _classifying.delete(job.id);
     }

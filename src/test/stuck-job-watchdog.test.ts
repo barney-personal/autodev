@@ -342,3 +342,26 @@ describe('StuckJobWatchdog terminal guards', () => {
     expect(queries.getAgentById(agent.id)?.num_turns).toBe(2);
   });
 });
+
+describe('StuckJobWatchdog rate-limit stuck thresholds', () => {
+  // Pure helper — kept in this test file because its only caller is the
+  // watchdog's rate-limit scan loop. Full integration tests of that loop
+  // would require mocking tmux list-sessions/capture-pane; the threshold
+  // policy is easier to verify directly.
+
+  it('rate_limit uses a 30-second kill threshold', async () => {
+    const { getRateLimitStuckThresholdMs } = await import('../server/orchestrator/StuckJobWatchdog.js');
+    expect(getRateLimitStuckThresholdMs('rate_limit')).toBe(30_000);
+  });
+
+  it('provider_overload keeps the 3-minute threshold so CLI self-recovery can complete', async () => {
+    const { getRateLimitStuckThresholdMs } = await import('../server/orchestrator/StuckJobWatchdog.js');
+    expect(getRateLimitStuckThresholdMs('provider_overload')).toBe(180_000);
+  });
+
+  it('other fallback-eligible kinds keep the 3-minute threshold', async () => {
+    const { getRateLimitStuckThresholdMs } = await import('../server/orchestrator/StuckJobWatchdog.js');
+    expect(getRateLimitStuckThresholdMs('provider_billing')).toBe(180_000);
+    expect(getRateLimitStuckThresholdMs('unknown')).toBe(180_000);
+  });
+});

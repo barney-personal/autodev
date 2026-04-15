@@ -134,3 +134,100 @@ describe('ModelClassifier cooldown restart resilience', () => {
     expect(isModelRateLimited('claude-haiku-4-5-20251001')).toBe(false);
   });
 });
+
+describe('ModelClassifier family-level rate-limit aliasing', () => {
+  beforeEach(async () => {
+    await setupTestDb();
+    const { _resetForTest } = await import('../server/orchestrator/ModelClassifier.js');
+    _resetForTest();
+  });
+
+  afterEach(async () => {
+    await cleanupTestDb();
+  });
+
+  // Real-world motivation: the Anthropic prompt-bytes-per-hour limit is shared
+  // between claude-sonnet-4-6 and claude-sonnet-4-6[1m] (same underlying model,
+  // different context windows). If we mark only one variant as rate-limited,
+  // the fallback chain picks the sibling and hits the same 429 immediately,
+  // burning a fallback slot and wall-clock time.
+
+  it('marking claude-sonnet-4-6[1m] also marks claude-sonnet-4-6 (shared org bucket)', async () => {
+    const { markModelRateLimited, isModelRateLimited } = await import(
+      '../server/orchestrator/ModelClassifier.js'
+    );
+
+    markModelRateLimited('claude-sonnet-4-6[1m]', 60_000);
+
+    expect(isModelRateLimited('claude-sonnet-4-6[1m]')).toBe(true);
+    expect(isModelRateLimited('claude-sonnet-4-6')).toBe(true);
+  });
+
+  it('marking claude-opus-4-6 also marks claude-opus-4-6[1m]', async () => {
+    const { markModelRateLimited, isModelRateLimited } = await import(
+      '../server/orchestrator/ModelClassifier.js'
+    );
+
+    markModelRateLimited('claude-opus-4-6', 60_000);
+
+    expect(isModelRateLimited('claude-opus-4-6')).toBe(true);
+    expect(isModelRateLimited('claude-opus-4-6[1m]')).toBe(true);
+  });
+
+  it('does NOT cross family boundaries — opus limit does not affect sonnet', async () => {
+    const { markModelRateLimited, isModelRateLimited } = await import(
+      '../server/orchestrator/ModelClassifier.js'
+    );
+
+    markModelRateLimited('claude-opus-4-6[1m]', 60_000);
+
+    expect(isModelRateLimited('claude-opus-4-6')).toBe(true);
+    expect(isModelRateLimited('claude-opus-4-6[1m]')).toBe(true);
+    expect(isModelRateLimited('claude-sonnet-4-6')).toBe(false);
+    expect(isModelRateLimited('claude-sonnet-4-6[1m]')).toBe(false);
+    expect(isModelRateLimited('claude-haiku-4-5-20251001')).toBe(false);
+    expect(isModelRateLimited('codex')).toBe(false);
+  });
+
+  it('clearModelRateLimit clears the whole family', async () => {
+    const { markModelRateLimited, clearModelRateLimit, isModelRateLimited } = await import(
+      '../server/orchestrator/ModelClassifier.js'
+    );
+
+    markModelRateLimited('claude-sonnet-4-6[1m]', 60_000);
+    expect(isModelRateLimited('claude-sonnet-4-6')).toBe(true);
+    expect(isModelRateLimited('claude-sonnet-4-6[1m]')).toBe(true);
+
+    clearModelRateLimit('claude-sonnet-4-6');
+
+    expect(isModelRateLimited('claude-sonnet-4-6')).toBe(false);
+    expect(isModelRateLimited('claude-sonnet-4-6[1m]')).toBe(false);
+  });
+
+  it('haiku and codex are singleton families (no [1m] variant)', async () => {
+    const { markModelRateLimited, isModelRateLimited } = await import(
+      '../server/orchestrator/ModelClassifier.js'
+    );
+
+    markModelRateLimited('claude-haiku-4-5-20251001', 60_000);
+    expect(isModelRateLimited('claude-haiku-4-5-20251001')).toBe(true);
+    // No siblings to mark — just the one model.
+    expect(isModelRateLimited('claude-sonnet-4-6')).toBe(false);
+    expect(isModelRateLimited('codex')).toBe(false);
+  });
+
+  it('getAvailableModel skips the whole family once any variant is limited', async () => {
+    const { markModelRateLimited, getAvailableModel } = await import(
+      '../server/orchestrator/ModelClassifier.js'
+    );
+
+    // Simulate: sonnet family hits org-wide prompt-bytes-per-hour bucket.
+    markModelRateLimited('claude-sonnet-4-6[1m]', 60_000);
+
+    // Previously: fallback from sonnet[1m] would pick sonnet-4-6 (next in chain)
+    // and hit the same 429. Now it should skip the whole sonnet family and
+    // land on haiku (next-next in MODEL_FALLBACK_CHAIN).
+    const fallback = getAvailableModel('claude-sonnet-4-6[1m]');
+    expect(fallback).toBe('claude-haiku-4-5-20251001');
+  });
+});

@@ -94,18 +94,46 @@ export function isProviderRateLimited(provider: ModelProvider): boolean {
   return false;
 }
 
+/**
+ * Return the rate-limit "family" for a model. Anthropic 429 rate limits
+ * (input-tokens-per-minute and prompt-bytes-per-hour) are shared across
+ * context-window variants of the same underlying model, so
+ * `claude-sonnet-4-6` and `claude-sonnet-4-6[1m]` hit the same bucket.
+ * Treating them as independent caused fallback-chain churn where a limit
+ * on one variant would immediately re-trigger on its sibling.
+ */
+export function getModelFamily(model: string): string {
+  if (isCodexModel(model)) return 'codex';
+  // Strip any `[...]` suffix — e.g. `claude-sonnet-4-6[1m]` → `claude-sonnet-4-6`.
+  return model.replace(/\[[^\]]*\]$/, '');
+}
+
+function familyVariants(model: string): string[] {
+  const family = getModelFamily(model);
+  const siblings = KNOWN_MODELS.filter(m => getModelFamily(m) === family);
+  // Always include the requested model (even if it's not in KNOWN_MODELS) so
+  // callers can rate-limit custom model IDs without surprise.
+  return siblings.includes(model) ? [...siblings] : [...siblings, model];
+}
+
 export function markModelRateLimited(model: string, cooldownMs = DEFAULT_COOLDOWN_MS): void {
   const expiry = Date.now() + cooldownMs;
-  _rateLimitCooldowns.set(model, expiry);
-  queries.upsertNote(`ratelimit:${model}`, String(expiry), null);
-  console.log(`[classifier] marked ${model} as rate-limited for ${Math.round(cooldownMs / 1000)}s (until ${new Date(expiry).toISOString()})`);
-  getCircuitBreaker().recordModelLimited(model);
+  const variants = familyVariants(model);
+  for (const m of variants) {
+    _rateLimitCooldowns.set(m, expiry);
+    queries.upsertNote(`ratelimit:${m}`, String(expiry), null);
+    getCircuitBreaker().recordModelLimited(m);
+  }
+  const tail = variants.length > 1 ? ` (+${variants.length - 1} family siblings)` : '';
+  console.log(`[classifier] marked ${model}${tail} as rate-limited for ${Math.round(cooldownMs / 1000)}s (until ${new Date(expiry).toISOString()})`);
 }
 
 export function clearModelRateLimit(model: string): void {
-  _rateLimitCooldowns.delete(model);
-  try { queries.upsertNote(`ratelimit:${model}`, '0', null); } catch { /* ignore */ }
-  getCircuitBreaker().recordModelAvailable(model);
+  for (const m of familyVariants(model)) {
+    _rateLimitCooldowns.delete(m);
+    try { queries.upsertNote(`ratelimit:${m}`, '0', null); } catch { /* ignore */ }
+    getCircuitBreaker().recordModelAvailable(m);
+  }
 }
 
 export function isModelRateLimited(model: string): boolean {

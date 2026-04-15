@@ -33,7 +33,7 @@ import { orphanedWaits, disconnectedAgents, hasActiveTransport } from '../mcp/Mc
 import { isAutoExitJob } from '../../shared/types.js';
 import { markModelRateLimited, getFallbackModel, getModelProvider, markProviderRateLimited } from './ModelClassifier.js';
 import { claimRecovery } from './RecoveryLedger.js';
-import { classifyFailureTextQuietly, isFallbackEligibleFailure, shouldMarkProviderUnavailable } from './FailureClassifier.js';
+import { classifyFailureTextQuietly, isFallbackEligibleFailure, shouldMarkProviderUnavailable, type FailureKind } from './FailureClassifier.js';
 import { nudgeQueue } from './WorkQueueManager.js';
 import { getJobIfStatus } from './JobLifecycle.js';
 import { parseMilestones, writeBlockedDiagnostic } from './WorkflowManager.js';
@@ -52,6 +52,23 @@ export function _seedMilestoneSnapshot(workflowId: string, milestonesDone: numbe
 }
 
 let _timer: NodeJS.Timeout | null = null;
+
+/**
+ * How long to tolerate an agent stuck on an infra failure before killing its
+ * tmux session and re-queueing with a fallback model. Pure helper, exported
+ * for unit testing.
+ *
+ * - `rate_limit`: 30s. The Claude CLI retries internally on 429; those retries
+ *   still count against the org's prompt-bytes-per-hour quota. The longer we
+ *   wait, the more quota we burn on retries that can't succeed. Kill fast.
+ * - `provider_overload`, `provider_billing`, other transient provider errors:
+ *   3 min. CLI-side self-recovery is plausible (overload resolves server-side,
+ *   billing may auto-unblock after a balance top-up), so give it room.
+ */
+export function getRateLimitStuckThresholdMs(kind: FailureKind): number {
+  if (kind === 'rate_limit') return 30_000;
+  return 3 * 60 * 1000;
+}
 
 function isPidAlive(pid: number): boolean {
   try {
@@ -594,7 +611,6 @@ function check(): void {
   // Scan all orchestrator tmux sessions for rate limit errors (429/529).
   // When detected, mark the model as rate-limited, kill the stuck agent,
   // and restart the job with a fallback model.
-  const RATE_LIMIT_STUCK_THRESHOLD_MS = 3 * 60 * 1000; // 3 minutes stuck on rate limit
   try {
     const sessionsRaw = execFileSync('tmux', ['list-sessions', '-F', '#{session_name}'], {
       encoding: 'utf8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'],
@@ -624,9 +640,12 @@ function check(): void {
       const failureKind = classifyFailureTextQuietly(output);
       if (!isFallbackEligibleFailure(failureKind)) continue;
 
-      // Check how long the agent has been stuck (last MCP heartbeat)
+      // Check how long the agent has been stuck (last MCP heartbeat). The
+      // threshold is tighter for rate_limit than provider_overload: rate_limit
+      // has no plausible CLI-side self-recovery path, so waiting 3 minutes
+      // just burns prompt-bytes-per-hour budget on pointless CLI retries.
       const stuckMs = Date.now() - agent.updated_at;
-      if (stuckMs < RATE_LIMIT_STUCK_THRESHOLD_MS) continue;
+      if (stuckMs < getRateLimitStuckThresholdMs(failureKind)) continue;
 
       const currentModel = job.model ?? null;
       if (!currentModel) continue;
