@@ -172,33 +172,104 @@ Example: ["old-contradicted-id-1"]`;
   return removed;
 }
 
-async function callHaiku(apiKey: string, prompt: string): Promise<string> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30000);
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    signal: controller.signal,
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify({
-      model: TRIAGE_MODEL,
-      max_tokens: 512,
-      messages: [{ role: 'user', content: prompt }],
-    }),
-  });
-  clearTimeout(timeout);
+// HTTP statuses that indicate a transient failure worth retrying.
+// 408 request timeout, 429 rate limit, 500/502/503/504 server errors, 529 overloaded.
+const RETRYABLE_STATUSES = new Set([408, 429, 500, 502, 503, 504, 529]);
+const MAX_RETRIES = 3; // up to 4 total attempts
 
-  if (!response.ok) {
-    throw new Error(`Anthropic API ${response.status}: ${await response.text()}`);
+/**
+ * A network-level fetch failure that should be retried.
+ * Node's undici wraps low-level connect errors in `TypeError: fetch failed`
+ * with the real cause in `err.cause` (ECONNRESET, ETIMEDOUT, EHOSTUNREACH, etc.).
+ */
+function isRetryableFetchError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  // Our own 30s AbortController timeout — don't retry, request took too long already.
+  if (err.name === 'AbortError') return false;
+  if (err.name === 'TypeError' && err.message === 'fetch failed') return true;
+  const cause = (err as { cause?: unknown }).cause;
+  const code = (err as { code?: string }).code
+    ?? (cause && typeof cause === 'object' ? (cause as { code?: string }).code : undefined);
+  return code !== undefined && RETRYABLE_NET_CODES.has(code);
+}
+
+const RETRYABLE_NET_CODES = new Set([
+  'ECONNRESET', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENETUNREACH',
+  'ECONNREFUSED', 'EAI_AGAIN', 'EPIPE',
+]);
+
+/** Parse a Retry-After header value (seconds-or-HTTP-date) into milliseconds. */
+function parseRetryAfterMs(header: string | null): number | null {
+  if (!header) return null;
+  const seconds = Number(header);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const date = Date.parse(header);
+  if (!Number.isNaN(date)) return Math.max(0, date - Date.now());
+  return null;
+}
+
+/** Jittered backoff for inline HTTP retries: 1s, 3s, 8s (+/- 30%). */
+function retryBackoffMs(attempt: number): number {
+  const base = [1000, 3000, 8000][attempt] ?? 8000;
+  const jitter = base * 0.3 * (2 * Math.random() - 1);
+  return Math.max(250, Math.round(base + jitter));
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Exported for unit testing. Not part of the public orchestrator API.
+export async function callHaiku(apiKey: string, prompt: string): Promise<string> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
+    try {
+      const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        signal: controller.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: TRIAGE_MODEL,
+          max_tokens: 512,
+          messages: [{ role: 'user', content: prompt }],
+        }),
+      });
+
+      if (!response.ok) {
+        const body = await response.text();
+        if (RETRYABLE_STATUSES.has(response.status) && attempt < MAX_RETRIES) {
+          const retryAfter = parseRetryAfterMs(response.headers.get('retry-after'));
+          const waitMs = retryAfter ?? retryBackoffMs(attempt);
+          console.warn(`[kb-consolidator] Anthropic API ${response.status}, retrying in ${Math.round(waitMs / 1000)}s (attempt ${attempt + 1}/${MAX_RETRIES})`);
+          await sleep(waitMs);
+          continue;
+        }
+        throw new Error(`Anthropic API ${response.status}: ${body}`);
+      }
+
+      const data = await response.json() as { content?: Array<{ text?: string }> };
+      const text = (data.content?.[0]?.text ?? '').trim();
+      return extractFirstJsonArray(text) ?? '[]';
+    } catch (err) {
+      lastErr = err;
+      if (attempt < MAX_RETRIES && isRetryableFetchError(err)) {
+        const waitMs = retryBackoffMs(attempt);
+        console.warn(`[kb-consolidator] fetch failed, retrying in ${Math.round(waitMs / 1000)}s (attempt ${attempt + 1}/${MAX_RETRIES}): ${(err as Error).message}`);
+        await sleep(waitMs);
+        continue;
+      }
+      throw err;
+    } finally {
+      clearTimeout(timeout);
+    }
   }
-
-  const data = await response.json() as { content?: Array<{ text?: string }> };
-  const text = (data.content?.[0]?.text ?? '').trim();
-
-  return extractFirstJsonArray(text) ?? '[]';
+  throw lastErr;
 }
 
 /**
