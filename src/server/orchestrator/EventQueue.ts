@@ -8,8 +8,18 @@
  * Events older than MAX_AGE_MS or beyond MAX_EVENTS are discarded.
  */
 
-import type { DatabaseSync } from 'node:sqlite';
 import { getDb, isDbInitialized } from '../db/database.js';
+
+// node:sqlite is experimental and has no shipped type declarations; the rest
+// of the codebase (see db/database.ts) uses a @ts-ignore on the runtime import.
+// We only need the statement-handle type for the prepared-statement cache —
+// a local alias keeps this file's typecheck clean without pulling in the
+// module types.
+type PreparedStatement = {
+  run: (...args: unknown[]) => { changes?: number };
+  all: (...args: unknown[]) => unknown[];
+  get: (...args: unknown[]) => unknown;
+};
 
 const MAX_EVENTS = 5000;
 const MAX_AGE_MS = 10 * 60 * 1000; // 10 minutes
@@ -32,10 +42,10 @@ let _initializedDb: unknown = null;
 // a statement object on every call — caching removes that cost from the hot
 // path, since every socket emit goes through pushEvent.
 type Stmts = {
-  insert: ReturnType<DatabaseSync['prepare']>;
-  deleteByAge: ReturnType<DatabaseSync['prepare']>;
-  trimToMax: ReturnType<DatabaseSync['prepare']>;
-  selectSince: ReturnType<DatabaseSync['prepare']>;
+  insert: PreparedStatement;
+  deleteByAge: PreparedStatement;
+  trimToMax: PreparedStatement;
+  selectSince: PreparedStatement;
 };
 let _stmts: Stmts | null = null;
 
@@ -68,8 +78,14 @@ function ensureTable(): void {
     trimToMax: db.prepare(
       'DELETE FROM event_queue WHERE id <= (SELECT id FROM event_queue ORDER BY id DESC LIMIT 1 OFFSET ?)'
     ),
+    // Newest-first with LIMIT, reversed in JS before returning. Because
+    // pushEvent now prunes in amortized batches the table can transiently
+    // hold up to MAX_EVENTS + PRUNE_EVERY_N - 1 rows; ORDER BY id ASC LIMIT N
+    // would truncate the newest events in that window and leave the UI stale
+    // on reconnect. Taking newest-first + reverse preserves the latest state
+    // transitions, which is what the replay endpoint cares about.
     selectSince: db.prepare(
-      'SELECT event_name, payload, created_at FROM event_queue WHERE created_at > ? ORDER BY id ASC LIMIT ?'
+      'SELECT event_name, payload, created_at FROM event_queue WHERE created_at > ? ORDER BY id DESC LIMIT ?'
     ),
   };
   _insertsSincePrune = 0;
@@ -117,11 +133,20 @@ export function getEventsSince(sinceMs: number): Array<{ event_name: string; pay
     if (!_stmts) return [];
     const rows = _stmts.selectSince.all(sinceMs, MAX_EVENTS) as Array<{ event_name: string; payload: string; created_at: number }>;
 
-    return rows.map(r => ({
-      event_name: r.event_name,
-      payload: JSON.parse(r.payload),
-      created_at: r.created_at,
-    }));
+    // Query returns newest-first so that if the queue holds more than
+    // MAX_EVENTS rows we keep the latest state transitions rather than the
+    // oldest. Reverse to hand back chronological order, which the existing
+    // tests and UI replay consumers expect.
+    const out = new Array(rows.length);
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[rows.length - 1 - i];
+      out[i] = {
+        event_name: r.event_name,
+        payload: JSON.parse(r.payload),
+        created_at: r.created_at,
+      };
+    }
+    return out;
   } catch (err) {
     console.debug('[EventQueue] getEventsSince failed, returning empty:', err);
     return [];
