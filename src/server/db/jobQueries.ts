@@ -143,17 +143,19 @@ export function listJobsSlim(status?: JobStatus): Job[] {
   return jobs;
 }
 
-/** Archive terminal jobs older than cutoffMs. Returns number archived. */
+/** Archive terminal jobs older than cutoffMs. Returns number archived.
+ * Leaves updated_at untouched so it continues to mean "last status change"
+ * and archived jobs sort by their original completion time. */
 export function archiveStaleTerminalJobs(cutoffMs: number): number {
   const db = getDb();
   const now = Date.now();
   const result = db.prepare(
-    `UPDATE jobs SET archived_at = ?, updated_at = ?
+    `UPDATE jobs SET archived_at = ?
      WHERE archived_at IS NULL
        AND status IN ('done','failed','cancelled')
        AND updated_at < ?`
-  ).run(now, now, now - cutoffMs);
-  return Number((result as any).changes ?? 0);
+  ).run(now, now - cutoffMs);
+  return Number(result.changes ?? 0);
 }
 
 export function listArchivedJobs(limit?: number, offset?: number): Job[] {
