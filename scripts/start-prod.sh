@@ -3,7 +3,7 @@ set -euo pipefail
 
 export PATH="/opt/homebrew/bin:$PATH"
 
-REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_DIR"
 
 # Load runtime env for the LaunchAgent-managed production server.
