@@ -11,6 +11,35 @@ function cast<T>(val: unknown): T {
   return Object.assign({}, val) as T;
 }
 
+function buildAgentSelect(alias: string, includeDiff: boolean): string {
+  const prefix = alias ? `${alias}.` : '';
+  const qualified = (column: string) => `${prefix}${column}`;
+
+  return `
+    ${qualified('id')},
+    ${qualified('job_id')},
+    ${qualified('status')},
+    ${qualified('pid')},
+    ${qualified('session_id')},
+    ${qualified('parent_agent_id')},
+    ${qualified('exit_code')},
+    ${qualified('error_message')},
+    ${qualified('status_message')},
+    ${qualified('output_read')},
+    ${qualified('started_at')},
+    ${qualified('updated_at')},
+    ${qualified('finished_at')},
+    ${includeDiff ? qualified('base_sha') : 'NULL'} AS base_sha,
+    ${includeDiff ? qualified('diff') : 'NULL'} AS diff,
+    ${qualified('cost_usd')},
+    ${qualified('duration_ms')},
+    ${qualified('num_turns')},
+    ${qualified('pending_wait_ids')},
+    ${qualified('estimated_input_tokens')},
+    ${qualified('estimated_output_tokens')}
+  `;
+}
+
 // ─── Agents ───────────────────────────────────────────────────────────────────
 
 export function insertAgent(agent: { id: string; job_id: string } & Partial<Agent>): Agent {
@@ -35,7 +64,7 @@ export function insertAgent(agent: { id: string; job_id: string } & Partial<Agen
 
 export function getAgentById(id: string): Agent | null {
   const db = getDb();
-  const row = db.prepare('SELECT * FROM agents WHERE id = ?').get(id);
+  const row = db.prepare(`SELECT ${buildAgentSelect('agents', true)} FROM agents WHERE id = ?`).get(id);
   return row ? cast<Agent>(row) : null;
 }
 
@@ -43,9 +72,9 @@ export function listAgents(status?: string): Agent[] {
   const db = getDb();
   let rows: unknown[];
   if (status) {
-    rows = db.prepare('SELECT * FROM agents WHERE status = ? ORDER BY started_at DESC').all(status);
+    rows = db.prepare(`SELECT ${buildAgentSelect('agents', false)} FROM agents WHERE status = ? ORDER BY started_at DESC`).all(status);
   } else {
-    rows = db.prepare('SELECT * FROM agents ORDER BY started_at DESC').all();
+    rows = db.prepare(`SELECT ${buildAgentSelect('agents', false)} FROM agents ORDER BY started_at DESC`).all();
   }
   return rows.map((r: unknown) => cast<Agent>(r));
 }
@@ -103,7 +132,7 @@ export function listBatchAgents(status?: string): Agent[] {
 export function listRunningInteractiveAgents(): Agent[] {
   const db = getDb();
   const rows = db.prepare(`
-    SELECT a.* FROM agents a
+    SELECT ${buildAgentSelect('a', false)} FROM agents a
     JOIN jobs j ON j.id = a.job_id
     WHERE j.is_interactive = 1
       AND a.status IN ('starting', 'running', 'waiting_user')
@@ -115,7 +144,7 @@ export function listRunningInteractiveAgents(): Agent[] {
 export function listAllRunningAgents(): Agent[] {
   const db = getDb();
   const rows = db.prepare(`
-    SELECT * FROM agents
+    SELECT ${buildAgentSelect('agents', false)} FROM agents
     WHERE status IN ('starting', 'running', 'waiting_user')
   `).all();
   return (rows as unknown[]).map((r: unknown) => cast<Agent>(r));
@@ -135,7 +164,7 @@ export function getAgentsWithJobForSnapshot(): AgentWithJob[] {
   const db = getDb();
   // Active agents — always include all of these
   const activeRows = db.prepare(`
-    SELECT a.* FROM agents a
+    SELECT ${buildAgentSelect('a', false)} FROM agents a
     JOIN jobs j ON j.id = a.job_id
     WHERE a.status IN ('starting', 'running', 'waiting_user')
       AND j.archived_at IS NULL
@@ -144,7 +173,7 @@ export function getAgentsWithJobForSnapshot(): AgentWithJob[] {
 
   // Most recent finished agents (capped) — fills the grid
   const recentRows = db.prepare(`
-    SELECT a.* FROM agents a
+    SELECT ${buildAgentSelect('a', false)} FROM agents a
     JOIN jobs j ON j.id = a.job_id
     WHERE a.status IN ('done', 'failed', 'cancelled')
       AND j.archived_at IS NULL
@@ -245,7 +274,7 @@ export function getAgentsForJobIds(jobIds: string[]): AgentWithJob[] {
 
   // Get all agents for these jobs, then pick the most recent per job
   const rows = db.prepare(`
-    SELECT a.* FROM agents a
+    SELECT ${buildAgentSelect('a', false)} FROM agents a
     WHERE a.job_id IN (${ph(jobIds.length)})
     ORDER BY a.started_at DESC
   `).all(...jobIds);

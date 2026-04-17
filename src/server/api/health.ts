@@ -45,10 +45,9 @@ router.get('/', (_req, res) => {
     checks.queue = { status: 'unavailable', error: 'Database not initialized yet' };
   } else {
     try {
-      const allJobs = queries.listJobs();
-      const queued = allJobs.filter(j => j.status === 'queued').length;
-      const assigned = allJobs.filter(j => j.status === 'assigned').length;
-      const running = allJobs.filter(j => j.status === 'running').length;
+      const queued = queries.countJobsByStatus('queued');
+      const assigned = queries.countJobsByStatus('assigned');
+      const running = queries.countJobsByStatus('running');
       checks.queue = { queued, assigned, running };
     } catch (err: any) {
       checks.queue = { status: 'error', error: err.message };

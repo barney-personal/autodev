@@ -130,9 +130,7 @@ async function tick(): Promise<void> {
   // dispatches when multiple jobs are ready (e.g. workflow phase transitions, batch creates).
   let guardLoops = 0;
   while (_running && guardLoops++ < 100) {
-    const activeAgents = queries.listAgents().filter(a =>
-      a.status === 'starting' || a.status === 'running' || a.status === 'waiting_user'
-    );
+    const activeAgents = queries.listAllRunningAgents();
 
     // Count classifying jobs against the concurrency limit so we don't over-dispatch
     if (activeAgents.length + _classifying.size >= _maxConcurrent) break;
@@ -150,10 +148,8 @@ async function tick(): Promise<void> {
     // resource recovery, so we can safely allow a few concurrent jobs.
     const MAX_CONCURRENT_WORKFLOW_PHASES = 3;
     if (job.workflow_id && job.workflow_phase) {
-      const runningWorkflowPhaseJobs = queries.listJobs('assigned')
-        .concat(queries.listJobs('running'))
-        .filter(j => j.workflow_id && j.workflow_phase && j.id !== job.id);
-      if (runningWorkflowPhaseJobs.length >= MAX_CONCURRENT_WORKFLOW_PHASES) {
+      const runningWorkflowPhaseJobs = queries.countRunningWorkflowPhaseJobs(job.id);
+      if (runningWorkflowPhaseJobs >= MAX_CONCURRENT_WORKFLOW_PHASES) {
         // Skip — at capacity. Will be picked up on next tick.
         break;
       }

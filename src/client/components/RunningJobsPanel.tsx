@@ -1,3 +1,4 @@
+import { memo, useMemo } from 'react';
 import type { AgentWithJob } from '@shared/types';
 import type { Project } from '@shared/types';
 
@@ -14,12 +15,15 @@ const STATUS_DOT_COLOR: Partial<Record<string, string>> = {
   waiting_user: '#ef4444',
 };
 
-export function RunningJobsPanel({ agents, projects, onSelectAgent, ptyIdleAgentIds }: Props) {
-  const projectMap = new Map(projects.map(p => [p.id, p.name]));
-
-  const activeAgents = agents.filter(
-    a => a.status === 'starting' || a.status === 'running' || a.status === 'waiting_user',
+export const RunningJobsPanel = memo(function RunningJobsPanel({ agents, projects, onSelectAgent, ptyIdleAgentIds }: Props) {
+  const projectMap = useMemo(
+    () => new Map(projects.map(p => [p.id, p.name])),
+    [projects],
   );
+
+  const activeAgents = useMemo(() => agents.filter(
+    a => a.status === 'starting' || a.status === 'running' || a.status === 'waiting_user',
+  ), [agents]);
 
   return (
     <div className="running-jobs-panel">
@@ -55,4 +59,4 @@ export function RunningJobsPanel({ agents, projects, onSelectAgent, ptyIdleAgent
       )}
     </div>
   );
-}
+});
