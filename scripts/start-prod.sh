@@ -3,7 +3,7 @@ set -euo pipefail
 
 export PATH="/opt/homebrew/bin:$PATH"
 
-REPO_DIR="/Users/barneyhussey-yeo/GitHub/personal/hurlicane"
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_DIR"
 
 # Load runtime env for the LaunchAgent-managed production server.
@@ -14,7 +14,7 @@ if [ -f .env ]; then
     set +a
 fi
 
-echo "[$(date)] Starting hurlicane with commit: $(git rev-parse --short HEAD)"
+echo "[$(date)] Starting autodev with commit: $(git rev-parse --short HEAD)"
 
 # Build if dist is missing or stale
 if [ ! -d dist ] || [ "$(find src -newer dist/server/index.js -print -quit 2>/dev/null)" ]; then

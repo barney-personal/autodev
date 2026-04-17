@@ -1,5 +1,5 @@
 /**
- * Shared test helpers for Hurlicane integration tests.
+ * Shared test helpers for Autodev integration tests.
  *
  * Provides:
  * - Fresh in-memory SQLite database per test via setupTestDb / cleanupTestDb

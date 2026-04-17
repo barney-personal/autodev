@@ -30,7 +30,7 @@ interface HeaderProps {
   onToggleCostAutoUpdate?: () => void;
 }
 
-function HurlicaLogo() {
+function AutodevLogo() {
   return (
     <svg width="28" height="28" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
       {/* Outer vortex arm */}
@@ -80,8 +80,8 @@ export function Header({ onNewTask, onTemplates, onBatchTemplates, onUsage, onSe
     <header className="header">
       <div className="header-left">
         <button className="header-logo-btn" onClick={onHome} title="Go to main page" aria-label="Go to main dashboard">
-          <HurlicaLogo />
-          <h1 className="header-title">Hurlicane</h1>
+          <AutodevLogo />
+          <h1 className="header-title">Autodev</h1>
         </button>
         {currentProjectName && (
           <div className="header-project-badge" title={`Active project: ${currentProjectName}`}>

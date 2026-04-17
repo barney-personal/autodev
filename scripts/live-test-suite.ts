@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
 /**
- * Hurlicane Live Integration Test Suite
+ * Autodev Live Integration Test Suite
  *
  * Submits real jobs to the running orchestrator and monitors their completion
  * to find edge cases in concurrency, resource management, and failure handling.
@@ -13,7 +13,7 @@
  *   npx tsx scripts/live-test-suite.ts --url=http://host:3456
  *
  * Prerequisites:
- *   - Hurlicane server running on the target URL (default localhost:3456)
+ *   - Autodev server running on the target URL (default localhost:3456)
  *   - No jobs currently running (clean baseline)
  *
  * The suite creates real Claude agent sessions. Each test uses minimal prompts
@@ -29,7 +29,7 @@ const flagVal = (name: string) => {
   return a ? a.split('=')[1] : undefined;
 };
 
-const BASE_URL = flagVal('url') ?? process.env.HURLICANE_URL ?? 'http://localhost:3456';
+const BASE_URL = flagVal('url') ?? process.env.AUTODEV_URL ?? process.env.HURLICANE_URL ?? 'http://localhost:3456';
 const API = `${BASE_URL}/api`;
 const VERBOSE = flag('verbose');
 const SKIP = new Set((flagVal('skip') ?? '').split(',').filter(Boolean).map(Number));
@@ -419,7 +419,7 @@ function printReport() {
   const info = run.filter(r => r.observational).length;
 
   console.log('\n' + '='.repeat(90));
-  console.log('  HURLICANE LIVE TEST SUITE REPORT');
+  console.log('  AUTODEV LIVE TEST SUITE REPORT');
   console.log(`  Server: ${BASE_URL}`);
   console.log(`  Run at: ${new Date().toISOString()}`);
   console.log(`  Total duration: ${fmtMs(total)}`);
@@ -469,7 +469,7 @@ function summarizeDetails(d: Record<string, unknown>): string {
 
 async function main() {
   console.log('');
-  console.log('  Hurlicane Live Test Suite');
+  console.log('  Autodev Live Test Suite');
   console.log(`  Server: ${BASE_URL}`);
   console.log('');
 

@@ -1,4 +1,4 @@
-# Hurlicane
+# Autodev
 
 > **Warning:** This project is experimental and under active development. APIs, features, and behavior may change without notice. Use at your own risk.
 
