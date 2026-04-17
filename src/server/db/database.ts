@@ -334,7 +334,21 @@ export function initDb(dbPath: string): DatabaseSync {
   if (!jobCols.includes('archived_at')) {
     db.exec('ALTER TABLE jobs ADD COLUMN archived_at INTEGER');
   }
-  db.exec('CREATE INDEX IF NOT EXISTS idx_jobs_archived ON jobs(archived_at)');
+  // The old idx_jobs_archived covered both NULL and NOT NULL archived_at
+  // values, and the planner consistently picked it for the hot
+  // `WHERE archived_at IS NULL ORDER BY priority DESC, created_at ASC` reads
+  // (listJobs, listJobsSlim) — forcing USE TEMP B-TREE FOR ORDER BY on the
+  // 300-400 active rows. Those queries fire every WorkQueueManager tick and
+  // on every socket snapshot; the disk-spilled sort was the primary source
+  // of 100% idle CPU observed in production. The replacements below scope
+  // by archived_at state so the planner picks an ordered partial index for
+  // the hot path and falls through to a simple archived-row index for the
+  // admin view.
+  {
+    const ddl = db.exec.bind(db);
+    ddl('DROP INDEX IF EXISTS idx_jobs_archived');
+    ddl('CREATE INDEX IF NOT EXISTS idx_jobs_archived_only ON jobs(archived_at) WHERE archived_at IS NOT NULL');
+  }
   if (!jobCols.includes('created_by_agent_id')) {
     db.exec('ALTER TABLE jobs ADD COLUMN created_by_agent_id TEXT');
   }
@@ -566,10 +580,30 @@ export function initDb(dbPath: string): DatabaseSync {
   db.exec('CREATE INDEX IF NOT EXISTS idx_wfc_file ON workflow_file_claims(file_path) WHERE released_at IS NULL');
 
   // ── Performance indexes ────────────────────────────────────────────────────
+  // Covering partial indexes for the hot jobs-list queries. Without these
+  // the planner falls back to USE TEMP B-TREE FOR ORDER BY, which at
+  // production scale (337 unarchived rows × ~30KB each) spills SQLite's
+  // sorter to disk-backed tempfiles on every WorkQueueManager tick.
+  {
+    const ddl = db.exec.bind(db);
+    ddl('CREATE INDEX IF NOT EXISTS idx_jobs_active_sort ON jobs(priority DESC, created_at ASC) WHERE archived_at IS NULL');
+    ddl('CREATE INDEX IF NOT EXISTS idx_jobs_active_status_sort ON jobs(status, priority DESC, created_at ASC) WHERE archived_at IS NULL');
+    // listAgents() and getAgentsWithJob() sort by started_at DESC with no
+    // supporting index — against 7k+ rows that's another disk-spilled sort.
+    ddl('CREATE INDEX IF NOT EXISTS idx_agents_started_at ON agents(started_at DESC)');
+    // listAllRunningAgents / listRunningInteractiveAgents filter by the three
+    // live statuses against a table dominated by terminal rows — a narrow
+    // partial index makes this an O(running) lookup instead of a full scan.
+    ddl("CREATE INDEX IF NOT EXISTS idx_agents_running ON agents(status) WHERE status IN ('starting','running','waiting_user')");
+  }
   db.exec('CREATE INDEX IF NOT EXISTS idx_agents_job_id ON agents(job_id)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_jobs_workflow_phase ON jobs(workflow_id, workflow_phase)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_workflows_status_created ON workflows(status, created_at)');
   db.exec("CREATE INDEX IF NOT EXISTS idx_jobs_context_eye ON jobs(status) WHERE json_extract(context, '$.eye') = 1");
+  // ANALYZE populates sqlite_stat1 so the planner knows the partial indexes
+  // above are far more selective than a broad scan + temp-b-tree sort.
+  // Cheap on a DB this size and critical for these indexes to be picked.
+  try { db.exec('ANALYZE'); } catch { /* best effort */ }
 
   // ── FTS optimization ────────────────────────────────────────────────────────
   // Run FTS5 optimize on startup to merge internal b-trees. This keeps
