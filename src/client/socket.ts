@@ -6,13 +6,19 @@ const socket: Socket<ServerToClientEvents, ClientToServerEvents> = io({
   transports: ['websocket', 'polling'],
 });
 
-// Debug: log all socket events to console so we can see what's arriving
-socket.onAny((event, ...args) => {
-  if (event === 'pty:data' || event === 'agent:output') return; // too noisy
-  console.log(`[socket] ${event}`, ...args);
-});
+const debugSocket =
+  import.meta.env.DEV &&
+  typeof window !== 'undefined' &&
+  window.localStorage.getItem('debug-socket') === '1';
 
-socket.on('connect', () => console.log('[socket] connected'));
-socket.on('disconnect', (reason) => console.log('[socket] disconnected:', reason));
+if (debugSocket) {
+  socket.onAny((event, ...args) => {
+    if (event === 'pty:data' || event === 'agent:output') return;
+    console.log(`[socket] ${event}`, ...args);
+  });
+
+  socket.on('connect', () => console.log('[socket] connected'));
+  socket.on('disconnect', (reason) => console.log('[socket] disconnected:', reason));
+}
 
 export default socket;

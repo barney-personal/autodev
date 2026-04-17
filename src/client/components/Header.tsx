@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { memo, useState, useRef, useEffect } from 'react';
 import type { Debate, Workflow } from '@shared/types';
 
 interface HeaderProps {
@@ -55,7 +55,7 @@ function AutodevLogo() {
   );
 }
 
-export function Header({ onNewTask, onTemplates, onBatchTemplates, onUsage, onSearch, onTimeline, onDag, onProjects, onSettings, onDebate, onDebates, onSelectDebate, onWorkflows, onSelectWorkflow, onKnowledgeBase, onEye, eyeActive, eyeBadgeCount, eyeEnabled, onHome, currentProjectName, onClearProject, todayClaudeCost, todayCodexCost, costAutoUpdate, onToggleCostAutoUpdate }: HeaderProps) {
+export const Header = memo(function Header({ onNewTask, onTemplates, onBatchTemplates, onUsage, onSearch, onTimeline, onDag, onProjects, onSettings, onDebate, onDebates, onSelectDebate, onWorkflows, onSelectWorkflow, onKnowledgeBase, onEye, eyeActive, eyeBadgeCount, eyeEnabled, onHome, currentProjectName, onClearProject, todayClaudeCost, todayCodexCost, costAutoUpdate, onToggleCostAutoUpdate }: HeaderProps) {
   const hasCost = (todayClaudeCost != null && todayClaudeCost > 0) || (todayCodexCost != null && todayCodexCost > 0);
   const [moreOpen, setMoreOpen] = useState(false);
   const moreRef = useRef<HTMLDivElement>(null);
@@ -206,4 +206,4 @@ export function Header({ onNewTask, onTemplates, onBatchTemplates, onUsage, onSe
       </div>
     </header>
   );
-}
+});

@@ -63,7 +63,6 @@ export default function App() {
   const todayClaudeCost = useAppStore(s => s.todayClaudeCost);
   const todayCodexCost = useAppStore(s => s.todayCodexCost);
   const costAutoUpdate = useAppStore(s => s.costAutoUpdate);
-  const dashboardNow = useAppStore(s => s.dashboardNow);
   const ptyIdleAgents = useAppStore(s => s.ptyIdleAgents);
 
   const archivedJobs = useAppStore(s => s.archivedJobs);
@@ -88,18 +87,12 @@ export default function App() {
     return () => { socket.off('pty:data', handlePtyData); };
   }, []);
 
-  useEffect(() => {
-    const hasLiveWorkflows = workflows.some(workflow => workflow.status === 'running');
-    if (!hasLiveWorkflows) return;
-    const id = setInterval(() => store.getState().setDashboardNow(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, [workflows]);
-
   // Poll every second to compute which interactive running agents are idle
   useEffect(() => {
     const id = setInterval(() => {
       const now = Date.now();
       const idleSet = new Set<string>();
+      const { agents } = store.getState();
       for (const agent of agents) {
         if (agent.status === 'running' && agent.job.is_interactive) {
           const last = lastPtyActivity.current.get(agent.id);
@@ -114,7 +107,7 @@ export default function App() {
       });
     }, 1000);
     return () => clearInterval(id);
-  }, [agents]);
+  }, []);
 
   const fetchTodayCost = useCallback(async () => {
     if (fetchingCost.current) return;
@@ -289,6 +282,25 @@ export default function App() {
     return workflows;
   }, [workflows, activeProjectId]);
 
+  const queuedFilteredJobs = useMemo(
+    () => filteredJobs.filter(j => j.status === 'queued'),
+    [filteredJobs],
+  );
+
+  const waitingJobIds = useMemo(
+    () => new Set(
+      agents
+        .filter(a => a.status === 'waiting_user' || ptyIdleAgents.has(a.id))
+        .map(a => a.job_id),
+    ),
+    [agents, ptyIdleAgents],
+  );
+
+  const taskFeedNow = useMemo(
+    () => Date.now(),
+    [activeProjectId, filteredAgents, filteredJobs, filteredWorkflows],
+  );
+
   const activeProjectName = useMemo(() => {
     if (!activeProjectId) return null;
     if (activeProjectId === '__archived__') return 'Archived';
@@ -436,7 +448,7 @@ export default function App() {
             {leftTab === 'lineage' && selectedAgent ? (
               <JobLineagePanel selectedAgent={selectedAgent} allAgents={agents} onSelectAgent={handleSelectAgent} />
             ) : (
-              <WorkQueueSidebar jobs={jobs} projects={projects} onSelectJob={handleSelectJob} onCancelJob={handleCancelJob} onRunJobNow={handleRunJobNow} onArchiveJob={handleArchiveJob} waitingJobIds={new Set(agents.filter(a => a.status === 'waiting_user' || ptyIdleAgents.has(a.id)).map(a => a.job_id))} />
+              <WorkQueueSidebar jobs={jobs} projects={projects} onSelectJob={handleSelectJob} onCancelJob={handleCancelJob} onRunJobNow={handleRunJobNow} onArchiveJob={handleArchiveJob} waitingJobIds={waitingJobIds} />
             )}
             <RunningJobsPanel agents={agents} projects={projects} onSelectAgent={handleSelectAgent} ptyIdleAgentIds={ptyIdleAgents} />
           </div>
@@ -456,8 +468,8 @@ export default function App() {
                 agents={filteredAgents}
                 allAgents={agents}
                 jobs={filteredJobs}
-                queuedJobs={filteredJobs.filter(j => j.status === 'queued')}
-                now={dashboardNow}
+                queuedJobs={queuedFilteredJobs}
+                now={taskFeedNow}
                 onSelectAgent={handleSelectAgent}
                 onSelectWorkflow={store.getState().setSelectedWorkflow}
                 onArchiveJob={handleArchiveJob}
