@@ -17,10 +17,12 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { getDb } from '../db/database.js';
+import { archiveStaleTerminalJobs } from '../db/jobQueries.js';
 import { maintenanceLogger } from '../lib/logger.js';
 
 const LOGS_DIR = path.join(process.cwd(), 'data', 'agent-logs');
 const LOG_RETENTION_DAYS = 7;
+const JOB_ARCHIVE_RETENTION_DAYS = 7;
 const VACUUM_THRESHOLD_MB = 500;
 
 const log = maintenanceLogger();
@@ -29,6 +31,7 @@ interface PruneStats {
   agentsPruned: number;
   logFilesDeleted: number;
   outputRowsDeleted: number;
+  jobsArchived: number;
   vacuumedMb: number;
 }
 
@@ -40,6 +43,7 @@ export function runStartupMaintenance(): PruneStats {
     agentsPruned: 0,
     logFilesDeleted: 0,
     outputRowsDeleted: 0,
+    jobsArchived: 0,
     vacuumedMb: 0,
   };
 
@@ -51,6 +55,13 @@ export function runStartupMaintenance(): PruneStats {
     if (pruneIds.length > 0) {
       stats.logFilesDeleted = deleteLogFiles(pruneIds);
       stats.outputRowsDeleted = deleteAgentOutput(pruneIds);
+    }
+
+    // Archive stale terminal jobs so the dashboard snapshot stays bounded.
+    try {
+      stats.jobsArchived = archiveStaleTerminalJobs(JOB_ARCHIVE_RETENTION_DAYS * 86_400_000);
+    } catch (err) {
+      log.warn({ err }, 'archiveStaleTerminalJobs failed');
     }
 
     stats.vacuumedMb = maybeVacuum();

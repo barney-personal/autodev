@@ -113,15 +113,47 @@ export function listJobs(status?: JobStatus): Job[] {
   return rows.map((r: any) => cast<Job>(r));
 }
 
-/** Slim version for snapshot — truncates description to keep payload small. */
+/** Slim version for snapshot — truncates description to keep payload small.
+ * Excludes terminal jobs (done/failed/cancelled) older than SLIM_TERMINAL_WINDOW_MS
+ * so the dashboard snapshot stays bounded even with years of history. */
+const SLIM_TERMINAL_WINDOW_MS = 3 * 24 * 60 * 60 * 1000; // 3 days
+
 export function listJobsSlim(status?: JobStatus): Job[] {
-  const jobs = listJobs(status);
+  const db = getDb();
+  let rows: unknown[];
+  if (status) {
+    rows = db.prepare(
+      'SELECT * FROM jobs WHERE status = ? AND archived_at IS NULL ORDER BY priority DESC, created_at ASC'
+    ).all(status);
+  } else {
+    const cutoff = Date.now() - SLIM_TERMINAL_WINDOW_MS;
+    rows = db.prepare(
+      `SELECT * FROM jobs
+       WHERE archived_at IS NULL
+         AND (status NOT IN ('done','failed','cancelled') OR updated_at >= ?)
+       ORDER BY priority DESC, created_at ASC`
+    ).all(cutoff);
+  }
+  const jobs = rows.map((r: any) => cast<Job>(r));
   for (const j of jobs) {
     if (j.description && j.description.length > 300) {
       j.description = j.description.slice(0, 300) + '…';
     }
   }
   return jobs;
+}
+
+/** Archive terminal jobs older than cutoffMs. Returns number archived. */
+export function archiveStaleTerminalJobs(cutoffMs: number): number {
+  const db = getDb();
+  const now = Date.now();
+  const result = db.prepare(
+    `UPDATE jobs SET archived_at = ?, updated_at = ?
+     WHERE archived_at IS NULL
+       AND status IN ('done','failed','cancelled')
+       AND updated_at < ?`
+  ).run(now, now, now - cutoffMs);
+  return Number((result as any).changes ?? 0);
 }
 
 export function listArchivedJobs(limit?: number, offset?: number): Job[] {
