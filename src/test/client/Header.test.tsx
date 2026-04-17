@@ -17,7 +17,7 @@ function makeHeaderProps(overrides: Record<string, unknown> = {}) {
 describe('Header', () => {
   it('renders the application title', () => {
     render(<Header {...makeHeaderProps()} />);
-    expect(screen.getByText('Hurlicane')).toBeInTheDocument();
+    expect(screen.getByText('Autodev')).toBeInTheDocument();
   });
 
   it('calls onNewTask when New Task button is clicked', () => {
