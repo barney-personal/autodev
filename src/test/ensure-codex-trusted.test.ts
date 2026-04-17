@@ -16,7 +16,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { ensureCodexTrusted } from '../server/orchestrator/AgentConfig.js';
+import { ensureCodexTrusted, _resetTrustedCacheForTests } from '../server/orchestrator/AgentConfig.js';
 
 describe('ensureCodexTrusted', () => {
   let tmpHome: string;
@@ -28,6 +28,7 @@ describe('ensureCodexTrusted', () => {
     originalHome = process.env.HOME;
     process.env.HOME = tmpHome;
     configPath = path.join(tmpHome, '.codex', 'config.toml');
+    _resetTrustedCacheForTests();
   });
 
   afterEach(() => {
