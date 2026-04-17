@@ -195,7 +195,7 @@ router.post('/stop', async (_req, res) => {
       queries.updateJobStatus(job.id, 'cancelled');
       socket.emitJobUpdate(queries.getJobById(job.id)!);
       // Cancel associated agent — properly kill the process and release resources
-      const agents = queries.listAgents().filter(a => a.job_id === job.id && ['starting', 'running', 'waiting_user'].includes(a.status));
+      const agents = queries.listAllRunningAgents().filter(a => a.job_id === job.id);
       for (const agent of agents) {
         cancelledAgents.add(agent.id);
 

@@ -36,9 +36,7 @@ export function stopHealthMonitor(): void {
 }
 
 function tick(): void {
-  const agents = queries.listAgents().filter(a =>
-    a.status === 'starting' || a.status === 'running' || a.status === 'waiting_user'
-  );
+  const agents = queries.listAllRunningAgents();
 
   const now = Date.now();
 

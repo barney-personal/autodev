@@ -113,6 +113,35 @@ export function listJobs(status?: JobStatus): Job[] {
   return rows.map((r: any) => cast<Job>(r));
 }
 
+export function countJobsByStatus(status: JobStatus): number {
+  const db = getDb();
+  const row = db.prepare(
+    'SELECT COUNT(*) as cnt FROM jobs WHERE status = ? AND archived_at IS NULL',
+  ).get(status);
+  return cast<{ cnt: number }>(row).cnt;
+}
+
+export function countRunningWorkflowPhaseJobs(excludeJobId?: string): number {
+  const db = getDb();
+  const row = excludeJobId
+    ? db.prepare(`
+        SELECT COUNT(*) as cnt
+        FROM jobs
+        WHERE status IN ('assigned', 'running')
+          AND workflow_id IS NOT NULL
+          AND workflow_phase IS NOT NULL
+          AND id != ?
+      `).get(excludeJobId)
+    : db.prepare(`
+        SELECT COUNT(*) as cnt
+        FROM jobs
+        WHERE status IN ('assigned', 'running')
+          AND workflow_id IS NOT NULL
+          AND workflow_phase IS NOT NULL
+      `).get();
+  return cast<{ cnt: number }>(row).cnt;
+}
+
 /** Slim version for snapshot — truncates description to keep payload small.
  * Excludes terminal jobs (done/failed/cancelled) older than SLIM_TERMINAL_WINDOW_MS
  * so the dashboard snapshot stays bounded even with years of history. Tightened

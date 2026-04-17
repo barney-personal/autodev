@@ -207,6 +207,8 @@ function withConfigLock<T>(configPath: string, fn: () => T): T {
   const lockPath = `${configPath}.lock`;
   const deadline = Date.now() + 5000;
   let acquired = false;
+  const sleepBuf = new SharedArrayBuffer(4);
+  const sleepView = new Int32Array(sleepBuf);
   while (!acquired) {
     try {
       fs.mkdirSync(lockPath);
@@ -218,8 +220,7 @@ function withConfigLock<T>(configPath: string, fn: () => T): T {
         if (age > 30_000) { fs.rmdirSync(lockPath); continue; }
       } catch { /* lock vanished — retry */ }
       if (Date.now() > deadline) throw new Error(`timeout acquiring ${lockPath}`);
-      const waitUntil = Date.now() + 50;
-      while (Date.now() < waitUntil) { /* spin */ }
+      Atomics.wait(sleepView, 0, 0, 50);
     }
   }
   try {

@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import React, { memo, useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { AgentCard } from './AgentCard';
 import { WorkflowSummaryCard } from './WorkflowSummaryCard';
 import { buildGroupedTaskItems, type TaskItem, type AgentTaskItem, type TaskGroup, type GroupedTaskItems } from '../taskFeedModel';
@@ -83,12 +83,13 @@ function applyCustomOrder(items: TaskItem[], customOrder: string[], isArchived: 
     });
   } else {
     // Active view: sort agents by customOrder position, preserving model order as fallback
+    const orderIndex = new Map(customOrder.map((id, index) => [id, index]));
     agentItems.sort((a, b) => {
-      const ai = customOrder.indexOf((a as AgentTaskItem).agent.id);
-      const bi = customOrder.indexOf((b as AgentTaskItem).agent.id);
-      if (ai !== -1 && bi !== -1) return ai - bi;
-      if (ai !== -1) return -1;
-      if (bi !== -1) return 1;
+      const ai = orderIndex.get((a as AgentTaskItem).agent.id);
+      const bi = orderIndex.get((b as AgentTaskItem).agent.id);
+      if (ai != null && bi != null) return ai - bi;
+      if (ai != null) return -1;
+      if (bi != null) return 1;
       return 0; // preserve model order for agents not in customOrder
     });
   }
@@ -103,7 +104,7 @@ function applyCustomOrder(items: TaskItem[], customOrder: string[], isArchived: 
 
 // ─── Component ──────────────────────────────────────────────────────────────
 
-export function TaskFeed({
+export const TaskFeed = memo(function TaskFeed({
   workflows,
   agents,
   allAgents,
@@ -157,6 +158,23 @@ export function TaskFeed({
     recent: applyCustomOrder(grouped.recent, customOrder, !!isArchived),
   }), [grouped, customOrder, isArchived]);
 
+  const workflowAgentsById = useMemo(() => {
+    const groupedAgents = new Map<string, AgentWithJob[]>();
+    for (const agent of allAgents) {
+      const workflowId = agent.job.workflow_id;
+      if (!workflowId) continue;
+      const bucket = groupedAgents.get(workflowId);
+      if (bucket) bucket.push(agent);
+      else groupedAgents.set(workflowId, [agent]);
+    }
+    return groupedAgents;
+  }, [allAgents]);
+
+  const allAgentsById = useMemo(
+    () => new Map(allAgents.map(agent => [agent.id, agent])),
+    [allAgents],
+  );
+
   // ─── Sync custom drag order when agents change ─────────────────────────
   useEffect(() => {
     setCustomOrder(prev => {
@@ -171,30 +189,54 @@ export function TaskFeed({
 
   // ─── Standalone agent filter counts ─────────────────────────────────────
   // Only count agents that are NOT workflow-owned (standalone)
-  const standaloneAgents = useMemo(
-    () => agents.filter(a => !a.job.workflow_id),
-    [agents],
-  );
+  const {
+    standaloneAgents,
+    counts,
+    flaggedCount,
+    unreadIds,
+    hasInteractiveRunning,
+    finishedStandaloneJobs,
+  } = useMemo(() => {
+    const standaloneAgents = agents.filter(a => !a.job.workflow_id);
+    const counts = Object.fromEntries(
+      ALL_STATUSES.map(status => [status, 0]),
+    ) as Record<AgentStatus, number>;
+    const unreadIds: string[] = [];
+    const finishedStandaloneJobs: Job[] = [];
+    let flaggedCount = 0;
+    let hasInteractiveRunning = false;
 
-  const counts = useMemo(() =>
-    Object.fromEntries(
-      ALL_STATUSES.map(s => [s, standaloneAgents.filter(a => a.status === s).length])
-    ) as Record<AgentStatus, number>,
-    [standaloneAgents],
-  );
+    for (const agent of standaloneAgents) {
+      counts[agent.status]++;
+      if (agent.job?.flagged) flaggedCount++;
+      if ((agent.status === 'done' || agent.status === 'failed') && agent.output_read === 0) {
+        unreadIds.push(agent.id);
+      }
+      if (agent.job?.is_interactive && (agent.status === 'running' || agent.status === 'starting')) {
+        hasInteractiveRunning = true;
+      }
+      if (agent.job?.status === 'done' || agent.job?.status === 'failed' || agent.job?.status === 'cancelled') {
+        finishedStandaloneJobs.push(agent.job);
+      }
+    }
 
-  const flaggedCount = standaloneAgents.filter(a => a.job?.flagged).length;
-  const unreadIds = standaloneAgents
-    .filter(a => (a.status === 'done' || a.status === 'failed') && a.output_read === 0)
-    .map(a => a.id);
+    return {
+      standaloneAgents,
+      counts,
+      flaggedCount,
+      unreadIds,
+      hasInteractiveRunning,
+      finishedStandaloneJobs,
+    };
+  }, [agents]);
 
   const presentStatuses = ALL_STATUSES.filter(s => counts[s] > 0);
   const showFilterBar = standaloneAgents.length > 0 && (
     presentStatuses.length > 1 ||
     flaggedCount > 0 ||
     unreadIds.length > 0 ||
-    standaloneAgents.some(a => a.job?.is_interactive && (a.status === 'running' || a.status === 'starting')) ||
-    (onArchiveAll && standaloneAgents.some(a => a.job?.status === 'done' || a.job?.status === 'failed' || a.job?.status === 'cancelled'))
+    hasInteractiveRunning ||
+    (onArchiveAll && finishedStandaloneJobs.length > 0)
   );
 
   // ─── Filter + drag helpers ──────────────────────────────────────────────
@@ -257,7 +299,7 @@ export function TaskFeed({
   function renderItem(item: TaskItem): React.ReactNode {
     switch (item.kind) {
       case 'workflow': {
-        const wfAgents = allAgents.filter(a => a.job.workflow_id === item.workflow.id);
+        const wfAgents = workflowAgentsById.get(item.workflow.id) ?? [];
         return (
           <div key={item.id} className={styles.workflowWrapper}>
             <WorkflowSummaryCard
@@ -290,7 +332,7 @@ export function TaskFeed({
               agent={item.agent}
               onClick={onSelectAgent}
               onSelectParent={(parentId) => {
-                const parent = allAgents.find(a => a.id === parentId);
+                const parent = allAgentsById.get(parentId);
                 if (parent) onSelectAgent(parent);
               }}
               onArchiveJob={onArchiveJob ? () => onArchiveJob(item.agent.job) : undefined}
@@ -459,7 +501,7 @@ export function TaskFeed({
               <span className="agent-filter-count">{unreadIds.length}</span>
             </button>
           )}
-          {standaloneAgents.some(a => a.job?.is_interactive && (a.status === 'running' || a.status === 'starting')) && (
+          {hasInteractiveRunning && (
             <button
               className="btn btn-danger btn-sm"
               onClick={() => fetch('/api/agents/disconnect-all', { method: 'DELETE' })}
@@ -468,16 +510,13 @@ export function TaskFeed({
             </button>
           )}
           {onArchiveAll && (() => {
-            const finishedJobs = standaloneAgents
-              .filter(a => a.job?.status === 'done' || a.job?.status === 'failed' || a.job?.status === 'cancelled')
-              .map(a => a.job);
-            return finishedJobs.length > 0 ? (
+            return finishedStandaloneJobs.length > 0 ? (
               <button
                 className="btn btn-secondary btn-sm"
-                onClick={() => onArchiveAll(finishedJobs)}
+                onClick={() => onArchiveAll(finishedStandaloneJobs)}
               >
                 Archive All Finished
-                <span className="agent-filter-count">{finishedJobs.length}</span>
+                <span className="agent-filter-count">{finishedStandaloneJobs.length}</span>
               </button>
             ) : null;
           })()}
@@ -496,4 +535,4 @@ export function TaskFeed({
       )}
     </div>
   );
-}
+});

@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { memo, useState, useRef, useEffect } from 'react';
 import type { Job, Project } from '@shared/types';
 
 function ArchiveIcon() {
@@ -55,7 +55,7 @@ function loadStorage<T>(key: string, def: T): T {
   }
 }
 
-export function WorkQueueSidebar({
+export const WorkQueueSidebar = memo(function WorkQueueSidebar({
   jobs, projects = [], onSelectJob, onCancelJob, onRunJobNow, onArchiveJob, waitingJobIds = new Set(),
 }: WorkQueueSidebarProps) {
   const projectMap = Object.fromEntries(projects.map(p => [p.id, p.name]));
@@ -603,4 +603,4 @@ export function WorkQueueSidebar({
       )}
     </aside>
   );
-}
+});
