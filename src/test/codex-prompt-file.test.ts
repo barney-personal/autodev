@@ -25,8 +25,21 @@ vi.mock('../server/orchestrator/PtyManager.js', () => ({
   startInteractiveAgent: vi.fn(),
   isTmuxSessionAlive: vi.fn(() => false),
   saveSnapshot: vi.fn(),
-  ensureCodexTrusted: vi.fn(),
 }));
+
+// AgentRunner imports ensureCodexTrusted from AgentConfig (not PtyManager),
+// so we stub it here to prevent the real implementation from writing a TOML
+// config file via fs.writeFileSync — which would otherwise pollute
+// `writtenFiles` and break the prompt-file assertions below.
+vi.mock('../server/orchestrator/AgentConfig.js', async () => {
+  const actual = await vi.importActual<typeof import('../server/orchestrator/AgentConfig.js')>(
+    '../server/orchestrator/AgentConfig.js',
+  );
+  return {
+    ...actual,
+    ensureCodexTrusted: vi.fn(),
+  };
+});
 
 vi.mock('../server/orchestrator/ModelClassifier.js', () => ({
   getCircuitBreaker: vi.fn(() => ({
