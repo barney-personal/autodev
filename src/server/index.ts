@@ -60,8 +60,9 @@ async function main() {
   // Populate FTS index for any existing output rows not yet indexed
   queries.rebuildFts();
 
-  // Prune old agent logs / orphaned output rows, checkpoint WAL, and VACUUM
-  // if the DB has grown past the threshold. Runs once, non-fatal on failure.
+  // Prune old agent logs / orphaned output rows, archive stale terminal jobs,
+  // checkpoint WAL, and VACUUM if the DB has grown past the threshold.
+  // Runs once, non-fatal on failure.
   runStartupMaintenance();
 
   // Rehydrate rate-limit cooldown state from DB so cooldowns survive restarts
