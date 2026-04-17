@@ -115,8 +115,10 @@ export function listJobs(status?: JobStatus): Job[] {
 
 /** Slim version for snapshot — truncates description to keep payload small.
  * Excludes terminal jobs (done/failed/cancelled) older than SLIM_TERMINAL_WINDOW_MS
- * so the dashboard snapshot stays bounded even with years of history. */
-const SLIM_TERMINAL_WINDOW_MS = 3 * 24 * 60 * 60 * 1000; // 3 days
+ * so the dashboard snapshot stays bounded even with years of history. Tightened
+ * from 3d to 1d after observing 2,336 rows / ~6MB snapshots on a server with
+ * 4.5k unarchived failed jobs. */
+const SLIM_TERMINAL_WINDOW_MS = 24 * 60 * 60 * 1000; // 1 day
 
 export function listJobsSlim(status?: JobStatus): Job[] {
   const db = getDb();
@@ -143,19 +145,33 @@ export function listJobsSlim(status?: JobStatus): Job[] {
   return jobs;
 }
 
-/** Archive terminal jobs older than cutoffMs. Returns number archived.
- * Leaves updated_at untouched so it continues to mean "last status change"
- * and archived jobs sort by their original completion time. */
-export function archiveStaleTerminalJobs(cutoffMs: number): number {
+/**
+ * Archive terminal jobs older than the given cutoffs. Failed/cancelled runs
+ * don't need to stay in the active set for long — they're effectively noise
+ * after a couple of days. Successful runs linger longer since they're more
+ * likely to be reviewed. Leaves updated_at untouched so it continues to mean
+ * "last status change" and archived jobs sort by their original completion
+ * time. Returns total number archived.
+ */
+export function archiveStaleTerminalJobs(
+  failedCutoffMs: number,
+  doneCutoffMs: number = failedCutoffMs,
+): number {
   const db = getDb();
   const now = Date.now();
-  const result = db.prepare(
+  const failed = db.prepare(
     `UPDATE jobs SET archived_at = ?
      WHERE archived_at IS NULL
-       AND status IN ('done','failed','cancelled')
+       AND status IN ('failed','cancelled')
        AND updated_at < ?`
-  ).run(now, now - cutoffMs);
-  return Number(result.changes ?? 0);
+  ).run(now, now - failedCutoffMs);
+  const done = db.prepare(
+    `UPDATE jobs SET archived_at = ?
+     WHERE archived_at IS NULL
+       AND status = 'done'
+       AND updated_at < ?`
+  ).run(now, now - doneCutoffMs);
+  return Number((failed as any).changes ?? 0) + Number((done as any).changes ?? 0);
 }
 
 export function listArchivedJobs(limit?: number, offset?: number): Job[] {

@@ -22,7 +22,8 @@ import { maintenanceLogger } from '../lib/logger.js';
 
 const LOGS_DIR = path.join(process.cwd(), 'data', 'agent-logs');
 const LOG_RETENTION_DAYS = 7;
-const JOB_ARCHIVE_RETENTION_DAYS = 7;
+const FAILED_JOB_RETENTION_DAYS = 2;
+const DONE_JOB_RETENTION_DAYS = 7;
 const VACUUM_THRESHOLD_MB = 500;
 
 const log = maintenanceLogger();
@@ -59,7 +60,10 @@ export function runStartupMaintenance(): PruneStats {
 
     // Archive stale terminal jobs so the dashboard snapshot stays bounded.
     try {
-      stats.jobsArchived = archiveStaleTerminalJobs(JOB_ARCHIVE_RETENTION_DAYS * 86_400_000);
+      stats.jobsArchived = archiveStaleTerminalJobs(
+        FAILED_JOB_RETENTION_DAYS * 86_400_000,
+        DONE_JOB_RETENTION_DAYS * 86_400_000,
+      );
     } catch (err) {
       log.warn({ err }, 'archiveStaleTerminalJobs failed');
     }
