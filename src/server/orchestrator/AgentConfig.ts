@@ -146,50 +146,86 @@ export interface RunOptions {
 // Eliminates redundant fs reads on every agent spawn after the first.
 const _trustedWorkDirs = new Set<string>();
 
+/** Test-only: reset the in-process trust cache between tests. */
+export function _resetTrustedCacheForTests(): void {
+  _trustedWorkDirs.clear();
+}
+
 export function ensureCodexTrusted(workDir: string): void {
   if (_trustedWorkDirs.has(workDir)) return;
 
   const configPath = path.join(process.env.HOME ?? '', '.codex', 'config.toml');
   try {
-    let content = '';
-    try { content = fs.readFileSync(configPath, 'utf8'); } catch { /* file doesn't exist yet */ }
-
-    if (content.length > 0 && !content.endsWith('\n')) content += '\n';
-
-    const key = `[projects.${JSON.stringify(workDir)}]`;
-    const sectionRe = buildSectionRegex(key);
-    const matches = [...content.matchAll(sectionRe)];
-
-    if (matches.length === 1) {
-      _trustedWorkDirs.add(workDir);
-      return;
-    }
-
-    // Either no entry (add one) or multiple (dedupe to one). In both cases
-    // compute the final desired content and write atomically via rename.
-    // NEVER use appendFileSync: concurrent processes racing between read and
-    // append can both observe 0 matches and both append, producing duplicate
-    // [projects."..."] sections that cause codex to fail with a TOML parse error.
-    let desired: string;
-    if (matches.length === 0) {
-      const sep = content.length === 0 || content.endsWith('\n\n') ? '' : '\n';
-      desired = content + sep + `${key}\ntrust_level = "trusted"\n`;
-    } else {
-      // matches.length > 1 — keep first, strip the rest
-      desired = content;
-      for (const m of matches.slice(1).reverse()) {
-        desired = desired.slice(0, m.index!) + desired.slice(m.index! + m[0].length);
-      }
-      desired = desired.replace(/\n{3,}/g, '\n\n');
-    }
-
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
-    const tmpPath = `${configPath}.tmp-${process.pid}-${Date.now()}`;
-    fs.writeFileSync(tmpPath, desired);
-    fs.renameSync(tmpPath, configPath);
-    _trustedWorkDirs.add(workDir);
+    withConfigLock(configPath, () => {
+      let content = '';
+      try { content = fs.readFileSync(configPath, 'utf8'); } catch { /* file doesn't exist yet */ }
+
+      if (content.length > 0 && !content.endsWith('\n')) content += '\n';
+
+      const key = `[projects.${JSON.stringify(workDir)}]`;
+      const sectionRe = buildSectionRegex(key);
+      const matches = [...content.matchAll(sectionRe)];
+
+      if (matches.length === 1) {
+        _trustedWorkDirs.add(workDir);
+        return;
+      }
+
+      // Either no entry (add one) or multiple (dedupe to one). In both cases
+      // compute the final desired content and write atomically via rename.
+      // The surrounding lock prevents concurrent processes writing DIFFERENT
+      // workDirs from reading the same snapshot and last-write-wins dropping
+      // one of them.
+      let desired: string;
+      if (matches.length === 0) {
+        const sep = content.length === 0 || content.endsWith('\n\n') ? '' : '\n';
+        desired = content + sep + `${key}\ntrust_level = "trusted"\n`;
+      } else {
+        desired = content;
+        for (const m of matches.slice(1).reverse()) {
+          desired = desired.slice(0, m.index!) + desired.slice(m.index! + m[0].length);
+        }
+        desired = desired.replace(/\n{3,}/g, '\n\n');
+      }
+
+      const tmpPath = `${configPath}.tmp-${process.pid}-${Date.now()}`;
+      fs.writeFileSync(tmpPath, desired);
+      fs.renameSync(tmpPath, configPath);
+      _trustedWorkDirs.add(workDir);
+    });
   } catch (err) {
     console.warn(`[codex] failed to add trust for ${workDir}:`, err);
+  }
+}
+
+/**
+ * Cross-process mutex via atomic mkdir on a lock directory. Spins briefly
+ * until acquired or timeout. Stale locks (> 30s) are reclaimed.
+ */
+function withConfigLock<T>(configPath: string, fn: () => T): T {
+  const lockPath = `${configPath}.lock`;
+  const deadline = Date.now() + 5000;
+  let acquired = false;
+  while (!acquired) {
+    try {
+      fs.mkdirSync(lockPath);
+      acquired = true;
+    } catch (e: any) {
+      if (e.code !== 'EEXIST') throw e;
+      try {
+        const age = Date.now() - fs.statSync(lockPath).mtimeMs;
+        if (age > 30_000) { fs.rmdirSync(lockPath); continue; }
+      } catch { /* lock vanished — retry */ }
+      if (Date.now() > deadline) throw new Error(`timeout acquiring ${lockPath}`);
+      const waitUntil = Date.now() + 50;
+      while (Date.now() < waitUntil) { /* spin */ }
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    try { fs.rmdirSync(lockPath); } catch {}
   }
 }
 

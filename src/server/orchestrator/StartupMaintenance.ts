@@ -98,11 +98,14 @@ function deleteLogFiles(agentIds: string[]): number {
 
 function deleteAgentOutput(agentIds: string[]): number {
   const db = getDb();
-  // Batch in chunks of 500 to stay under SQLite parameter limits
+  // Batch in chunks of 500 to stay under SQLite parameter limits.
+  // output_fts is a manual FTS5 virtual table with no delete trigger, so
+  // we must remove matching rows explicitly or they accumulate as orphans.
   let total = 0;
   for (let i = 0; i < agentIds.length; i += 500) {
     const chunk = agentIds.slice(i, i + 500);
     const placeholders = chunk.map(() => '?').join(',');
+    db.prepare(`DELETE FROM output_fts WHERE agent_id IN (${placeholders})`).run(...chunk);
     const info = db.prepare(`DELETE FROM agent_output WHERE agent_id IN (${placeholders})`).run(...chunk);
     total += (info.changes ?? 0) as number;
   }
