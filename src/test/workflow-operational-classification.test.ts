@@ -110,4 +110,27 @@ describe('isOperationalBlockedReason', () => {
       expect(isOperationalBlockedReason('')).toBe(false);
     });
   });
+
+  describe('pre-flight environment failures', () => {
+    it('classifies missing work_dir pre-flight as operational', () => {
+      expect(isOperationalBlockedReason(
+        'Pre-flight failed: work_dir does not exist: /Users/foo/GitHub/personal/hurlicane',
+      )).toBe(true);
+    });
+
+    it('classifies git-not-functional pre-flight as operational', () => {
+      expect(isOperationalBlockedReason(
+        'Pre-flight failed: git is not functional in /Users/foo/repo: fatal: not a git repository',
+      )).toBe(true);
+    });
+
+    it('classifies a nested Sentry-fix cascade wrapping pre-flight failure as operational', () => {
+      // Observed in Sentry: WorkflowBlocked errors were triply-nested because
+      // each cascade created a new Sentry-fix workflow that also hit the same
+      // missing work_dir. Nested match must still classify as operational.
+      const reason =
+        'WorkflowBlocked: Workflow blocked: Sentry fix [hurlicane]: Pre-flight failed: work_dir does not exist: /Users/foo/GitHub/personal/hurlicane';
+      expect(isOperationalBlockedReason(reason)).toBe(true);
+    });
+  });
 });

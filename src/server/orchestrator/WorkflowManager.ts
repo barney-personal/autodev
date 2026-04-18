@@ -1080,6 +1080,10 @@ const OPERATIONAL_BLOCK_SUBSTRINGS = [
   'PR creation failed', 'Draft PR creation failed', 'was cancelled',
   'no fallback model available',
   'verify_failed',
+  // Pre-flight environment failures (e.g. work_dir missing, git broken in work_dir).
+  // These are host-environment issues, not workflow bugs — classify operational so
+  // they don't fire Sentry errors or cascade into further Sentry-fix workflows.
+  'Pre-flight failed:',
 ] as const;
 
 const OPERATIONAL_FAILED_KINDS = new Set([

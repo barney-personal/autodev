@@ -197,6 +197,18 @@ describe('POST /api/workflows', () => {
     await request(app).post('/api/workflows').send({ task: 'test' });
     expect(socket.emitWorkflowNew).toHaveBeenCalledTimes(1);
   });
+
+  it('rejects a workDir that does not exist on this host', async () => {
+    const socket = await import('../../server/socket/SocketManager.js');
+    const res = await request(app)
+      .post('/api/workflows')
+      .send({ task: 'test', workDir: '/tmp/does-not-exist-autodev-preflight-test' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/work_dir does not exist/);
+    // Must reject before the workflow is created so no orphan row lands in the DB
+    // and no workflow-new event is emitted.
+    expect(socket.emitWorkflowNew).not.toHaveBeenCalled();
+  });
 });
 
 describe('POST /api/autonomous-agent-runs', () => {
