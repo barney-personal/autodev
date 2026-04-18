@@ -74,6 +74,29 @@ const PTY_BUFFER_MAX = 2000;
 export const PTY_SPAWN_MAX_RETRIES = 3;
 export const PTY_SPAWN_BASE_DELAY_MS = 2000;
 
+/**
+ * Compute the backoff delay for a given PTY retry attempt, with ±25% jitter.
+ *
+ * Without jitter, when the watchdog restarts many agents at once (common
+ * during rate_limit storms — opus-4-6 → sonnet-4-6 fallback cascades observed
+ * in Sentry), every agent's spawn fails and all retry at exactly 2s / 4s / 8s.
+ * Each retry wave lands in lockstep and re-pressures posix_spawnp at the same
+ * moment, producing long bursts of correlated failures (2831+ events from one
+ * issue fingerprint over ~2 weeks). Jitter breaks the lockstep so retries
+ * spread across the window.
+ *
+ * `random` is injectable so tests can assert deterministic behaviour.
+ */
+export function computePtyRetryDelayMs(
+  attempt: number,
+  baseMs: number = PTY_SPAWN_BASE_DELAY_MS,
+  random: () => number = Math.random,
+): number {
+  const base = baseMs * Math.pow(2, attempt - 1);
+  const jitter = 0.75 + random() * 0.5;
+  return Math.round(base * jitter);
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -271,7 +294,7 @@ export async function attachPty(agentId: string, job: Job, cols = 100, rows = 50
 
   for (let attempt = 0; attempt <= PTY_SPAWN_MAX_RETRIES; attempt++) {
     if (attempt > 0) {
-      const delay = PTY_SPAWN_BASE_DELAY_MS * Math.pow(2, attempt - 1);
+      const delay = computePtyRetryDelayMs(attempt);
       console.warn(`[pty ${agentId}] retrying PTY attach (attempt ${attempt + 1}/${PTY_SPAWN_MAX_RETRIES + 1}) after ${delay}ms`);
       await new Promise(resolve => setTimeout(resolve, delay));
       if (!isTmuxSessionAlive(agentId)) break;
