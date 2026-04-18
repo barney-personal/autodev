@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { execFileSync } from 'child_process';
+import { existsSync } from 'fs';
 import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
 import { resumeWorkflow, cleanupWorktree, pushAndCreatePr, getPrCreationOutcome } from '../orchestrator/WorkflowManager.js';
@@ -65,6 +66,16 @@ router.post('/', (req, res) => {
     return;
   }
   const body = parsed.data as CreateAutonomousAgentRunRequest;
+  // Pre-flight the work_dir before the workflow is created. The startWorkflow()
+  // pre-flight inside WorkflowManager still runs as a backstop, but failing at
+  // the API layer avoids creating a workflow + project row that immediately
+  // transitions to blocked, which is what caused the WorkflowBlocked cascade
+  // when the host was missing a cloned repo.
+  const workDir = body.workDir?.trim();
+  if (workDir && !existsSync(workDir)) {
+    res.status(400).json({ error: `work_dir does not exist: ${workDir}` });
+    return;
+  }
   try {
     const result = createAutonomousAgentRun(body);
     socket.emitWorkflowNew(result.workflow);
