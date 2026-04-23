@@ -7,6 +7,10 @@ import type {
   Workflow,
 } from '../../shared/types.js';
 import { isCodexModel } from '../../shared/types.js';
+import {
+  DEFAULT_WORKFLOW_IMPLEMENTER_MODEL,
+  DEFAULT_WORKFLOW_REVIEWER_MODEL,
+} from '../../shared/models.js';
 
 export function createAutonomousAgentRun(
   body: CreateAutonomousAgentRunRequest,
@@ -33,8 +37,8 @@ export function createAutonomousAgentRun(
     title,
     task: body.task.trim(),
     work_dir: body.workDir?.trim() || null,
-    implementer_model: body.implementerModel?.trim() || 'claude-sonnet-4-6',
-    reviewer_model: body.reviewerModel?.trim() || 'codex',
+    implementer_model: body.implementerModel?.trim() || DEFAULT_WORKFLOW_IMPLEMENTER_MODEL,
+    reviewer_model: body.reviewerModel?.trim() || DEFAULT_WORKFLOW_REVIEWER_MODEL,
     max_cycles: maxCycles,
     current_cycle: 0,
     current_phase: 'idle',

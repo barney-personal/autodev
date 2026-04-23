@@ -20,7 +20,7 @@ describe('getPhaseConfig', () => {
 
   it('verify phase has model override', () => {
     const config = getPhaseConfig('verify');
-    expect(config.overrides?.model).toBe('claude-opus-4-6');
+    expect(config.overrides?.model).toBe('claude-opus-4-7');
   });
 
   it('verify phase has stop mode overrides', () => {

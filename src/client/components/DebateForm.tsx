@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import type { CreateDebateRequest, Template } from '@shared/types';
+import { DEFAULT_DEBATE_CLAUDE_MODEL, DEFAULT_DEBATE_CODEX_MODEL } from '@shared/models';
 import { useModels } from '../hooks/useModels';
 
 interface DebateFormProps {
@@ -12,8 +13,8 @@ export function DebateForm({ initial, onSubmit, onClose }: DebateFormProps) {
   const { claude: claudeModels, codex: codexModels } = useModels();
   const [title, setTitle] = useState(initial?.title ?? '');
   const [task, setTask] = useState(initial?.task ?? '');
-  const [claudeModel, setClaudeModel] = useState(initial?.claudeModel ?? 'claude-sonnet-4-6[1m]');
-  const [codexModel, setCodexModel] = useState(initial?.codexModel ?? 'codex');
+  const [claudeModel, setClaudeModel] = useState(initial?.claudeModel ?? DEFAULT_DEBATE_CLAUDE_MODEL);
+  const [codexModel, setCodexModel] = useState(initial?.codexModel ?? DEFAULT_DEBATE_CODEX_MODEL);
   const [maxRounds, setMaxRounds] = useState(initial?.maxRounds ?? 3);
   const [workDir, setWorkDir] = useState(initial?.workDir ?? '');
   const [templateId, setTemplateId] = useState(initial?.templateId ?? '');
@@ -129,6 +130,9 @@ export function DebateForm({ initial, onSubmit, onClose }: DebateFormProps) {
                 {codexModels.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
               </select>
             </div>
+          </div>
+          <div className="form-group form-group-sm">
+            <span className="form-label-hint">Debates default to Opus 4.7 for Claude, which is higher cost than Sonnet.</span>
           </div>
 
           <div className="form-row">

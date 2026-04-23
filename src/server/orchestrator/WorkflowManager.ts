@@ -7,6 +7,13 @@ import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
 import type { Job, Workflow, WorkflowPhase, StopMode } from '../../shared/types.js';
 import { effectiveMaxTurns, isCodexModel } from '../../shared/types.js';
+import {
+  DEFAULT_CLAUDE_OPUS_MODEL,
+  DEFAULT_CLAUDE_OPUS_MODEL_1M,
+  DEFAULT_CLAUDE_SONNET_MODEL,
+  DEFAULT_CLAUDE_SONNET_MODEL_1M,
+  DEFAULT_CODEX_MODEL,
+} from '../../shared/models.js';
 import { buildAssessPrompt, buildWorkflowRepairPrompt, buildSimplifiedAssessRepairPrompt, type InlineWorkflowContext } from './WorkflowPrompts.js';
 import { getAvailableModel, getFallbackModel, getAlternateProviderModel, getModelProvider, markModelRateLimited, markProviderRateLimited } from './ModelClassifier.js';
 import { classifyJobFailure, isFallbackEligibleFailure, isSameModelRetryEligible, shouldMarkProviderUnavailable } from './FailureClassifier.js';
@@ -544,11 +551,11 @@ function spawnRepairJob(workflow: Workflow, phase: 'assess' | 'review', cycle: n
   let model = phase === 'review' ? workflow.reviewer_model : workflow.implementer_model;
   if (isCodexModel(model)) {
     console.log(`[workflow ${workflow.id}] repair job requires reliable MCP — falling back from Codex to Claude`);
-    model = 'claude-sonnet-4-6';
+    model = DEFAULT_CLAUDE_SONNET_MODEL;
   }
   if (phase === 'assess' && existingAttempts >= 1) {
-    console.log(`[workflow ${workflow.id}] assess repair attempt ${existingAttempts + 1} — escalating to claude-opus-4-6 for reliable MCP`);
-    model = 'claude-opus-4-6';
+    console.log(`[workflow ${workflow.id}] assess repair attempt ${existingAttempts + 1} — escalating to ${DEFAULT_CLAUDE_OPUS_MODEL} for reliable MCP`);
+    model = DEFAULT_CLAUDE_OPUS_MODEL;
   }
   const stopMode = phase === 'review' ? workflow.stop_mode_review : workflow.stop_mode_assess;
   const stopValue = phase === 'review' ? workflow.stop_value_review : workflow.stop_value_assess;
@@ -825,10 +832,11 @@ function getWorkflowFallbackModel(workflow: Workflow, phase: WorkflowPhase, curr
   if (directFallback && directFallback !== currentModel) candidates.add(directFallback);
   if (phase === 'review') candidates.add(workflow.reviewer_model);
   candidates.add(workflow.implementer_model);
-  candidates.add('claude-sonnet-4-6[1m]');
-  candidates.add('claude-opus-4-7[1m]');
+  candidates.add(DEFAULT_CLAUDE_SONNET_MODEL_1M);
+  candidates.add(DEFAULT_CLAUDE_OPUS_MODEL_1M);
   candidates.add('claude-opus-4-6[1m]');
   candidates.add('claude-haiku-4-5-20251001');
+  candidates.add(DEFAULT_CODEX_MODEL);
   candidates.add('codex');
   for (const candidate of candidates) {
     if (!candidate || candidate === currentModel) continue;

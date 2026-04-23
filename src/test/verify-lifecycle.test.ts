@@ -228,7 +228,7 @@ describe('WorkflowManager verify agent lifecycle', () => {
     const jobs = getJobsForWorkflow(workflow.id);
     const verifyJob = jobs.find(j => j.workflow_phase === 'verify');
     expect(verifyJob).toBeTruthy();
-    expect(verifyJob!.model).toBe('claude-opus-4-6');
+    expect(verifyJob!.model).toBe('claude-opus-4-7');
 
     // Step 2: Verify agent writes PASS note and job completes
     upsertNote(`workflow/${workflow.id}/verify-result/2`, '## Verify Result: PASS\n\n**Tests run:** 3\n**Passed:** 3\n**Failed:** 0\n\n### Summary\nAll smoke tests passed.', null);

@@ -96,8 +96,8 @@ curl -X POST http://localhost:3456/api/workflows \
   -d '{
     "task": "Refactor the authentication layer to use JWT",
     "workDir": "/path/to/repo",
-    "implementerModel": "claude-opus-4-6",
-    "reviewerModel": "codex",
+    "implementerModel": "claude-opus-4-7[1m]",
+    "reviewerModel": "codex-gpt-5.5",
     "maxCycles": 10,
     "useWorktree": true
   }'

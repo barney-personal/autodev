@@ -1,5 +1,10 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import type { CreateTaskRequest, TaskPreset, Template, RetryPolicy, StopMode, Job } from '@shared/types';
+import {
+  DEFAULT_DEBATE_CLAUDE_MODEL,
+  DEFAULT_DEBATE_CODEX_MODEL,
+  DEFAULT_WORKFLOW_REVIEWER_MODEL,
+} from '@shared/models';
 import { TemplateModelStats } from './TemplateModelStats';
 import { StopModePicker } from './StopModePicker';
 import { useModels } from '../hooks/useModels';
@@ -38,7 +43,7 @@ export function TaskForm({ onSubmit, onClose, availableJobs = [] }: TaskFormProp
 
   // ── Complexity dial ───────────────────────────────────────────────────────
   const [review, setReview] = useState(false);
-  const [reviewerModel, setReviewerModel] = useState('codex');
+  const [reviewerModel, setReviewerModel] = useState(DEFAULT_WORKFLOW_REVIEWER_MODEL);
   const [iterations, setIterations] = useState(1);
   const [useWorktree, setUseWorktree] = useState(false);
 
@@ -62,8 +67,8 @@ export function TaskForm({ onSubmit, onClose, availableJobs = [] }: TaskFormProp
 
   // ── Job-only: debate ──────────────────────────────────────────────────────
   const [debateEnabled, setDebateEnabled] = useState(false);
-  const [debateClaudeModel, setDebateClaudeModel] = useState('claude-sonnet-4-6[1m]');
-  const [debateCodexModel, setDebateCodexModel] = useState('codex');
+  const [debateClaudeModel, setDebateClaudeModel] = useState(DEFAULT_DEBATE_CLAUDE_MODEL);
+  const [debateCodexModel, setDebateCodexModel] = useState(DEFAULT_DEBATE_CODEX_MODEL);
   const [debateMaxRounds, setDebateMaxRounds] = useState(3);
 
   // ── Workflow-only: per-phase stops ────────────────────────────────────────
@@ -306,7 +311,7 @@ export function TaskForm({ onSubmit, onClose, availableJobs = [] }: TaskFormProp
                 <span className="form-label-hint"> (leave blank to auto-select)</span>
               </label>
               <select id="task-model" value={model} onChange={e => setModel(e.target.value)}>
-                <option value="">{routesTo === 'workflow' ? 'Default (Sonnet)' : 'Auto-select (Haiku classifies)'}</option>
+                <option value="">{routesTo === 'workflow' ? 'Default (Opus 4.7)' : 'Auto-select (Haiku classifies)'}</option>
                 {claudeModels.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
                 {routesTo === 'job' && codexModels.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
               </select>
@@ -579,7 +584,7 @@ export function TaskForm({ onSubmit, onClose, availableJobs = [] }: TaskFormProp
                         <div className="form-group">
                           <label htmlFor="task-debate-claude">Claude Model</label>
                           <select id="task-debate-claude" value={debateClaudeModel} onChange={e => setDebateClaudeModel(e.target.value)}>
-                            <option value="claude-opus-4-7[1m]">claude-opus-4-7[1m]</option>
+                            <option value="claude-opus-4-7[1m]">claude-opus-4-7[1m] — default, higher cost</option>
                             <option value="claude-opus-4-6[1m]">claude-opus-4-6[1m]</option>
                             <option value="claude-sonnet-4-6[1m]">claude-sonnet-4-6[1m]</option>
                             <option value="claude-haiku-4-5-20251001">claude-haiku-4-5</option>
@@ -591,6 +596,9 @@ export function TaskForm({ onSubmit, onClose, availableJobs = [] }: TaskFormProp
                             {codexModels.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
                           </select>
                         </div>
+                      </div>
+                      <div className="form-group form-group-sm">
+                        <span className="form-label-hint">Default debate Claude model is Opus 4.7, which costs more than Sonnet.</span>
                       </div>
                       <div className="form-group form-group-sm">
                         <label htmlFor="task-debate-rounds">Max Rounds</label>

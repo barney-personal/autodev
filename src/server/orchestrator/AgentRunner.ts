@@ -42,6 +42,7 @@ import { claimRecovery, clearRecoveryState } from './RecoveryLedger.js';
 import { createPrForJob, pushBranchForFailedJob } from './PrCreator.js';
 import type { Job, ClaudeStreamEvent, CodexStreamEvent } from '../../shared/types.js';
 import { isCodexModel, codexModelName, effectiveMaxTurns } from '../../shared/types.js';
+import { getClaudeEffort, getCodexReasoningEffort } from '../../shared/models.js';
 import { buildEyePrompt, isEyeJob, computeAdaptiveEyeInterval } from './EyeConfig.js';
 import { getJobIfStatus, markJobRunning } from './JobLifecycle.js';
 import { buildNiceSpawn, isNiceAvailable } from './ProcessPriority.js';
@@ -108,6 +109,8 @@ export function runAgent(options: RunOptions): void {
   const maxTurns = effectiveMaxTurns(stopMode, stopValue);
   const model: string | null = job.model ?? null;
   const useCodex = isCodexModel(model);
+  const codexReasoningEffort = getCodexReasoningEffort(model);
+  const claudeEffort = getClaudeEffort(model);
   if (useCodex) ensureCodexTrusted(workDir);
 
   const mcpUrl = `http://localhost:${mcpPort}/mcp/${agentId}`;
@@ -127,6 +130,7 @@ export function runAgent(options: RunOptions): void {
       '--skip-git-repo-check',
       '-c', `mcp_servers.orchestrator.url="${mcpUrl}"`,
       ...(codexSubModel ? ['-m', codexSubModel] : []),
+      ...(codexReasoningEffort ? ['-c', `model_reasoning_effort="${codexReasoningEffort}"`] : []),
       // Prompt is delivered via file-backed stdin (see below), not as a
       // positional arg, to avoid E2BIG / spawn failure when workflow
       // prompts grow large with inlined plan/contract/worklog context.
@@ -153,6 +157,7 @@ export function runAgent(options: RunOptions): void {
       '--append-system-prompt', SYSTEM_PROMPT,
       '--max-turns', String(maxTurns),
       ...(model ? ['--model', model] : []),
+      ...(claudeEffort ? ['--effort', claudeEffort] : []),
       ...(options.resumeSessionId ? ['--resume', options.resumeSessionId] : []),
     ];
     binary = CLAUDE;
@@ -1008,5 +1013,4 @@ function buildPrompt(job: Job): string {
 
   return prompt;
 }
-
 

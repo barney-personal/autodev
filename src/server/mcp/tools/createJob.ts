@@ -13,7 +13,7 @@ export const createJobSchema = z.object({
   max_turns: z.number().optional().describe('Max agent turns (default: 50). Ignored when stop_mode is not "turns".'),
   stop_mode: z.enum(['turns', 'budget', 'time', 'completion']).optional().describe('How to stop the agent: "turns" (default), "budget" (dollar limit), "time" (minute limit), or "completion" (run to natural finish)'),
   stop_value: z.number().optional().describe('Limit value for the stop mode: turn count, dollar amount, or minutes. Not used for "completion".'),
-  model: z.string().optional().describe('Model override, e.g. "claude-opus-4-6" (default: auto-classify)'),
+  model: z.string().optional().describe('Model override, e.g. "claude-opus-4-7" (default: auto-classify)'),
   depends_on: z.array(z.string()).optional().describe('Job IDs that must complete before this job runs'),
   use_worktree: z.boolean().optional().describe('Create a git worktree so the agent works in an isolated checkout'),
   repeat_interval_ms: z.number().optional().describe('Re-queue the job automatically after it completes; value is the delay in ms before the next run'),

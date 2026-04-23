@@ -41,7 +41,7 @@ export interface Job {
   max_turns: number;
   stop_mode: StopMode;
   stop_value: number | null;  // meaning depends on stop_mode: turns count, dollars, minutes, or null for completion
-  model: string | null;       // e.g. "claude-opus-4-6", null = auto-classify
+  model: string | null;       // e.g. "claude-opus-4-7", null = auto-classify
   template_id: string | null; // FK → templates.id
   depends_on: string | null;  // JSON array of job IDs this job must wait for
   flagged: number;            // 0=not flagged, 1=flagged for review

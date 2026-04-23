@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import type { BatchTemplate, Template, Project, RunBatchTemplateResponse } from '@shared/types';
+import { DEFAULT_DEBATE_CLAUDE_MODEL, DEFAULT_DEBATE_CODEX_MODEL } from '@shared/models';
 import { useModels } from '../hooks/useModels';
 
 interface BatchTemplateManagerProps {
@@ -29,8 +30,8 @@ export function BatchTemplateManager({ onClose, onRun }: BatchTemplateManagerPro
   const [runInteractive, setRunInteractive] = useState(false);
   const [runUseWorktree, setRunUseWorktree] = useState(false);
   const [runDebate, setRunDebate] = useState(false);
-  const [runClaudeModel, setRunClaudeModel] = useState('claude-sonnet-4-6[1m]');
-  const [runCodexModel, setRunCodexModel] = useState('codex');
+  const [runClaudeModel, setRunClaudeModel] = useState(DEFAULT_DEBATE_CLAUDE_MODEL);
+  const [runCodexModel, setRunCodexModel] = useState(DEFAULT_DEBATE_CODEX_MODEL);
   const [runDebateMaxRounds, setRunDebateMaxRounds] = useState(3);
   const [runPostActionPrompt, setRunPostActionPrompt] = useState('');
   const [runPostActionRole, setRunPostActionRole] = useState<'claude' | 'codex'>('claude');
@@ -71,8 +72,8 @@ export function BatchTemplateManager({ onClose, onRun }: BatchTemplateManagerPro
     setRunInteractive(false);
     setRunUseWorktree(false);
     setRunDebate(false);
-    setRunClaudeModel('claude-sonnet-4-6[1m]');
-    setRunCodexModel('codex');
+    setRunClaudeModel(DEFAULT_DEBATE_CLAUDE_MODEL);
+    setRunCodexModel(DEFAULT_DEBATE_CODEX_MODEL);
     setRunDebateMaxRounds(3);
     setRunPostActionPrompt('');
     setRunPostActionRole('claude');
@@ -323,7 +324,7 @@ export function BatchTemplateManager({ onClose, onRun }: BatchTemplateManagerPro
                           value={runClaudeModel}
                           onChange={e => setRunClaudeModel(e.target.value)}
                         >
-                          <option value="claude-opus-4-7[1m]">claude-opus-4-7[1m]</option>
+                          <option value="claude-opus-4-7[1m]">claude-opus-4-7[1m] — default, higher cost</option>
                           <option value="claude-opus-4-6[1m]">claude-opus-4-6[1m]</option>
                           <option value="claude-sonnet-4-6[1m]">claude-sonnet-4-6[1m]</option>
                           <option value="claude-haiku-4-5-20251001">claude-haiku-4-5</option>
@@ -339,6 +340,9 @@ export function BatchTemplateManager({ onClose, onRun }: BatchTemplateManagerPro
                           {codexModels.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
                         </select>
                       </div>
+                    </div>
+                    <div className="form-group form-group-sm">
+                      <span className="form-label-hint">Default debate Claude model is Opus 4.7, which costs more than Sonnet.</span>
                     </div>
 
                     <div className="form-row">

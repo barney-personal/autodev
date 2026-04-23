@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import type { CreateJobRequest, Job, Template, RetryPolicy, ReviewConfig, StopMode } from '@shared/types';
+import { DEFAULT_DEBATE_CLAUDE_MODEL, DEFAULT_DEBATE_CODEX_MODEL } from '@shared/models';
 import { TemplateModelStats } from './TemplateModelStats';
 import { StopModePicker } from './StopModePicker';
 import { useModels } from '../hooks/useModels';
@@ -34,8 +35,8 @@ export function JobForm({ onSubmit, onClose, availableJobs = [] }: JobFormProps)
   const [reviewModels, setReviewModels] = useState<string[]>([]);
   const [reviewAuto, setReviewAuto] = useState(true);
   const [debateEnabled, setDebateEnabled] = useState(false);
-  const [debateClaudeModel, setDebateClaudeModel] = useState('claude-sonnet-4-6[1m]');
-  const [debateCodexModel, setDebateCodexModel] = useState('codex');
+  const [debateClaudeModel, setDebateClaudeModel] = useState(DEFAULT_DEBATE_CLAUDE_MODEL);
+  const [debateCodexModel, setDebateCodexModel] = useState(DEFAULT_DEBATE_CODEX_MODEL);
   const [debateMaxRounds, setDebateMaxRounds] = useState(3);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -411,7 +412,7 @@ export function JobForm({ onSubmit, onClose, availableJobs = [] }: JobFormProps)
                     value={debateClaudeModel}
                     onChange={e => setDebateClaudeModel(e.target.value)}
                   >
-                    <option value="claude-opus-4-7[1m]">claude-opus-4-7[1m]</option>
+                    <option value="claude-opus-4-7[1m]">claude-opus-4-7[1m] — default, higher cost</option>
                     <option value="claude-opus-4-6[1m]">claude-opus-4-6[1m]</option>
                     <option value="claude-sonnet-4-6[1m]">claude-sonnet-4-6[1m]</option>
                     <option value="claude-haiku-4-5-20251001">claude-haiku-4-5</option>
@@ -427,6 +428,9 @@ export function JobForm({ onSubmit, onClose, availableJobs = [] }: JobFormProps)
                     {codexModels.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
                   </select>
                 </div>
+              </div>
+              <div className="form-group form-group-sm">
+                <span className="form-label-hint">Default debate Claude model is Opus 4.7, which costs more than Sonnet.</span>
               </div>
               <div className="form-group form-group-sm">
                 <label htmlFor="debateMaxRounds">Max Rounds</label>
