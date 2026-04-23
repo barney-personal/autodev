@@ -131,6 +131,9 @@ export function DebateForm({ initial, onSubmit, onClose }: DebateFormProps) {
               </select>
             </div>
           </div>
+          <div className="form-group form-group-sm">
+            <span className="form-label-hint">Debates default to Opus 4.7 for Claude, which is higher cost than Sonnet.</span>
+          </div>
 
           <div className="form-row">
             <div className="form-group form-group-sm">

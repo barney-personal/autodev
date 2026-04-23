@@ -21,7 +21,7 @@ export const DEFAULT_CLAUDE_EFFORT = 'xhigh';
 export const DEFAULT_CODEX_REASONING_EFFORT = 'xhigh';
 
 export function getClaudeEffort(model: string | null): string | null {
-  if (model != null && model.startsWith(DEFAULT_CLAUDE_OPUS_MODEL)) return DEFAULT_CLAUDE_EFFORT;
+  if (model === DEFAULT_CLAUDE_OPUS_MODEL || model === DEFAULT_CLAUDE_OPUS_MODEL_1M) return DEFAULT_CLAUDE_EFFORT;
   return null;
 }
 

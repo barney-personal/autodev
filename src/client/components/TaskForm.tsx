@@ -584,7 +584,7 @@ export function TaskForm({ onSubmit, onClose, availableJobs = [] }: TaskFormProp
                         <div className="form-group">
                           <label htmlFor="task-debate-claude">Claude Model</label>
                           <select id="task-debate-claude" value={debateClaudeModel} onChange={e => setDebateClaudeModel(e.target.value)}>
-                            <option value="claude-opus-4-7[1m]">claude-opus-4-7[1m]</option>
+                            <option value="claude-opus-4-7[1m]">claude-opus-4-7[1m] — default, higher cost</option>
                             <option value="claude-opus-4-6[1m]">claude-opus-4-6[1m]</option>
                             <option value="claude-sonnet-4-6[1m]">claude-sonnet-4-6[1m]</option>
                             <option value="claude-haiku-4-5-20251001">claude-haiku-4-5</option>
@@ -596,6 +596,9 @@ export function TaskForm({ onSubmit, onClose, availableJobs = [] }: TaskFormProp
                             {codexModels.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
                           </select>
                         </div>
+                      </div>
+                      <div className="form-group form-group-sm">
+                        <span className="form-label-hint">Default debate Claude model is Opus 4.7, which costs more than Sonnet.</span>
                       </div>
                       <div className="form-group form-group-sm">
                         <label htmlFor="task-debate-rounds">Max Rounds</label>
