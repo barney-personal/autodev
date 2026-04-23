@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import type { BatchTemplate, Template, Project, RunBatchTemplateResponse } from '@shared/types';
+import { DEFAULT_DEBATE_CLAUDE_MODEL, DEFAULT_DEBATE_CODEX_MODEL } from '@shared/models';
 import { useModels } from '../hooks/useModels';
 
 interface BatchTemplateManagerProps {
@@ -29,8 +30,8 @@ export function BatchTemplateManager({ onClose, onRun }: BatchTemplateManagerPro
   const [runInteractive, setRunInteractive] = useState(false);
   const [runUseWorktree, setRunUseWorktree] = useState(false);
   const [runDebate, setRunDebate] = useState(false);
-  const [runClaudeModel, setRunClaudeModel] = useState('claude-sonnet-4-6[1m]');
-  const [runCodexModel, setRunCodexModel] = useState('codex');
+  const [runClaudeModel, setRunClaudeModel] = useState(DEFAULT_DEBATE_CLAUDE_MODEL);
+  const [runCodexModel, setRunCodexModel] = useState(DEFAULT_DEBATE_CODEX_MODEL);
   const [runDebateMaxRounds, setRunDebateMaxRounds] = useState(3);
   const [runPostActionPrompt, setRunPostActionPrompt] = useState('');
   const [runPostActionRole, setRunPostActionRole] = useState<'claude' | 'codex'>('claude');
@@ -71,8 +72,8 @@ export function BatchTemplateManager({ onClose, onRun }: BatchTemplateManagerPro
     setRunInteractive(false);
     setRunUseWorktree(false);
     setRunDebate(false);
-    setRunClaudeModel('claude-sonnet-4-6[1m]');
-    setRunCodexModel('codex');
+    setRunClaudeModel(DEFAULT_DEBATE_CLAUDE_MODEL);
+    setRunCodexModel(DEFAULT_DEBATE_CODEX_MODEL);
     setRunDebateMaxRounds(3);
     setRunPostActionPrompt('');
     setRunPostActionRole('claude');

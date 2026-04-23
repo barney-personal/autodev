@@ -9,6 +9,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { isCodexModel, codexModelName } from '../shared/types.js';
+import { getCodexReasoningEffort } from '../shared/models.js';
 
 describe('Codex spawn args', () => {
   /**
@@ -17,6 +18,7 @@ describe('Codex spawn args', () => {
    */
   function buildCodexArgs(model: string, prompt: string, workDir: string): string[] {
     const codexSubModel = codexModelName(model);
+    const codexReasoningEffort = getCodexReasoningEffort(model);
     return [
       'exec',
       '--json',
@@ -25,6 +27,7 @@ describe('Codex spawn args', () => {
       '--skip-git-repo-check',
       '-c', `mcp_servers.orchestrator.url="http://localhost:3947/mcp/test"`,
       ...(codexSubModel ? ['-m', codexSubModel] : []),
+      ...(codexReasoningEffort ? ['-c', `model_reasoning_effort="${codexReasoningEffort}"`] : []),
       // Prompt must be the last positional arg
       prompt,
     ];
@@ -32,7 +35,7 @@ describe('Codex spawn args', () => {
 
   it('codex models are identified correctly', () => {
     expect(isCodexModel('codex')).toBe(true);
-    expect(isCodexModel('codex-gpt-5.4')).toBe(true);
+    expect(isCodexModel('codex-gpt-5.5')).toBe(true);
     expect(isCodexModel('claude-sonnet-4-6')).toBe(false);
     expect(isCodexModel(null)).toBe(false);
   });
@@ -49,16 +52,23 @@ describe('Codex spawn args', () => {
 
   it('prompt is included as the last arg even with a sub-model', () => {
     const prompt = 'Implement the feature';
-    const args = buildCodexArgs('codex-gpt-5.4', prompt, '/tmp/repo');
+    const args = buildCodexArgs('codex-gpt-5.5', prompt, '/tmp/repo');
 
     expect(args[args.length - 1]).toBe(prompt);
     // Sub-model flag should be present
     expect(args).toContain('-m');
-    expect(args).toContain('gpt-5.4');
+    expect(args).toContain('gpt-5.5');
+    expect(args).toContain('model_reasoning_effort="xhigh"');
     // Prompt comes after the model flag
-    const modelIdx = args.indexOf('gpt-5.4');
+    const modelIdx = args.indexOf('gpt-5.5');
     const promptIdx = args.indexOf(prompt);
     expect(promptIdx).toBeGreaterThan(modelIdx);
+  });
+
+  it('adds xhigh reasoning effort for codex sessions', () => {
+    const args = buildCodexArgs('codex', 'Review the diff', '/tmp/repo');
+    expect(args).toContain('-c');
+    expect(args).toContain('model_reasoning_effort="xhigh"');
   });
 
   it('prompt with special characters is passed as a single arg', () => {

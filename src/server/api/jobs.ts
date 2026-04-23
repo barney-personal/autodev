@@ -5,6 +5,7 @@ import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
 import { spawnInitialRoundJobs } from '../orchestrator/DebateManager.js';
 import { nudgeQueue } from '../orchestrator/WorkQueueManager.js';
+import { DEFAULT_DEBATE_CLAUDE_MODEL, DEFAULT_DEBATE_CODEX_MODEL } from '../../shared/models.js';
 import type { CreateJobRequest, Debate, JobStatus } from '../../shared/types.js';
 import { createJobSchema, updateJobTitleSchema, updateJobInteractiveSchema, validateBody } from './validation.js';
 
@@ -70,8 +71,8 @@ router.post('/', (req, res) => {
       return;
     }
 
-    const claudeModel = body.debateClaudeModel?.trim() || 'claude-sonnet-4-6[1m]';
-    const codexModel = body.debateCodexModel?.trim() || 'codex';
+    const claudeModel = body.debateClaudeModel?.trim() || DEFAULT_DEBATE_CLAUDE_MODEL;
+    const codexModel = body.debateCodexModel?.trim() || DEFAULT_DEBATE_CODEX_MODEL;
     const maxRounds = Math.min(Math.max(body.debateMaxRounds ?? 3, 1), 10);
     const now = Date.now();
 

@@ -7,6 +7,7 @@
  */
 import type { Workflow, StopMode } from '../../shared/types.js';
 import { isCodexModel } from '../../shared/types.js';
+import { DEFAULT_CLAUDE_OPUS_MODEL, DEFAULT_CLAUDE_SONNET_MODEL } from '../../shared/models.js';
 import {
   buildAssessPrompt,
   buildImplementPrompt,
@@ -37,7 +38,7 @@ const PHASE_CONFIGS: Record<WorkflowPhase, PhaseConfig> = {
       // Codex doesn't support MCP reliably — assess phase needs MCP for report_status/write_note
       if (isCodexModel(model)) {
         console.log('[phase-config] assess phase requires reliable MCP — falling back from Codex to Claude');
-        return 'claude-sonnet-4-6';
+        return DEFAULT_CLAUDE_SONNET_MODEL;
       }
       return model;
     },
@@ -59,7 +60,7 @@ const PHASE_CONFIGS: Record<WorkflowPhase, PhaseConfig> = {
     stopModeKey: null,
     stopValueKey: null,
     buildPrompt: (workflow, cycle, ctx) => buildVerifyPrompt(workflow, cycle, ctx),
-    overrides: { model: 'claude-opus-4-6', stopMode: 'turns', stopValue: 40 },
+    overrides: { model: DEFAULT_CLAUDE_OPUS_MODEL, stopMode: 'turns', stopValue: 40 },
   },
 };
 

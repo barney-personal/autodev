@@ -23,6 +23,7 @@ import { wrapExecLineWithNice } from './ProcessPriority.js';
 import { logResilienceEvent } from './ResilienceLogger.js';
 import { errMsg } from '../../shared/errors.js';
 import { isCodexModel, codexModelName, isAutoExitJob } from '../../shared/types.js';
+import { getClaudeEffort, getCodexReasoningEffort } from '../../shared/models.js';
 import { checkResources, escalateBackoff, resetBackoff, getBackoffMs, setLastResourceErrorTime, MAX_PTY_SESSIONS } from './PtyResourceManager.js';
 import { PTY_LOG_DIR, getNdjsonPath, getPtyStderrPath, getSnapshotPath, clearAgentLogFiles } from './PtyDiskLogger.js';
 import { isStandalonePrintJob } from './JobFinalizer.js';
@@ -141,21 +142,27 @@ export interface BuildAgentScriptOptions {
 export function buildAgentScript(opts: BuildAgentScriptOptions): string {
   const { agentId, job, workDir, mcpConfig, promptFilePath, useCodex, usePrintMode, resumeSessionId, expectedBranch } = opts;
   const model: string | null = job.model ?? null;
+  const codexReasoningEffort = getCodexReasoningEffort(model);
+  const claudeEffort = getClaudeEffort(model);
 
   let execLine: string;
   if (useCodex) {
     const mcpUrl = `http://localhost:${Number(MCP_PORT)}/mcp/${agentId}`;
     const codexSubModel = codexModelName(model);
     const modelFlag = codexSubModel ? ` -m ${JSON.stringify(codexSubModel)}` : '';
-    execLine = `exec ${JSON.stringify(CODEX)} --dangerously-bypass-approvals-and-sandbox -C ${JSON.stringify(workDir)} -c 'mcp_servers.orchestrator.url="${mcpUrl}"'${modelFlag}`;
+    const reasoningFlag = codexReasoningEffort
+      ? ` -c ${JSON.stringify(`model_reasoning_effort="${codexReasoningEffort}"`)}`
+      : '';
+    execLine = `exec ${JSON.stringify(CODEX)} --dangerously-bypass-approvals-and-sandbox -C ${JSON.stringify(workDir)} -c 'mcp_servers.orchestrator.url="${mcpUrl}"'${modelFlag}${reasoningFlag}`;
   } else {
     const resumeFlag = resumeSessionId ? ` --resume ${JSON.stringify(resumeSessionId)}` : '';
+    const effortFlag = claudeEffort ? ` --effort ${JSON.stringify(claudeEffort)}` : '';
     if (usePrintMode) {
       const ndjsonPath = getNdjsonPath(agentId);
       const stderrPath = getPtyStderrPath(agentId);
-      execLine = `${JSON.stringify(CLAUDE)} --dangerously-skip-permissions --settings ${JSON.stringify(HOOK_SETTINGS)} --mcp-config ${JSON.stringify(mcpConfig)} --append-system-prompt ${JSON.stringify(SYSTEM_PROMPT)}${model ? ` --model ${JSON.stringify(model)}` : ''} --print --output-format stream-json --verbose${resumeFlag} "$(cat ${JSON.stringify(promptFilePath)})" 2>> ${JSON.stringify(stderrPath)} | tee ${JSON.stringify(ndjsonPath)}`;
+      execLine = `${JSON.stringify(CLAUDE)} --dangerously-skip-permissions --settings ${JSON.stringify(HOOK_SETTINGS)} --mcp-config ${JSON.stringify(mcpConfig)} --append-system-prompt ${JSON.stringify(SYSTEM_PROMPT)}${model ? ` --model ${JSON.stringify(model)}` : ''}${effortFlag} --print --output-format stream-json --verbose${resumeFlag} "$(cat ${JSON.stringify(promptFilePath)})" 2>> ${JSON.stringify(stderrPath)} | tee ${JSON.stringify(ndjsonPath)}`;
     } else {
-      execLine = `exec ${JSON.stringify(CLAUDE)} --dangerously-skip-permissions --settings ${JSON.stringify(HOOK_SETTINGS)} --mcp-config ${JSON.stringify(mcpConfig)} --append-system-prompt ${JSON.stringify(SYSTEM_PROMPT)}${model ? ` --model ${JSON.stringify(model)}` : ''}${resumeFlag} "$(cat ${JSON.stringify(promptFilePath)})"`;
+      execLine = `exec ${JSON.stringify(CLAUDE)} --dangerously-skip-permissions --settings ${JSON.stringify(HOOK_SETTINGS)} --mcp-config ${JSON.stringify(mcpConfig)} --append-system-prompt ${JSON.stringify(SYSTEM_PROMPT)}${model ? ` --model ${JSON.stringify(model)}` : ''}${effortFlag}${resumeFlag} "$(cat ${JSON.stringify(promptFilePath)})"`;
     }
   }
 

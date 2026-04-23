@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import type { CreateJobRequest, Job, Template, RetryPolicy, ReviewConfig, StopMode } from '@shared/types';
+import { DEFAULT_DEBATE_CLAUDE_MODEL, DEFAULT_DEBATE_CODEX_MODEL } from '@shared/models';
 import { TemplateModelStats } from './TemplateModelStats';
 import { StopModePicker } from './StopModePicker';
 import { useModels } from '../hooks/useModels';
@@ -34,8 +35,8 @@ export function JobForm({ onSubmit, onClose, availableJobs = [] }: JobFormProps)
   const [reviewModels, setReviewModels] = useState<string[]>([]);
   const [reviewAuto, setReviewAuto] = useState(true);
   const [debateEnabled, setDebateEnabled] = useState(false);
-  const [debateClaudeModel, setDebateClaudeModel] = useState('claude-sonnet-4-6[1m]');
-  const [debateCodexModel, setDebateCodexModel] = useState('codex');
+  const [debateClaudeModel, setDebateClaudeModel] = useState(DEFAULT_DEBATE_CLAUDE_MODEL);
+  const [debateCodexModel, setDebateCodexModel] = useState(DEFAULT_DEBATE_CODEX_MODEL);
   const [debateMaxRounds, setDebateMaxRounds] = useState(3);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);

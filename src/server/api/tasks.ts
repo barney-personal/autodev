@@ -12,6 +12,7 @@ import {
   taskToJobRequest,
   taskToWorkflowRequest,
 } from '../../shared/taskNormalization.js';
+import { DEFAULT_DEBATE_CLAUDE_MODEL, DEFAULT_DEBATE_CODEX_MODEL } from '../../shared/models.js';
 import type { CreateTaskRequest, CreateTaskResponse, Debate } from '../../shared/types.js';
 
 const anthropic = new Anthropic();
@@ -115,8 +116,8 @@ export function createTaskCore(
       throw new Error('debate requires a description or template with content');
     }
 
-    const claudeModel = jobReq.debateClaudeModel?.trim() || 'claude-sonnet-4-6[1m]';
-    const codexModel = jobReq.debateCodexModel?.trim() || 'codex';
+    const claudeModel = jobReq.debateClaudeModel?.trim() || DEFAULT_DEBATE_CLAUDE_MODEL;
+    const codexModel = jobReq.debateCodexModel?.trim() || DEFAULT_DEBATE_CODEX_MODEL;
     const maxRounds = Math.min(Math.max(jobReq.debateMaxRounds ?? 3, 1), 10);
     const now = Date.now();
 

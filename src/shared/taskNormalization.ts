@@ -17,6 +17,7 @@ import type {
   ReviewConfig,
   TaskPreset,
 } from './types.js';
+import { DEFAULT_CODEX_MODEL } from './models.js';
 
 // ─── Preset defaults ────────────────────────────────────────────────────────
 
@@ -322,7 +323,7 @@ function clampIterations(n: number): number {
 
 function buildReviewConfig(reviewerModel?: string): ReviewConfig {
   return {
-    models: [reviewerModel?.trim() || 'codex'],
+    models: [reviewerModel?.trim() || DEFAULT_CODEX_MODEL],
     auto: true,
   };
 }

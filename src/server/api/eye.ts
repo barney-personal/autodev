@@ -12,6 +12,7 @@ import { nudgeQueue } from '../orchestrator/WorkQueueManager.js';
 import { updateJobRepeatInterval } from '../db/queries.js';
 import { Sentry } from '../instrument.js';
 import { eyeStartSchema, eyeConfigSchema, eyeDiscussionSchema, eyeMessageSchema, eyePrReviewDeleteSchema, validateBody } from './validation.js';
+import { DEFAULT_EYE_MODEL } from '../../shared/models.js';
 
 const router = Router();
 
@@ -152,7 +153,7 @@ router.post('/start', (req, res) => {
   const {
     repeatIntervalMs = getConfiguredRepeatIntervalMs(),
     maxTurns = 100,
-    model = 'claude-opus-4-6',
+    model = DEFAULT_EYE_MODEL,
     workDir,
   } = startParsed.data;
 

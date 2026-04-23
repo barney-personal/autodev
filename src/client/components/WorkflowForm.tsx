@@ -1,5 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import type { CreateAutonomousAgentRunRequest, Template, StopMode } from '@shared/types';
+import {
+  DEFAULT_WORKFLOW_IMPLEMENTER_MODEL,
+  DEFAULT_WORKFLOW_REVIEWER_MODEL,
+} from '@shared/models';
 import { useModels } from '../hooks/useModels';
 import { StopModePicker } from './StopModePicker';
 
@@ -13,8 +17,8 @@ export function WorkflowForm({ onSubmit, onClose }: WorkflowFormProps) {
   const [title, setTitle] = useState('');
   const [task, setTask] = useState('');
   const [workDir, setWorkDir] = useState('');
-  const [implementerModel, setImplementerModel] = useState('claude-sonnet-4-6[1m]');
-  const [reviewerModel, setReviewerModel] = useState('codex');
+  const [implementerModel, setImplementerModel] = useState(DEFAULT_WORKFLOW_IMPLEMENTER_MODEL);
+  const [reviewerModel, setReviewerModel] = useState(DEFAULT_WORKFLOW_REVIEWER_MODEL);
   const [maxCycles, setMaxCycles] = useState(10);
   const [templateId, setTemplateId] = useState('');
   const [useWorktree, setUseWorktree] = useState(true);
