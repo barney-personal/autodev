@@ -254,6 +254,10 @@ export interface PushBranchResult {
   ok: boolean;
   error?: string;
   authFailure?: boolean;
+  /** Number of `git push` attempts performed (1 or 2 in normal flow, 0 if validation failed). */
+  attempts?: number;
+  /** True iff a second attempt with `--force-with-lease` was made. */
+  retried?: boolean;
 }
 
 export interface CreatePrResult {
@@ -276,19 +280,48 @@ function isAuthFailure(stderr: string): boolean {
   return AUTH_FAILURE_PATTERNS.some(p => stderr.includes(p));
 }
 
+const DEFAULT_PUSH_RETRY_DELAY_MS = 5000;
+
 /**
- * Push the worktree branch to origin. Returns structured success/failure.
+ * Block the calling thread for `ms` without busy-waiting. Atomics.wait is the
+ * standard sync-sleep idiom in Node and works under Vitest. Tests inject a
+ * no-op `sleep` (or pass retryDelayMs: 0) to skip the real 5s wait.
+ */
+function defaultSyncSleep(ms: number): void {
+  if (ms <= 0) return;
+  const buf = new Int32Array(new SharedArrayBuffer(4));
+  Atomics.wait(buf, 0, 0, ms);
+}
+
+export interface PushBranchOptions {
+  /** Use --force-with-lease on the first attempt. Retry always uses --force-with-lease. */
+  force?: boolean;
+  /** Delay between attempt 1 and attempt 2 in milliseconds. Defaults to 5000. */
+  retryDelayMs?: number;
+  /** Override the synchronous sleep used between attempts (for tests). */
+  sleep?: (ms: number) => void;
+}
+
+/**
+ * Push the worktree branch to origin with one bounded retry.
+ *
+ * Attempt 1: `git push -u origin <branch>` (or `--force-with-lease` if force=true).
+ * Attempt 2: `git push --force-with-lease -u origin <branch>`, run only if attempt
+ * 1 failed with a non-auth error, after a `retryDelayMs` pause.
+ *
+ * Auth failures (Authentication failed, Permission denied, terminal prompts
+ * disabled, 403) fail fast — they will not self-resolve.
  */
 export function pushBranch(
   workflow: Workflow,
-  { force = false }: { force?: boolean } = {},
+  options: PushBranchOptions = {},
 ): PushBranchResult {
   const { worktree_path, worktree_branch } = workflow;
   if (!worktree_path || !worktree_branch) {
-    return { ok: false, error: 'missing worktree_path or worktree_branch' };
+    return { ok: false, error: 'missing worktree_path or worktree_branch', attempts: 0, retried: false };
   }
   if (!existsSync(worktree_path)) {
-    return { ok: false, error: `worktree directory missing at ${worktree_path}` };
+    return { ok: false, error: `worktree directory missing at ${worktree_path}`, attempts: 0, retried: false };
   }
 
   const branchCheck = ensureWorktreeBranch(worktree_path, worktree_branch);
@@ -296,18 +329,44 @@ export function pushBranch(
     console.warn(`[workflow ${workflow.id}] branch check failed:`, branchCheck.error);
   }
 
-  const pushArgs = force
+  const retryDelayMs = options.retryDelayMs ?? DEFAULT_PUSH_RETRY_DELAY_MS;
+  const sleep = options.sleep ?? defaultSyncSleep;
+
+  const firstArgs = options.force
     ? ['push', '--force-with-lease', '-u', 'origin', worktree_branch]
     : ['push', '-u', 'origin', worktree_branch];
 
   try {
-    execFileSync('git', pushArgs, {
+    execFileSync('git', firstArgs, {
       cwd: worktree_path, stdio: 'pipe', timeout: 30000,
     });
-    return { ok: true };
+    return { ok: true, attempts: 1, retried: false };
   } catch (err) {
     const stderr = execErrMsg(err);
-    return { ok: false, error: stderr, authFailure: isAuthFailure(stderr) };
+    if (isAuthFailure(stderr)) {
+      return { ok: false, error: stderr, authFailure: true, attempts: 1, retried: false };
+    }
+
+    console.warn(
+      `[workflow ${workflow.id}] git push attempt 1 failed (${stderr.split('\n')[0]}) — retrying once with --force-with-lease after ${retryDelayMs}ms`,
+    );
+    if (retryDelayMs > 0) sleep(retryDelayMs);
+
+    try {
+      execFileSync('git', ['push', '--force-with-lease', '-u', 'origin', worktree_branch], {
+        cwd: worktree_path, stdio: 'pipe', timeout: 30000,
+      });
+      return { ok: true, attempts: 2, retried: true };
+    } catch (err2) {
+      const stderr2 = execErrMsg(err2);
+      return {
+        ok: false,
+        error: stderr2,
+        authFailure: isAuthFailure(stderr2),
+        attempts: 2,
+        retried: true,
+      };
+    }
   }
 }
 
