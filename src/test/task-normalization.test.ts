@@ -325,7 +325,7 @@ describe('validateTaskRequest', () => {
   });
 
   it('rejects reviewConfig on autonomous tasks', () => {
-    expect(validateTaskRequest({ description: 'x', iterations: 5, reviewConfig: { models: ['codex'], auto: true } }))
+    expect(validateTaskRequest({ description: 'x', iterations: 5, reviewConfig: { models: ['codex-gpt-5.5'], auto: true } }))
       .toMatch(/reviewConfig is not supported/);
   });
 
@@ -363,7 +363,7 @@ describe('validateTaskRequest', () => {
       maxRetries: 3,
       completionChecks: ['lint', 'test'],
       context: { env: 'prod' },
-      reviewConfig: { models: ['codex'], auto: true },
+      reviewConfig: { models: ['codex-gpt-5.5'], auto: true },
     })).toBeNull();
   });
 
@@ -894,7 +894,7 @@ describe('taskToWorkflowRequest', () => {
     expect(() => taskToWorkflowRequest({
       description: 'x',
       iterations: 3,
-      reviewConfig: { models: ['codex'], auto: true },
+      reviewConfig: { models: ['codex-gpt-5.5'], auto: true },
     })).toThrow(/reviewConfig is not supported for workflow/);
   });
 
