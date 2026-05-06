@@ -75,6 +75,146 @@ export function countBranchCommits(cwd: string): number {
   return 0;
 }
 
+// ─── Recoverable-Work Probe ─────────────────────────────────────────────────
+//
+// Wrap-up cleanup is gated by a stricter probe than countBranchCommits: any
+// uncertainty (missing worktree, missing/ambiguous origin refs, dirty tree,
+// probe command failures) must preserve the worktree. Only a positively clean
+// state — verified worktree, clean status, verified origin base ref, zero
+// commits ahead — may proceed to cleanup.
+
+export type RecoverableWorkProbeStatus = 'has_work' | 'clean' | 'unknown';
+
+export interface RecoverableWorkProbe {
+  status: RecoverableWorkProbeStatus;
+  detail: string;
+  baseRef: string | null;
+}
+
+function verifyRevExists(cwd: string, ref: string): boolean {
+  try {
+    execFileSync('git', ['rev-parse', '--verify', '--quiet', ref], {
+      cwd, stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Decide whether a workflow's worktree has any work that wrap-up cleanup
+ * would otherwise destroy.
+ *
+ * Returns:
+ *  - `clean`     — proven safe to cleanup: worktree exists, working tree is
+ *                  clean, an origin base ref was verified, and HEAD has no
+ *                  commits ahead of that base.
+ *  - `has_work`  — known recoverable state: dirty tree or commits ahead.
+ *  - `unknown`   — anything we can't positively verify (missing worktree,
+ *                  missing branch, ambiguous origin refs, probe failures).
+ *                  Treat as `has_work` for cleanup decisions.
+ */
+export function probeRecoverableWorkflowWork(workflow: Workflow): RecoverableWorkProbe {
+  const { worktree_path, worktree_branch } = workflow;
+  if (!worktree_path) {
+    return { status: 'unknown', detail: 'workflow has no worktree_path', baseRef: null };
+  }
+  if (!existsSync(worktree_path)) {
+    return { status: 'unknown', detail: `worktree directory missing at ${worktree_path}`, baseRef: null };
+  }
+
+  if (!worktree_branch) {
+    return { status: 'unknown', detail: 'workflow has no worktree_branch', baseRef: null };
+  }
+
+  // Non-mutating branch sanity check. ensureWorktreeBranch performs a checkout
+  // when it disagrees, which is the wrong shape for a probe — read-only here.
+  try {
+    const head = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+      cwd: worktree_path, stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000,
+    }).toString().trim();
+    if (head !== worktree_branch) {
+      return {
+        status: 'unknown',
+        detail: `HEAD on '${head}' instead of expected '${worktree_branch}'`,
+        baseRef: null,
+      };
+    }
+  } catch (err) {
+    return { status: 'unknown', detail: `git rev-parse failed: ${execErrMsg(err)}`, baseRef: null };
+  }
+
+  // Dirty tree — uncommitted changes are recoverable work.
+  let porcelain: string;
+  try {
+    porcelain = execFileSync('git', ['status', '--porcelain'], {
+      cwd: worktree_path, stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000,
+    }).toString();
+  } catch (err) {
+    return { status: 'unknown', detail: `git status failed: ${execErrMsg(err)}`, baseRef: null };
+  }
+  if (porcelain.trim().length > 0) {
+    return { status: 'has_work', detail: 'worktree has uncommitted changes', baseRef: null };
+  }
+
+  // Resolve a verified origin base ref.
+  const candidates: string[] = [];
+  let defaultBranch: string | null = null;
+  try {
+    defaultBranch = getRemoteDefaultBranch(worktree_path);
+  } catch (err) {
+    return {
+      status: 'unknown',
+      detail: `failed to resolve origin default branch: ${execErrMsg(err)}`,
+      baseRef: null,
+    };
+  }
+  if (defaultBranch) candidates.push(`origin/${defaultBranch}`);
+  for (const fallback of ['origin/HEAD', 'origin/main', 'origin/master']) {
+    if (!candidates.includes(fallback)) candidates.push(fallback);
+  }
+
+  let baseRef: string | null = null;
+  for (const candidate of candidates) {
+    if (verifyRevExists(worktree_path, candidate)) {
+      baseRef = candidate;
+      break;
+    }
+  }
+  if (!baseRef) {
+    return {
+      status: 'unknown',
+      detail: `could not verify any origin base ref (tried ${candidates.join(', ')})`,
+      baseRef: null,
+    };
+  }
+
+  // Count local commits ahead of the verified base ref.
+  let log: string;
+  try {
+    log = execFileSync('git', ['log', '--format=%H', `${baseRef}..HEAD`], {
+      cwd: worktree_path, stdio: ['ignore', 'pipe', 'pipe'], timeout: 10000,
+    }).toString();
+  } catch (err) {
+    return {
+      status: 'unknown',
+      detail: `git log against ${baseRef} failed: ${execErrMsg(err)}`,
+      baseRef,
+    };
+  }
+
+  const lines = log.split('\n').filter(l => l.trim().length > 0);
+  if (lines.length === 0) {
+    return { status: 'clean', detail: `no commits ahead of ${baseRef}`, baseRef };
+  }
+  return {
+    status: 'has_work',
+    detail: `${lines.length} commit(s) ahead of ${baseRef}`,
+    baseRef,
+  };
+}
+
 // ─── PR Body ────────────────────────────────────────────────────────────────
 
 export function _buildPrBody(workflow: Workflow, planText: string | null, options?: { partial?: boolean }): string {

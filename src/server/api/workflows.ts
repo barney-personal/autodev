@@ -3,7 +3,7 @@ import { execFileSync } from 'child_process';
 import { existsSync } from 'fs';
 import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
-import { resumeWorkflow, cleanupWorktree, pushAndCreatePr, getPrCreationOutcome } from '../orchestrator/WorkflowManager.js';
+import { resumeWorkflow, cleanupWorktree, pushAndCreatePr, getPrCreationOutcome, probeRecoverableWorkflowWork } from '../orchestrator/WorkflowManager.js';
 import { cancelledAgents } from '../orchestrator/AgentRunner.js';
 import { getFileLockRegistry } from '../orchestrator/FileLockRegistry.js';
 import { disconnectAgent, isTmuxSessionAlive, saveSnapshot } from '../orchestrator/PtyManager.js';
@@ -205,10 +205,14 @@ router.post('/:id/wrap-up', (req, res) => {
     }
   }
 
-  // Create draft PR with partial work
+  // Create draft PR with partial work. An empty/whitespace string returned by
+  // pushAndCreatePr is treated as failure, not success — `gh pr create` can
+  // exit 0 with empty stdout in some pathological cases and we must not record
+  // an empty pr_url or skip the recoverable-work probe.
   let prUrl: string | null = null;
   if (workflow.worktree_path && workflow.work_dir) {
-    prUrl = pushAndCreatePr(workflow, true);
+    const raw = pushAndCreatePr(workflow, true);
+    prUrl = raw && raw.trim().length > 0 ? raw : null;
   }
   const prOutcome = getPrCreationOutcome(workflow, prUrl);
 
@@ -252,16 +256,37 @@ router.post('/:id/wrap-up', (req, res) => {
     return;
   }
 
+  // Default fallthrough — getPrCreationOutcome returned 'no_publishable_commits'.
+  // This is the load-bearing safety gate: countBranchCommits returns 0 when origin
+  // base refs cannot be verified, so we cannot trust prOutcome alone to decide
+  // cleanup. Run the stricter probe; only proceed to cleanup when it positively
+  // proves the worktree is clean against a verified origin base ref.
+  const probe = probeRecoverableWorkflowWork(workflow);
+
+  if (probe.status === 'clean') {
+    queries.updateWorkflow(workflow.id, {
+      status: 'cancelled',
+      current_phase: 'idle' as WorkflowPhase,
+      blocked_reason: null,
+      pr_url: null,
+    });
+    const finalWorkflow = queries.getWorkflowById(workflow.id);
+    if (finalWorkflow) socket.emitWorkflowUpdate(finalWorkflow);
+    if (finalWorkflow) cleanupWorktree(finalWorkflow);
+    res.json({ workflow: finalWorkflow, pr_url: null, outcome: 'no_publishable_commits' });
+    return;
+  }
+
+  // probe.status === 'has_work' or 'unknown' — preserve the worktree.
+  const preservedAt = workflow.worktree_path ?? '(unknown path)';
   queries.updateWorkflow(workflow.id, {
-    status: 'cancelled',
+    status: 'blocked',
     current_phase: 'idle' as WorkflowPhase,
-    blocked_reason: null,
-    pr_url: null,
+    blocked_reason: `Wrap-up: unknown PR-creation failure (${probe.detail}) — worktree preserved at ${preservedAt}`,
   });
   const finalWorkflow = queries.getWorkflowById(workflow.id);
   if (finalWorkflow) socket.emitWorkflowUpdate(finalWorkflow);
-  if (finalWorkflow) cleanupWorktree(finalWorkflow);
-  res.json({ workflow: finalWorkflow, pr_url: null, outcome: 'no_publishable_commits' });
+  res.status(409).json({ workflow: finalWorkflow, pr_url: null, outcome: 'draft_pr_failed_preserved' });
 });
 
 // POST /api/workflows/:id/resume — resume a blocked or stuck workflow
