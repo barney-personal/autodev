@@ -307,6 +307,58 @@ describe('pushAndCreatePr: partial label', () => {
     expect(prCreateCall).toBeDefined();
     expect(prCreateCall!.cmd).toContain('--label partial');
   });
+
+  // M3 regression: legacy pushAndCreatePr must verify the worktree is on the
+  // workflow branch BEFORE counting commits. If the worktree drifted to a
+  // clean different branch, counting on that wrong-branch HEAD yields 0 and
+  // would incorrectly skip PR creation even though the workflow branch has
+  // recoverable commits ahead of origin. This test fails on commit dd5e374
+  // (branch verification ran AFTER countBranchCommits via pushBranch).
+  it('verifies workflow branch before counting commits when worktree drifted (M3)', async () => {
+    let onCorrectBranch = false;
+    vi.mocked(execSync).mockImplementation((cmd: any, opts?: any) => {
+      execSyncCalls.push({ cmd, opts });
+      if (typeof cmd !== 'string') return Buffer.from('');
+
+      // ensureWorktreeBranch: HEAD on a wrong (clean) branch initially.
+      if (cmd.includes('rev-parse --abbrev-ref HEAD')) {
+        return Buffer.from(onCorrectBranch ? 'workflow/test-branch\n' : 'feature/drifted\n');
+      }
+      // ensureWorktreeBranch performs the checkout: now we're on the correct branch.
+      if (cmd.includes('git checkout')) {
+        onCorrectBranch = true;
+        return Buffer.from('');
+      }
+      // countBranchCommits: zero commits on the drifted branch, three on the workflow branch.
+      // Pre-fix code runs this BEFORE checkout → returns 0 → pushAndCreatePr returns null.
+      // Post-fix code runs ensureWorktreeBranch first → returns 3 → PR is created.
+      if (cmd.includes('rev-list --count')) {
+        return Buffer.from(onCorrectBranch ? '3\n' : '0\n');
+      }
+      if (cmd.startsWith('git push')) return Buffer.from('');
+      if (cmd.includes('gh pr create')) return Buffer.from('https://github.com/test/repo/pull/77\n');
+      return Buffer.from('');
+    });
+
+    const { pushAndCreatePr } = await import('../server/orchestrator/WorkflowManager.js');
+    const wf = makeWorkflow();
+
+    const prUrl = pushAndCreatePr(wf, false);
+
+    expect(prUrl).toBe('https://github.com/test/repo/pull/77');
+
+    const checkoutIdx = execSyncCalls.findIndex(
+      c => typeof c.cmd === 'string' && c.cmd.includes('git checkout')
+    );
+    const revListIdx = execSyncCalls.findIndex(
+      c => typeof c.cmd === 'string' && c.cmd.includes('rev-list --count')
+    );
+    expect(checkoutIdx).toBeGreaterThanOrEqual(0);
+    expect(revListIdx).toBeGreaterThan(checkoutIdx);
+
+    const checkoutCall = execSyncCalls[checkoutIdx]!;
+    expect(typeof checkoutCall.cmd === 'string' && checkoutCall.cmd.includes('workflow/test-branch')).toBe(true);
+  });
 });
 
 describe('finalizeWorkflow: worktree preservation on PR failure', () => {

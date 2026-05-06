@@ -435,6 +435,20 @@ export function pushAndCreatePr(
     return null;
   }
 
+  if (!worktree_branch) {
+    console.log(`[workflow ${workflow.id}] no worktree_branch — skipping PR`);
+    return null;
+  }
+
+  // Verify the worktree is on the workflow branch BEFORE counting commits.
+  // If it has drifted to a different (clean) branch, countBranchCommits would
+  // count zero on the wrong branch and incorrectly skip PR creation, even
+  // though the workflow branch has recoverable commits ahead of origin.
+  const branchCheck = ensureWorktreeBranch(worktree_path, worktree_branch);
+  if (!branchCheck.ok) {
+    console.warn(`[workflow ${workflow.id}] branch check failed:`, branchCheck.error);
+  }
+
   let hasCommits = false;
   try {
     hasCommits = countBranchCommits(worktree_path) > 0;
@@ -443,7 +457,7 @@ export function pushAndCreatePr(
     hasCommits = true;
   }
 
-  if (!hasCommits || !worktree_branch) {
+  if (!hasCommits) {
     console.log(`[workflow ${workflow.id}] no commits on branch — skipping PR`);
     return null;
   }
