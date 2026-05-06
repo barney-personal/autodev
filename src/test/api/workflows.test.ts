@@ -48,8 +48,6 @@ vi.mock('../../server/orchestrator/WorkflowManager.js', () => ({
   })),
   pushAndCreatePr: vi.fn(() => null),
   getPrCreationOutcome: vi.fn(() => 'no_publishable_commits'),
-  pushBranch: vi.fn(() => ({ ok: true })),
-  createWorkflowPr: vi.fn(() => ({ ok: false, error: 'mock' })),
   probeRecoverableWorkflowWork: vi.fn(() => ({ status: 'clean', detail: 'no commits ahead of origin/main', baseRef: 'origin/main' })),
   cleanupWorktree: vi.fn(),
   parseMilestones: vi.fn(() => ({ total: 0, done: 0 })),
