@@ -1674,3 +1674,270 @@ describe('argv-safety regression: raw execFileSync assertions (M4)', () => {
     expect(shellPrView).toBeUndefined();
   });
 });
+
+// M4 — bounded retry inside pushBranch with auth fail-fast.
+// pushBranch tries `git push -u origin <branch>` once, sleeps a bounded delay
+// on transient failure, then retries once with `--force-with-lease`. Auth
+// failures (Authentication failed, Permission denied, terminal prompts
+// disabled, 403) skip the retry. The result carries { attempts, retried }
+// metadata so tests and operators can see what happened.
+describe('pushBranch: bounded retry with auth fail-fast (M4)', () => {
+  beforeEach(async () => {
+    execSyncCalls.length = 0;
+    execFileSyncCalls.length = 0;
+    vi.restoreAllMocks();
+    await setupTestDb();
+  });
+
+  afterEach(async () => {
+    await cleanupTestDb();
+    vi.restoreAllMocks();
+  });
+
+  it('first attempt succeeds — no retry, attempts=1, retried=false', async () => {
+    const sleepCalls: number[] = [];
+    const sleep = (ms: number) => { sleepCalls.push(ms); };
+
+    const callLog: Array<{ file: string; args: string[] }> = [];
+    vi.mocked(execFileSync).mockImplementation((file: any, args?: any) => {
+      callLog.push({ file, args: args ?? [] });
+      if (file === 'git' && args?.[0] === 'push') return Buffer.from('');
+      return Buffer.from('');
+    });
+    vi.mocked(execSync).mockImplementation((cmd: any) => {
+      if (typeof cmd === 'string' && cmd.includes('rev-parse --abbrev-ref HEAD')) {
+        return Buffer.from('workflow/test-branch\n');
+      }
+      return Buffer.from('');
+    });
+
+    const { pushBranch } = await import('../server/orchestrator/WorkflowManager.js');
+    const result = pushBranch(makeWorkflow(), { sleep, retryDelayMs: 5000 });
+
+    expect(result.ok).toBe(true);
+    expect(result.attempts).toBe(1);
+    expect(result.retried).toBe(false);
+    expect(result.error).toBeUndefined();
+
+    const pushCalls = callLog.filter(c => c.file === 'git' && c.args[0] === 'push');
+    expect(pushCalls.length).toBe(1);
+    // First (and only) attempt is vanilla push, not --force-with-lease.
+    expect(pushCalls[0]!.args).toEqual(['push', '-u', 'origin', 'workflow/test-branch']);
+    // Sleep never called when first attempt succeeded.
+    expect(sleepCalls).toEqual([]);
+  });
+
+  it('first attempt transient failure, retry succeeds — attempts=2, retried=true, --force-with-lease used', async () => {
+    const sleepCalls: number[] = [];
+    const sleep = (ms: number) => { sleepCalls.push(ms); };
+
+    const callLog: Array<{ file: string; args: string[] }> = [];
+    vi.mocked(execFileSync).mockImplementation((file: any, args?: any) => {
+      callLog.push({ file, args: args ?? [] });
+      if (file === 'git' && args?.[0] === 'push') {
+        const pushCount = callLog.filter(c => c.file === 'git' && c.args[0] === 'push').length;
+        if (pushCount === 1) {
+          // Transient error on first attempt — not auth.
+          throw Object.assign(new Error('transient'), {
+            stderr: Buffer.from('error: failed to push some refs (network timeout)'),
+          });
+        }
+        return Buffer.from('');
+      }
+      return Buffer.from('');
+    });
+    vi.mocked(execSync).mockImplementation((cmd: any) => {
+      if (typeof cmd === 'string' && cmd.includes('rev-parse --abbrev-ref HEAD')) {
+        return Buffer.from('workflow/test-branch\n');
+      }
+      return Buffer.from('');
+    });
+
+    const { pushBranch } = await import('../server/orchestrator/WorkflowManager.js');
+    const result = pushBranch(makeWorkflow(), { sleep, retryDelayMs: 5000 });
+
+    expect(result.ok).toBe(true);
+    expect(result.attempts).toBe(2);
+    expect(result.retried).toBe(true);
+    expect(result.error).toBeUndefined();
+
+    const pushCalls = callLog.filter(c => c.file === 'git' && c.args[0] === 'push');
+    expect(pushCalls.length).toBe(2);
+    // Attempt 1: vanilla push.
+    expect(pushCalls[0]!.args).toEqual(['push', '-u', 'origin', 'workflow/test-branch']);
+    // Attempt 2: must include --force-with-lease.
+    expect(pushCalls[1]!.args).toEqual(['push', '--force-with-lease', '-u', 'origin', 'workflow/test-branch']);
+
+    // Sleep called once with the configured delay between the two attempts.
+    expect(sleepCalls).toEqual([5000]);
+  });
+
+  it('auth failure on first attempt fails fast — exactly one push, retried=false, authFailure=true', async () => {
+    const sleepCalls: number[] = [];
+    const sleep = (ms: number) => { sleepCalls.push(ms); };
+
+    const callLog: Array<{ file: string; args: string[] }> = [];
+    vi.mocked(execFileSync).mockImplementation((file: any, args?: any) => {
+      callLog.push({ file, args: args ?? [] });
+      if (file === 'git' && args?.[0] === 'push') {
+        throw Object.assign(new Error('auth fail'), {
+          stderr: Buffer.from('fatal: Authentication failed for https://github.com/test/repo'),
+        });
+      }
+      return Buffer.from('');
+    });
+    vi.mocked(execSync).mockImplementation((cmd: any) => {
+      if (typeof cmd === 'string' && cmd.includes('rev-parse --abbrev-ref HEAD')) {
+        return Buffer.from('workflow/test-branch\n');
+      }
+      return Buffer.from('');
+    });
+
+    const { pushBranch } = await import('../server/orchestrator/WorkflowManager.js');
+    const result = pushBranch(makeWorkflow(), { sleep, retryDelayMs: 5000 });
+
+    expect(result.ok).toBe(false);
+    expect(result.authFailure).toBe(true);
+    expect(result.attempts).toBe(1);
+    expect(result.retried).toBe(false);
+    expect(result.error).toContain('Authentication failed');
+
+    // Hard rule: exactly one git push attempt was made.
+    const pushCalls = callLog.filter(c => c.file === 'git' && c.args[0] === 'push');
+    expect(pushCalls.length).toBe(1);
+    // No sleep happened — auth failure short-circuits.
+    expect(sleepCalls).toEqual([]);
+  });
+
+  it.each([
+    'Authentication failed',
+    'Permission denied (publickey)',
+    'fatal: could not read Username for',
+    'fatal: could not read Password for',
+    'terminal prompts disabled',
+    'The requested URL returned error: 403',
+  ])('treats %s as non-retryable auth failure', async (stderrMessage) => {
+    const sleepCalls: number[] = [];
+    const callLog: Array<{ file: string; args: string[] }> = [];
+    vi.mocked(execFileSync).mockImplementation((file: any, args?: any) => {
+      callLog.push({ file, args: args ?? [] });
+      if (file === 'git' && args?.[0] === 'push') {
+        throw Object.assign(new Error('auth-like'), { stderr: Buffer.from(stderrMessage) });
+      }
+      return Buffer.from('');
+    });
+    vi.mocked(execSync).mockImplementation((cmd: any) => {
+      if (typeof cmd === 'string' && cmd.includes('rev-parse --abbrev-ref HEAD')) {
+        return Buffer.from('workflow/test-branch\n');
+      }
+      return Buffer.from('');
+    });
+
+    const { pushBranch } = await import('../server/orchestrator/WorkflowManager.js');
+    const result = pushBranch(makeWorkflow(), {
+      sleep: (ms: number) => { sleepCalls.push(ms); },
+      retryDelayMs: 5000,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.authFailure).toBe(true);
+    expect(result.attempts).toBe(1);
+    expect(result.retried).toBe(false);
+    const pushCalls = callLog.filter(c => c.file === 'git' && c.args[0] === 'push');
+    expect(pushCalls.length).toBe(1);
+    expect(sleepCalls).toEqual([]);
+  });
+
+  it('both attempts fail transiently — returns second stderr, attempts=2, retried=true', async () => {
+    const sleepCalls: number[] = [];
+    const sleep = (ms: number) => { sleepCalls.push(ms); };
+
+    const callLog: Array<{ file: string; args: string[] }> = [];
+    vi.mocked(execFileSync).mockImplementation((file: any, args?: any) => {
+      callLog.push({ file, args: args ?? [] });
+      if (file === 'git' && args?.[0] === 'push') {
+        const pushCount = callLog.filter(c => c.file === 'git' && c.args[0] === 'push').length;
+        const message = pushCount === 1
+          ? 'error: failed to push some refs (first transient)'
+          : 'error: remote rejected (second transient — distinct details)';
+        throw Object.assign(new Error('transient'), { stderr: Buffer.from(message) });
+      }
+      return Buffer.from('');
+    });
+    vi.mocked(execSync).mockImplementation((cmd: any) => {
+      if (typeof cmd === 'string' && cmd.includes('rev-parse --abbrev-ref HEAD')) {
+        return Buffer.from('workflow/test-branch\n');
+      }
+      return Buffer.from('');
+    });
+
+    const { pushBranch } = await import('../server/orchestrator/WorkflowManager.js');
+    const result = pushBranch(makeWorkflow(), { sleep, retryDelayMs: 5000 });
+
+    expect(result.ok).toBe(false);
+    expect(result.attempts).toBe(2);
+    expect(result.retried).toBe(true);
+    expect(result.authFailure).toBe(false);
+    // The error must come from the SECOND attempt, not the first.
+    expect(result.error).toContain('second transient');
+    expect(result.error).not.toContain('first transient');
+
+    const pushCalls = callLog.filter(c => c.file === 'git' && c.args[0] === 'push');
+    expect(pushCalls.length).toBe(2);
+    expect(pushCalls[0]!.args).toEqual(['push', '-u', 'origin', 'workflow/test-branch']);
+    expect(pushCalls[1]!.args).toEqual(['push', '--force-with-lease', '-u', 'origin', 'workflow/test-branch']);
+    // Sleep called once between attempts.
+    expect(sleepCalls).toEqual([5000]);
+  });
+
+  it('retryDelayMs: 0 skips the sleep entirely', async () => {
+    const sleepCalls: number[] = [];
+    const sleep = (ms: number) => { sleepCalls.push(ms); };
+
+    const callLog: Array<{ file: string; args: string[] }> = [];
+    vi.mocked(execFileSync).mockImplementation((file: any, args?: any) => {
+      callLog.push({ file, args: args ?? [] });
+      if (file === 'git' && args?.[0] === 'push') {
+        const pushCount = callLog.filter(c => c.file === 'git' && c.args[0] === 'push').length;
+        if (pushCount === 1) {
+          throw Object.assign(new Error('transient'), { stderr: Buffer.from('error: try again') });
+        }
+        return Buffer.from('');
+      }
+      return Buffer.from('');
+    });
+    vi.mocked(execSync).mockImplementation((cmd: any) => {
+      if (typeof cmd === 'string' && cmd.includes('rev-parse --abbrev-ref HEAD')) {
+        return Buffer.from('workflow/test-branch\n');
+      }
+      return Buffer.from('');
+    });
+
+    const { pushBranch } = await import('../server/orchestrator/WorkflowManager.js');
+    const result = pushBranch(makeWorkflow(), { sleep, retryDelayMs: 0 });
+
+    expect(result.ok).toBe(true);
+    expect(result.attempts).toBe(2);
+    expect(result.retried).toBe(true);
+    // sleep was never invoked because retryDelayMs <= 0.
+    expect(sleepCalls).toEqual([]);
+  });
+
+  it('returns failure metadata without attempting push when worktree path is missing', async () => {
+    const callLog: Array<{ file: string; args: string[] }> = [];
+    vi.mocked(execFileSync).mockImplementation((file: any, args?: any) => {
+      callLog.push({ file, args: args ?? [] });
+      return Buffer.from('');
+    });
+
+    const { pushBranch } = await import('../server/orchestrator/WorkflowManager.js');
+    const wf = makeWorkflow({ worktree_path: null });
+    const result = pushBranch(wf);
+
+    expect(result.ok).toBe(false);
+    expect(result.attempts).toBe(0);
+    expect(result.retried).toBe(false);
+    const pushCalls = callLog.filter(c => c.file === 'git' && c.args[0] === 'push');
+    expect(pushCalls.length).toBe(0);
+  });
+});
