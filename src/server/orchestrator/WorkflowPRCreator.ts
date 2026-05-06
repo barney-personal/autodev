@@ -254,10 +254,6 @@ export interface PushBranchResult {
   ok: boolean;
   error?: string;
   authFailure?: boolean;
-  /** Number of `git push` attempts performed (1 or 2 in normal flow, 0 if validation failed). */
-  attempts?: number;
-  /** True iff a second attempt with `--force-with-lease` was made. */
-  retried?: boolean;
 }
 
 export interface CreatePrResult {
@@ -276,68 +272,23 @@ const AUTH_FAILURE_PATTERNS = [
   'The requested URL returned error: 403',
 ];
 
-const RATE_LIMIT_PATTERNS = [
-  'retry-after',
-  'rate limit',
-  'rate_limit',
-  'secondary rate limit',
-  'abuse detection',
-];
-
-function isRateLimited(stderr: string): boolean {
-  const lower = stderr.toLowerCase();
-  return RATE_LIMIT_PATTERNS.some(p => lower.includes(p));
-}
-
 function isAuthFailure(stderr: string): boolean {
-  if (isRateLimited(stderr)) return false;
-  const lower = stderr.toLowerCase();
-  return AUTH_FAILURE_PATTERNS.some(p => lower.includes(p.toLowerCase()));
-}
-
-const DEFAULT_PUSH_RETRY_DELAY_MS = 5000;
-
-/**
- * Block the calling thread for `ms` without busy-waiting. Atomics.wait is the
- * standard sync-sleep idiom in Node and works under Vitest. Tests inject a
- * no-op `sleep` (or pass retryDelayMs: 0) to skip the real 5s wait.
- */
-function defaultSyncSleep(ms: number): void {
-  if (ms <= 0) return;
-  const buf = new Int32Array(new SharedArrayBuffer(4));
-  Atomics.wait(buf, 0, 0, ms);
-}
-
-export interface PushBranchOptions {
-  /** Use --force-with-lease on the first attempt. Retry always uses --force-with-lease. */
-  force?: boolean;
-  /** Delay between attempt 1 and attempt 2 in milliseconds. Defaults to 5000. */
-  retryDelayMs?: number;
-  /** Override the synchronous sleep used between attempts (for tests). */
-  sleep?: (ms: number) => void;
+  return AUTH_FAILURE_PATTERNS.some(p => stderr.includes(p));
 }
 
 /**
- * Push the worktree branch to origin with one bounded retry.
- *
- * Attempt 1: `git push -u origin <branch>` (or `--force-with-lease` if force=true).
- * Attempt 2: `git push --force-with-lease -u origin <branch>`, run only if attempt
- * 1 failed with a non-auth error, after a `retryDelayMs` pause.
- *
- * Auth failures (Authentication failed, Permission denied, terminal prompts
- * disabled, plain 403) fail fast; 403 with rate-limit wording remains
- * transient and gets the bounded retry.
+ * Push the worktree branch to origin. Returns structured success/failure.
  */
 export function pushBranch(
   workflow: Workflow,
-  options: PushBranchOptions = {},
+  { force = false }: { force?: boolean } = {},
 ): PushBranchResult {
   const { worktree_path, worktree_branch } = workflow;
   if (!worktree_path || !worktree_branch) {
-    return { ok: false, error: 'missing worktree_path or worktree_branch', attempts: 0, retried: false };
+    return { ok: false, error: 'missing worktree_path or worktree_branch' };
   }
   if (!existsSync(worktree_path)) {
-    return { ok: false, error: `worktree directory missing at ${worktree_path}`, attempts: 0, retried: false };
+    return { ok: false, error: `worktree directory missing at ${worktree_path}` };
   }
 
   const branchCheck = ensureWorktreeBranch(worktree_path, worktree_branch);
@@ -345,44 +296,18 @@ export function pushBranch(
     console.warn(`[workflow ${workflow.id}] branch check failed:`, branchCheck.error);
   }
 
-  const retryDelayMs = options.retryDelayMs ?? DEFAULT_PUSH_RETRY_DELAY_MS;
-  const sleep = options.sleep ?? defaultSyncSleep;
-
-  const firstArgs = options.force
+  const pushArgs = force
     ? ['push', '--force-with-lease', '-u', 'origin', worktree_branch]
     : ['push', '-u', 'origin', worktree_branch];
 
   try {
-    execFileSync('git', firstArgs, {
+    execFileSync('git', pushArgs, {
       cwd: worktree_path, stdio: 'pipe', timeout: 30000,
     });
-    return { ok: true, attempts: 1, retried: false };
+    return { ok: true };
   } catch (err) {
     const stderr = execErrMsg(err);
-    if (isAuthFailure(stderr)) {
-      return { ok: false, error: stderr, authFailure: true, attempts: 1, retried: false };
-    }
-
-    console.warn(
-      `[workflow ${workflow.id}] git push attempt 1 failed (${stderr.split('\n')[0]}) — retrying once with --force-with-lease after ${retryDelayMs}ms`,
-    );
-    if (retryDelayMs > 0) sleep(retryDelayMs);
-
-    try {
-      execFileSync('git', ['push', '--force-with-lease', '-u', 'origin', worktree_branch], {
-        cwd: worktree_path, stdio: 'pipe', timeout: 30000,
-      });
-      return { ok: true, attempts: 2, retried: true };
-    } catch (err2) {
-      const stderr2 = execErrMsg(err2);
-      return {
-        ok: false,
-        error: stderr2,
-        authFailure: isAuthFailure(stderr2),
-        attempts: 2,
-        retried: true,
-      };
-    }
+    return { ok: false, error: stderr, authFailure: isAuthFailure(stderr) };
   }
 }
 
@@ -497,7 +422,33 @@ export function createWorkflowPr(
  * and the max-cycles partial PR path. The wrap-up handler calls pushBranch and
  * createWorkflowPr separately for attributed error reporting.
  */
-export function pushAndCreatePr(
+function defaultSyncSleep(ms: number): void {
+  if (ms <= 0) return;
+  const buf = new Int32Array(new SharedArrayBuffer(4));
+  Atomics.wait(buf, 0, 0, ms);
+}
+
+export interface PushBranchOptions {
+  /** Use --force-with-lease on the first attempt. Retry always uses --force-with-lease. */
+  force?: boolean;
+  /** Delay between attempt 1 and attempt 2 in milliseconds. Defaults to 5000. */
+  retryDelayMs?: number;
+  /** Override the synchronous sleep used between attempts (for tests). */
+  sleep?: (ms: number) => void;
+}
+
+/**
+ * Push the worktree branch to origin with one bounded retry.
+ *
+ * Attempt 1: `git push -u origin <branch>` (or `--force-with-lease` if force=true).
+ * Attempt 2: `git push --force-with-lease -u origin <branch>`, run only if attempt
+ * 1 failed with a non-auth error, after a `retryDelayMs` pause.
+ *
+ * Auth failures (Authentication failed, Permission denied, terminal prompts
+ * disabled, plain 403) fail fast; 403 with rate-limit wording remains
+ * transient and gets the bounded retry.
+ */
+export function pushBranch(
   workflow: Workflow,
   isDraft: boolean,
   updateAndEmit?: (id: string, fields: Parameters<typeof queries.updateWorkflow>[1]) => void,
@@ -510,20 +461,6 @@ export function pushAndCreatePr(
     return null;
   }
 
-  if (!worktree_branch) {
-    console.log(`[workflow ${workflow.id}] no worktree_branch — skipping PR`);
-    return null;
-  }
-
-  // Verify the worktree is on the workflow branch BEFORE counting commits.
-  // If it has drifted to a different (clean) branch, countBranchCommits would
-  // count zero on the wrong branch and incorrectly skip PR creation, even
-  // though the workflow branch has recoverable commits ahead of origin.
-  const branchCheck = ensureWorktreeBranch(worktree_path, worktree_branch);
-  if (!branchCheck.ok) {
-    console.warn(`[workflow ${workflow.id}] branch check failed:`, branchCheck.error);
-  }
-
   let hasCommits = false;
   try {
     hasCommits = countBranchCommits(worktree_path) > 0;
@@ -532,7 +469,7 @@ export function pushAndCreatePr(
     hasCommits = true;
   }
 
-  if (!hasCommits) {
+  if (!hasCommits || !worktree_branch) {
     console.log(`[workflow ${workflow.id}] no commits on branch — skipping PR`);
     return null;
   }
@@ -643,7 +580,7 @@ function isReconcilablePrBlockedReason(reason: string): boolean {
   if (reason.includes('gh pr create failed')) return true;
   if (reason.includes('unknown PR-creation failure')) return true;
   // Push failures that are auth-related won't fix themselves on retry
-  if (reason.includes('branch push failed') && !isAuthFailure(reason)) return true;
+  if (reason.includes('branch push failed') && !AUTH_FAILURE_PATTERNS.some(p => reason.includes(p))) return true;
   return false;
 }
 
