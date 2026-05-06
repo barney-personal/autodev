@@ -276,8 +276,23 @@ const AUTH_FAILURE_PATTERNS = [
   'The requested URL returned error: 403',
 ];
 
+const RATE_LIMIT_PATTERNS = [
+  'retry-after',
+  'rate limit',
+  'rate_limit',
+  'secondary rate limit',
+  'abuse detection',
+];
+
+function isRateLimited(stderr: string): boolean {
+  const lower = stderr.toLowerCase();
+  return RATE_LIMIT_PATTERNS.some(p => lower.includes(p));
+}
+
 function isAuthFailure(stderr: string): boolean {
-  return AUTH_FAILURE_PATTERNS.some(p => stderr.includes(p));
+  if (isRateLimited(stderr)) return false;
+  const lower = stderr.toLowerCase();
+  return AUTH_FAILURE_PATTERNS.some(p => lower.includes(p.toLowerCase()));
 }
 
 const DEFAULT_PUSH_RETRY_DELAY_MS = 5000;
@@ -310,7 +325,8 @@ export interface PushBranchOptions {
  * 1 failed with a non-auth error, after a `retryDelayMs` pause.
  *
  * Auth failures (Authentication failed, Permission denied, terminal prompts
- * disabled, 403) fail fast — they will not self-resolve.
+ * disabled, plain 403) fail fast; 403 with rate-limit wording remains
+ * transient and gets the bounded retry.
  */
 export function pushBranch(
   workflow: Workflow,
@@ -653,7 +669,7 @@ function isReconcilablePrBlockedReason(reason: string): boolean {
   if (reason.includes('gh pr create failed')) return true;
   if (reason.includes('unknown PR-creation failure')) return true;
   // Push failures that are auth-related won't fix themselves on retry
-  if (reason.includes('branch push failed') && !AUTH_FAILURE_PATTERNS.some(p => reason.includes(p))) return true;
+  if (reason.includes('branch push failed') && !isAuthFailure(reason)) return true;
   return false;
 }
 
