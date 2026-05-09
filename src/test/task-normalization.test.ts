@@ -483,7 +483,7 @@ describe('taskToJobRequest', () => {
       review: true,
     });
     expect(result.reviewConfig).toEqual({
-      models: ['codex'],
+      models: ['codex-gpt-5.5'],
       auto: true,
     });
   });
@@ -495,7 +495,7 @@ describe('taskToJobRequest', () => {
       reviewerModel: '  ',
     });
     expect(result.reviewConfig).toEqual({
-      models: ['codex'],
+      models: ['codex-gpt-5.5'],
       auto: true,
     });
   });
@@ -525,7 +525,7 @@ describe('taskToJobRequest', () => {
     const result = taskToJobRequest({ templateId: 'tpl-1', review: true });
     expect(result.description).toBe('');
     expect(result.templateId).toBe('tpl-1');
-    expect(result.reviewConfig).toEqual({ models: ['codex'], auto: true });
+    expect(result.reviewConfig).toEqual({ models: ['codex-gpt-5.5'], auto: true });
   });
 
   it('throws when called for autonomous task', () => {
@@ -575,7 +575,7 @@ describe('taskToJobRequest', () => {
     // Assert canonical reviewed defaults directly so a shared regression in
     // resolveTaskConfig or buildReviewConfig cannot hide behind path equality.
     expect(withConfig.useWorktree).toBe(true);
-    expect(withConfig.reviewConfig).toEqual({ models: ['codex'], auto: true });
+    expect(withConfig.reviewConfig).toEqual({ models: ['codex-gpt-5.5'], auto: true });
   });
 
   it('exact-match success: caller-supplied reviewConfig preserved as-is (per-call deep-freeze mutation safety)', () => {
@@ -1159,7 +1159,7 @@ describe('round-trip determinism', () => {
     expect(cfg.routesTo).toBe('job');
     const job = taskToJobRequest(req, cfg);
     expect(job.useWorktree).toBe(true);
-    expect(job.reviewConfig).toEqual({ models: ['codex'], auto: true });
+    expect(job.reviewConfig).toEqual({ models: ['codex-gpt-5.5'], auto: true });
   });
 
   it('autonomous preset routes to workflow', () => {
