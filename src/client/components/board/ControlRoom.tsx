@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Workflow, Job, AgentWithJob, VerifyRun, WorkflowPhase, WorkflowStatus } from '@shared/types';
-import { laneFor, toneFor, PHASES, PHASE_SHORT, type LaneTone } from './lanes';
+import { PHASES, PHASE_SHORT, type LaneTone } from './lanes';
 
 interface WorkflowDetail extends Workflow {
   plan: string | null;
@@ -487,6 +487,9 @@ export function ControlRoom({ workflow, agents, onBack, onWorkflowUpdate }: Cont
       if (res.ok) {
         onWorkflowUpdate(await res.json());
         onBack();
+      } else {
+        const data = await res.json().catch(() => ({ error: 'Cancel failed' }));
+        alert(data.error || `Cancel failed (HTTP ${res.status}).`);
       }
     } finally { setActing(false); }
   };
@@ -500,6 +503,19 @@ export function ControlRoom({ workflow, agents, onBack, onWorkflowUpdate }: Cont
         const data = await res.json();
         onWorkflowUpdate(data.workflow);
         await fetchDetail();
+      } else if (res.status === 409) {
+        // Recoverable: PR creation failed but the run transitioned to a blocked state.
+        const data = await res.json().catch(() => ({}));
+        if (data.workflow) onWorkflowUpdate(data.workflow);
+        alert(
+          data.outcome === 'missing_worktree_with_progress'
+            ? 'Draft PR creation failed. The worktree is missing but publishable commits exist — see the blocked reason for details.'
+            : 'Draft PR creation failed. The worktree has been preserved — see the blocked reason for details.',
+        );
+        await fetchDetail();
+      } else {
+        const data = await res.json().catch(() => ({ error: 'Wrap-up failed' }));
+        alert(data.error || `Wrap-up failed (HTTP ${res.status}).`);
       }
     } finally { setActing(false); }
   };
@@ -512,12 +528,13 @@ export function ControlRoom({ workflow, agents, onBack, onWorkflowUpdate }: Cont
         const data = await res.json();
         onWorkflowUpdate(data.workflow);
         await fetchDetail();
+      } else {
+        const data = await res.json().catch(() => ({ error: 'Resume failed' }));
+        alert(data.error || `Resume failed (HTTP ${res.status}).`);
       }
     } finally { setActing(false); }
   };
 
-  const lane = laneFor(workflow);
-  const tone = toneFor(lane, workflow.status === 'blocked' || workflow.status === 'failed');
   const badgeTone = STATUS_BADGE_TONE[workflow.status];
   const showPulse = workflow.status === 'running' || workflow.status === 'blocked';
 
@@ -559,9 +576,6 @@ export function ControlRoom({ workflow, agents, onBack, onWorkflowUpdate }: Cont
         <div className="stat">elapsed <b>{fmtDur(totalDuration)}</b></div>
         <div className="stat">cost <b>{fmtCost(totalCost)}</b></div>
         <div className="stat">milestones <b>{workflow.milestones_done} / {workflow.milestones_total}</b></div>
-        <div style={{ marginLeft: 'auto', color: 'var(--ink-3)' }}>
-          tone <b style={{ color: tone === 'active' ? 'var(--active)' : tone === 'attn' ? 'var(--attn-2)' : tone === 'pr' ? '#6e1f96' : 'var(--ink-2)' }}>{tone}</b>
-        </div>
       </div>
 
       <CycleLadder workflow={workflow} jobs={jobs} />

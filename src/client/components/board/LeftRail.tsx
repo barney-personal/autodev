@@ -2,21 +2,18 @@ import { useState } from 'react';
 import type { Workflow } from '@shared/types';
 import type { RepoGroup } from './lanes';
 
-type View = 'board' | 'timeline' | 'graph' | 'usage';
-
 interface LeftRailProps {
   repoGroups: RepoGroup[];
   activeRepo: string | null;
   onSelectRepo: (repo: string | null) => void;
   onSelectWorkflow: (w: Workflow) => void;
-  view: View;
-  onViewChange: (v: View) => void;
   liveCount: number;
   looseJobsCount: number;
   fileLocksCount: number;
   totalWorkflowCount: number;
   onUsage?: () => void;
   onMemory?: () => void;
+  onProjects?: () => void;
 }
 
 const FOLDER_DEFAULT_LIMIT = 5;
@@ -35,14 +32,13 @@ export function LeftRail({
   activeRepo,
   onSelectRepo,
   onSelectWorkflow,
-  view,
-  onViewChange,
   liveCount,
   looseJobsCount,
   fileLocksCount,
   totalWorkflowCount,
   onUsage,
   onMemory,
+  onProjects,
 }: LeftRailProps) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
@@ -50,14 +46,14 @@ export function LeftRail({
     <nav className="rail">
       <div className="rail-section">
         <div className="rail-label">Workspace</div>
-        <button
-          className={`rail-item ${view === 'board' ? 'active' : ''}`}
-          onClick={() => onViewChange('board')}
-          type="button"
-        >
+        <div className="rail-item active" aria-current="page">
           <span className="ico">▦</span>
           <span>Board</span>
           <span className="count">{liveCount} live</span>
+        </div>
+        <button className="rail-item" onClick={onProjects} type="button">
+          <span className="ico">◆</span>
+          <span>Projects</span>
         </button>
         <button className="rail-item" onClick={onUsage} type="button">
           <span className="ico">$</span>

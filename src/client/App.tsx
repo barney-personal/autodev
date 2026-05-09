@@ -427,7 +427,7 @@ export default function App() {
     );
     return looseAgents.length + looseQueued.length;
   }, [filteredAgents, queuedFilteredJobs, timeCutoff]);
-  const livedSelectedWorkflow = selectedWorkflow
+  const liveSelectedWorkflow = selectedWorkflow
     ? (workflows.find(w => w.id === selectedWorkflow.id) ?? selectedWorkflow)
     : null;
   const pageTitle = activeRepo ?? activeProjectName ?? 'All repos';
@@ -439,6 +439,9 @@ export default function App() {
         onNewTask={() => store.getState().setShowTaskForm(true)}
         onSearch={() => store.getState().setShowSearch(true)}
         onSettings={() => store.getState().setShowSettings(true)}
+        onEye={() => store.getState().setShowEye(v => !v)}
+        eyeEnabled={eyeEnabled}
+        eyeBadgeCount={discussions.filter(d => d.needs_reply).length + proposals.filter(p => p.needs_reply).length}
         todayClaudeCost={todayClaudeCost ?? undefined}
         todayCodexCost={todayCodexCost ?? undefined}
       />
@@ -448,21 +451,20 @@ export default function App() {
           activeRepo={activeRepo}
           onSelectRepo={setActiveRepo}
           onSelectWorkflow={(w) => store.getState().setSelectedWorkflow(w)}
-          view="board"
-          onViewChange={() => { /* TODO: wire alternate views */ }}
           liveCount={liveCount}
           looseJobsCount={looseJobsCount}
           fileLocksCount={locks.length}
           totalWorkflowCount={scopedWorkflows.length}
           onUsage={() => store.getState().setShowUsage(true)}
           onMemory={() => store.getState().setShowKnowledgeBase(true)}
+          onProjects={() => store.getState().setShowProjects(true)}
         />
       </ErrorBoundary>
       <main className="ad-page">
-        {livedSelectedWorkflow ? (
+        {liveSelectedWorkflow ? (
           <ErrorBoundary section="control room">
             <ControlRoom
-              workflow={livedSelectedWorkflow}
+              workflow={liveSelectedWorkflow}
               agents={agents}
               onBack={() => store.getState().setSelectedWorkflow(null)}
               onWorkflowUpdate={store.getState().updateWorkflow}

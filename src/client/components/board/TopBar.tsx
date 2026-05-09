@@ -3,11 +3,26 @@ interface TopBarProps {
   onNewTask: () => void;
   onSearch: () => void;
   onSettings: () => void;
+  onEye?: () => void;
+  /** Show the eye button at all (gated by the eye feature flag in settings). */
+  eyeEnabled?: boolean;
+  /** Number of unread Eye discussions/proposals — renders a small badge. */
+  eyeBadgeCount?: number;
   todayClaudeCost?: number;
   todayCodexCost?: number;
 }
 
-export function TopBar({ onHome, onNewTask, onSearch, onSettings, todayClaudeCost, todayCodexCost }: TopBarProps) {
+export function TopBar({
+  onHome,
+  onNewTask,
+  onSearch,
+  onSettings,
+  onEye,
+  eyeEnabled,
+  eyeBadgeCount,
+  todayClaudeCost,
+  todayCodexCost,
+}: TopBarProps) {
   const hasCost = (todayClaudeCost != null && todayClaudeCost > 0) || (todayCodexCost != null && todayCodexCost > 0);
   return (
     <header className="tb">
@@ -39,6 +54,42 @@ export function TopBar({ onHome, onNewTask, onSearch, onSettings, todayClaudeCos
         <kbd>K</kbd>
       </button>
       <div className="tb-actions">
+        {eyeEnabled && onEye && (
+          <button
+            className="tb-icon"
+            title={`Eye${eyeBadgeCount ? ` · ${eyeBadgeCount} pending` : ''}`}
+            onClick={onEye}
+            aria-label="Eye"
+            style={{ position: 'relative' }}
+          >
+            <span aria-hidden>◉</span>
+            {(eyeBadgeCount ?? 0) > 0 && (
+              <span
+                aria-hidden
+                style={{
+                  position: 'absolute',
+                  top: 3,
+                  right: 3,
+                  minWidth: 14,
+                  height: 14,
+                  padding: '0 3px',
+                  borderRadius: 999,
+                  background: 'var(--attn)',
+                  color: '#fff',
+                  fontSize: 9,
+                  fontWeight: 600,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  lineHeight: 1,
+                  fontVariantNumeric: 'tabular-nums',
+                }}
+              >
+                {eyeBadgeCount}
+              </span>
+            )}
+          </button>
+        )}
         <button className="tb-icon" title="Settings" onClick={onSettings} aria-label="Settings">⚙</button>
         <button className="ad-btn-primary" onClick={onNewTask} type="button">＋ New Task</button>
       </div>
