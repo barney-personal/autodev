@@ -34,6 +34,8 @@ vi.mock('../server/orchestrator/PtyManager.js', () => ({
   isTmuxSessionAlive: vi.fn(() => false),
   saveSnapshot: vi.fn(),
   ensureCodexTrusted: vi.fn(),
+  checkPtyResources: vi.fn(() => ({ ok: true })),
+  cleanupStaleTmuxSessions: vi.fn(),
 }));
 
 // Mock ModelClassifier

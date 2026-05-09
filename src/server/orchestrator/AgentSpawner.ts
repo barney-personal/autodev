@@ -384,7 +384,13 @@ export function startInteractiveAgent(
   const resourceCheck = checkResources(attached, spawning);
   if (!resourceCheck.ok) {
     const msg = `PTY resource check failed: ${resourceCheck.reason}`;
-    console.warn(`[pty ${agentId}] ${msg} — marking job failed with cooldown`);
+    // console.log (not warn) so captureConsoleIntegration doesn't surface this
+    // as a Sentry issue. WorkQueueManager gates dispatch on checkPtyResources
+    // up-front, so this branch is a rare race fallback. Escalating backoff
+    // here also lets the dispatcher pause globally instead of churning.
+    console.log(`[pty ${agentId}] ${msg} — marking job failed with cooldown`);
+    setLastResourceErrorTime(Date.now());
+    escalateBackoff();
     logPtyLifecycleEvent('pty_resource_check_failed', agentId, job, {
       reason: resourceCheck.reason,
       active_pty_sessions: attached,

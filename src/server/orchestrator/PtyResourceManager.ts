@@ -3,7 +3,11 @@ import * as fs from 'fs';
 
 const TMUX = process.env.TMUX_BIN ?? 'tmux';
 
-export const MAX_PTY_SESSIONS = Number(process.env.MAX_PTY_SESSIONS ?? 20);
+// Default sized conservatively for a developer laptop where the orchestrator
+// shares the host's PTY ceiling with terminals, IDEs, and ssh sessions. Raising
+// this above the real ceiling causes /dev/ptmx exhaustion (Sentry: ~5400 events
+// across one issue pair). Override with env if your host can sustain more.
+export const MAX_PTY_SESSIONS = Number(process.env.MAX_PTY_SESSIONS ?? 8);
 
 // Resource exhaustion backoff — escalates exponentially on repeated PTY failures
 let _resourceBackoffMs = 0;

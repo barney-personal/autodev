@@ -22,7 +22,7 @@ import { isAutoExitJob } from '../../shared/types.js';
 import { markJobRunning } from './JobLifecycle.js';
 import { logResilienceEvent } from './ResilienceLogger.js';
 import { errMsg } from '../../shared/errors.js';
-import { checkResources, escalateBackoff, resetBackoff, getBackoffMs } from './PtyResourceManager.js';
+import { checkResources, escalateBackoff, resetBackoff, getBackoffMs, setLastResourceErrorTime } from './PtyResourceManager.js';
 import {
   PTY_LOG_DIR,
   getPtyLogPath,
@@ -70,8 +70,13 @@ const _ptyBuffers = new Map<string, string[]>();
 const _pendingResizes = new Map<string, { cols: number; rows: number }>();
 const PTY_BUFFER_MAX = 2000;
 
-// PTY spawn resilience constants
-export const PTY_SPAWN_MAX_RETRIES = 3;
+// PTY spawn resilience constants.
+// Retries are intentionally low: when /dev/ptmx is exhausted, retrying the
+// same posix_spawnp 4× just amplifies the failure (Sentry: 4,686 events from
+// retry-attempt warnings vs. 718 from the underlying exhaustion). The retry
+// loop now probes /dev/ptmx before each attempt and breaks immediately on
+// host-level exhaustion, so retries only help with truly transient failures.
+export const PTY_SPAWN_MAX_RETRIES = 1;
 export const PTY_SPAWN_BASE_DELAY_MS = 2000;
 
 /**
@@ -295,9 +300,26 @@ export async function attachPty(agentId: string, job: Job, cols = 100, rows = 50
   for (let attempt = 0; attempt <= PTY_SPAWN_MAX_RETRIES; attempt++) {
     if (attempt > 0) {
       const delay = computePtyRetryDelayMs(attempt);
-      console.warn(`[pty ${agentId}] retrying PTY attach (attempt ${attempt + 1}/${PTY_SPAWN_MAX_RETRIES + 1}) after ${delay}ms`);
+      // console.log (not warn) so the captureConsoleIntegration doesn't surface
+      // every retry as a Sentry event. The terminal failure path still emits
+      // a single info log via logPtyLifecycleEvent below.
+      console.log(`[pty ${agentId}] retrying PTY attach (attempt ${attempt + 1}/${PTY_SPAWN_MAX_RETRIES + 1}) after ${delay}ms`);
       await new Promise(resolve => setTimeout(resolve, delay));
       if (!isTmuxSessionAlive(agentId)) break;
+    }
+    // Probe /dev/ptmx before posix_spawnp. Retrying when the host PTY ceiling
+    // is hit just amplifies the failure (the bulk of the Sentry events came
+    // from this loop, not from real transient failures). Break out immediately
+    // so the global backoff pauses dispatch instead of churning.
+    try {
+      const fd = fs.openSync('/dev/ptmx', 'r');
+      fs.closeSync(fd);
+    } catch (err) {
+      lastErr = err;
+      setLastResourceErrorTime(Date.now());
+      escalateBackoff();
+      console.log(`[pty ${agentId}] /dev/ptmx unavailable — aborting attach (backoff now ${Math.round(getBackoffMs() / 1000)}s)`);
+      break;
     }
     try {
       ptyInstance = ptySpawn(TMUX, ['attach-session', '-t', sessionName(agentId)], {
@@ -310,7 +332,7 @@ export async function attachPty(agentId: string, job: Job, cols = 100, rows = 50
       break;
     } catch (err) {
       lastErr = err;
-      console.warn(`[pty ${agentId}] PTY spawn attempt ${attempt + 1} failed: ${errMsg(err)}`);
+      console.log(`[pty ${agentId}] PTY spawn attempt ${attempt + 1} failed: ${errMsg(err)}`);
     }
   }
 

@@ -23,6 +23,8 @@ vi.mock('../server/orchestrator/PtyManager.js', () => ({
   isTmuxSessionAlive: vi.fn(() => false),
   startInteractiveAgent: vi.fn(),
   saveSnapshot: vi.fn(),
+  checkPtyResources: vi.fn(() => ({ ok: true })),
+  cleanupStaleTmuxSessions: vi.fn(),
 }));
 
 vi.mock('../server/orchestrator/JobFinalizer.js', () => ({
