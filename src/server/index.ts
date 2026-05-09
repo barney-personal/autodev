@@ -22,7 +22,7 @@ import { rehydrateCooldownState } from './orchestrator/ModelClassifier.js';
 import { startResourceMonitor, stopResourceMonitor, setQueueControls } from './orchestrator/ResourceMonitor.js';
 import { startDbBackup, stopDbBackup, runBackupNow } from './orchestrator/DbBackup.js';
 import { runStartupMaintenance } from './orchestrator/StartupMaintenance.js';
-import { writeInput, resizePty, resizeAndSnapshot, saveSnapshot, isTmuxSessionAlive } from './orchestrator/PtyManager.js';
+import { writeInput, resizePty, resizeAndSnapshot, saveSnapshot, isTmuxSessionAlive, cleanupStaleTmuxSessions } from './orchestrator/PtyManager.js';
 import * as queries from './db/queries.js';
 import type { QueueSnapshot } from '../shared/types.js';
 
@@ -155,6 +155,16 @@ async function main() {
   mcpServer.on('connection', (socket) => {
     socket.setKeepAlive(true, 30_000);
   });
+
+  // Clean up orphan tmux sessions left over from a previous run (crashed
+  // orchestrator, kill -9, etc.). Without this, leaked orchestrator-* sessions
+  // count against the host PTY ceiling on the next boot and the dispatcher
+  // sees the host as exhausted before doing any work.
+  try {
+    cleanupStaleTmuxSessions();
+  } catch (err) {
+    log.warn({ err }, 'boot tmux cleanup failed');
+  }
 
   // 6. Start work queue + stuck-job watchdog
   startWorkQueue();

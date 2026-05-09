@@ -30,6 +30,8 @@ vi.mock('../server/orchestrator/PtyManager.js', () => ({
   attachPty: vi.fn(),
   isTmuxSessionAlive: vi.fn(() => false),
   saveSnapshot: vi.fn(),
+  checkPtyResources: vi.fn(() => ({ ok: true })),
+  cleanupStaleTmuxSessions: vi.fn(),
 }));
 
 // Mock ModelClassifier so resolveModel just returns the job's model
@@ -108,6 +110,37 @@ describe('WorkQueueManager — capacity-aware dispatch', () => {
 
     // Reset for other tests
     setMaxConcurrent(20);
+  });
+
+  it('pauses dispatch when PTY resources are exhausted (jobs stay queued)', async () => {
+    // Regression: when /dev/ptmx is exhausted, the dispatcher used to claim a
+    // job, fail the resource check inside startInteractiveAgent, and mark the
+    // job + agent failed — which WorkflowManager would re-spawn within ~60s,
+    // creating a thousands-per-day Sentry event loop. The fix is to gate
+    // dispatch on checkPtyResources up-front so jobs stay queued.
+    const queries = await import('../server/db/queries.js');
+    const { _tickForTest } = await import('../server/orchestrator/WorkQueueManager.js');
+    const ptyManager = await import('../server/orchestrator/PtyManager.js');
+    const { startInteractiveAgent, checkPtyResources } = ptyManager;
+
+    vi.mocked(checkPtyResources).mockReturnValue({
+      ok: false,
+      reason: 'System PTY exhaustion detected (/dev/ptmx unavailable)',
+    });
+
+    await insertTestJob({ id: 'gated-j1', title: 'Gated Job 1', model: 'claude-sonnet-4-6' });
+    await insertTestJob({ id: 'gated-j2', title: 'Gated Job 2', model: 'claude-sonnet-4-6' });
+
+    await _tickForTest();
+
+    expect(vi.mocked(startInteractiveAgent)).not.toHaveBeenCalled();
+
+    const j1 = queries.getJobById('gated-j1');
+    const j2 = queries.getJobById('gated-j2');
+    expect(j1!.status).toBe('queued');
+    expect(j2!.status).toBe('queued');
+
+    vi.mocked(checkPtyResources).mockReturnValue({ ok: true });
   });
 
   it('nudgeQueue triggers dispatch without waiting for poll interval', async () => {

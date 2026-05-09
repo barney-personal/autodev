@@ -7,7 +7,7 @@ import { queueLogger } from '../lib/logger.js';
 import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
 import { runAgent } from './AgentRunner.js';
-import { startInteractiveAgent } from './PtyManager.js';
+import { startInteractiveAgent, checkPtyResources } from './PtyManager.js';
 import { resolveModel } from './ModelClassifier.js';
 import { getCircuitBreaker } from './ModelClassifier.js';
 import type { Job } from '../../shared/types.js';
@@ -15,7 +15,10 @@ import { isCodexModel, isAutoExitJob } from '../../shared/types.js';
 
 const log = queueLogger();
 
-let _maxConcurrent = Number(process.env.MAX_CONCURRENT_AGENTS ?? 20);
+// Default kept in line with MAX_PTY_SESSIONS so the queue cap and the host's
+// PTY ceiling don't drift. The queue can be raised independently via the
+// dashboard when running on a larger host.
+let _maxConcurrent = Number(process.env.MAX_CONCURRENT_AGENTS ?? 8);
 const POLL_INTERVAL_MS = 2000;
 const PROVIDER_PAUSE_RETRY_MS = 60_000;
 
@@ -140,20 +143,20 @@ async function tick(): Promise<void> {
       break;
     }
 
+    // Gate dispatch on host PTY capacity before claiming the next job.
+    // Without this, exhausted hosts let the queue mark a job 'assigned',
+    // insert an agent row, then immediately fail both — and WorkflowManager
+    // re-spawns a fresh phase job within ~60s, producing a thousands-per-day
+    // event loop in Sentry. Leaving the job 'queued' lets the next tick
+    // re-evaluate once capacity returns.
+    const ptyCheck = checkPtyResources();
+    if (!ptyCheck.ok) {
+      log.info({ reason: ptyCheck.reason }, 'pausing dispatch — pty capacity');
+      break;
+    }
+
     const job = queries.getNextQueuedJob();
     if (!job || _classifying.has(job.id)) break;
-
-    // Concurrent workflow throttle: limit simultaneous workflow phase jobs to
-    // prevent tmux/PTY exhaustion. The PTY cleanup and backoff fixes handle
-    // resource recovery, so we can safely allow a few concurrent jobs.
-    const MAX_CONCURRENT_WORKFLOW_PHASES = 3;
-    if (job.workflow_id && job.workflow_phase) {
-      const runningWorkflowPhaseJobs = queries.countRunningWorkflowPhaseJobs(job.id);
-      if (runningWorkflowPhaseJobs >= MAX_CONCURRENT_WORKFLOW_PHASES) {
-        // Skip — at capacity. Will be picked up on next tick.
-        break;
-      }
-    }
 
     // Double-dispatch guard: verify the job is still queued before claiming it.
     // A rapid succession of ticks could both see the same job as "queued" before

@@ -24,6 +24,8 @@ vi.mock('../server/orchestrator/PtyManager.js', () => ({
   attachPty: vi.fn(),
   isTmuxSessionAlive: vi.fn(() => false),
   saveSnapshot: vi.fn(),
+  checkPtyResources: vi.fn(() => ({ ok: true })),
+  cleanupStaleTmuxSessions: vi.fn(),
 }));
 vi.mock('../server/orchestrator/ModelClassifier.js', () => ({
   getCircuitBreaker: vi.fn(() => ({
