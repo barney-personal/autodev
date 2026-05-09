@@ -172,6 +172,8 @@
 }
 .rail-item.active .count { color: var(--active-2); }
 .rail-item .ico { width: 16px; opacity: 0.7; font-size: 13px; text-align: center; }
+.rail-item-static { cursor: default; color: var(--ink-3); }
+.rail-item-static:hover { background: transparent; }
 
 /* ── Repo folders ───────────────────────────────────────── */
 .rail-group {

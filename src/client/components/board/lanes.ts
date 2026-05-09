@@ -35,7 +35,9 @@ export function laneFor(w: Workflow): LaneId {
     return w.pr_url ? 'pr' : 'done';
   }
   if (w.status === 'cancelled') return 'done';
-  if (w.status === 'running' && w.pr_url) return 'pr';
+  // PR lane is for work that's actually in/awaiting review — not workflows
+  // that opened a draft PR mid-implement and are still actively iterating.
+  if (w.status === 'running' && w.pr_url && w.current_phase === 'verify') return 'pr';
   if (
     w.status === 'running' &&
     w.current_cycle === 0 &&

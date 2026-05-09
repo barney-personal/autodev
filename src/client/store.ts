@@ -19,7 +19,6 @@ export interface UIState {
   selectedDebate: Debate | null;
   selectedWorkflow: Workflow | null;
   activeProjectId: string | null;
-  leftTab: 'feed' | 'lineage';
 
   // Modal visibility
   showTaskForm: boolean;
@@ -56,7 +55,6 @@ export interface UIActions {
   setSelectedDebate: (debate: Debate | null) => void;
   setSelectedWorkflow: (workflow: Workflow | null) => void;
   setActiveProjectId: (id: string | null) => void;
-  setLeftTab: (tab: 'feed' | 'lineage') => void;
 
   setShowTaskForm: (show: boolean) => void;
   setShowTemplates: (show: boolean) => void;
@@ -151,7 +149,6 @@ export const useAppStore = create<AppStore>()((set) => ({
   selectedDebate: null,
   selectedWorkflow: null,
   activeProjectId: null,
-  leftTab: 'feed',
 
   showTaskForm: false,
   showTemplates: false,
@@ -179,7 +176,6 @@ export const useAppStore = create<AppStore>()((set) => ({
   setSelectedDebate: (debate) => set({ selectedDebate: debate }),
   setSelectedWorkflow: (workflow) => set({ selectedWorkflow: workflow }),
   setActiveProjectId: (id) => set({ activeProjectId: id }),
-  setLeftTab: (tab) => set({ leftTab: tab }),
 
   setShowTaskForm: (show) => set({ showTaskForm: show }),
   setShowTemplates: (show) => set({ showTemplates: show }),
@@ -221,7 +217,7 @@ export const useAppStore = create<AppStore>()((set) => ({
     showEye: false,
   }),
 
-  closeTerminal: () => set({ selectedAgent: null, leftTab: 'feed' }),
+  closeTerminal: () => set({ selectedAgent: null }),
 
   // ── Data defaults ─────────────────────────────────────────────────────────
   agents: [],

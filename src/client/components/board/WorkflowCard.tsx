@@ -153,7 +153,7 @@ function WorkflowCardInner({ workflow, workflowAgents, selected, now, density = 
         </div>
       )}
 
-      {!isTriage && (
+      {!isTriage && phase !== 'idle' && (
         <div className="wc-phase" data-tone={tone}>
           {PHASES.map(p => {
             const idx = PHASES.indexOf(p);

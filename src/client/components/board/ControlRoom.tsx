@@ -28,6 +28,8 @@ interface ParsedWorklog {
   tests: string[];
   blockers: string[];
   nextStep: string | null;
+  /** Original `updated_at` from the raw worklog row, preserved so activity entries don't all collapse to `Date.now()`. */
+  updatedAt: number;
 }
 
 function useNowTick(enabled: boolean): number {
@@ -110,7 +112,8 @@ function extractBullets(text: string, heading: string): string[] {
     .map(l => l.slice(2).trim());
 }
 
-function parseWorklog(value: string): ParsedWorklog {
+function parseWorklog(entry: { value: string; updated_at: number }): ParsedWorklog {
+  const value = entry.value;
   const cycleMatch = value.match(/##\s+Cycle\s+(\d+)/);
   const titleMatch = value.match(/^##\s+Cycle\s+\d+\s+[—–-]\s+(.+)$/m);
   return {
@@ -120,6 +123,7 @@ function parseWorklog(value: string): ParsedWorklog {
     tests: extractBullets(value, '### Test results'),
     blockers: extractBullets(value, '### Blockers'),
     nextStep: extractSection(value, '### Next step'),
+    updatedAt: entry.updated_at,
   };
 }
 
@@ -192,16 +196,6 @@ function CycleLadder({ workflow, jobs }: { workflow: Workflow; jobs: Job[] }) {
             </div>
           );
         })}
-        <div className="cycle" style={{ opacity: 0.4, borderStyle: 'dashed' }}>
-          <div className="lbl">+ More</div>
-          <div className="phases">
-            {PHASES.map(p => (
-              <div key={p} className="ph" style={{ background: 'transparent', border: '1px dashed var(--line-2)' }}>
-                {PHASE_SHORT[p]}
-              </div>
-            ))}
-          </div>
-        </div>
       </div>
     </div>
   );
@@ -289,10 +283,10 @@ function ActivityTab({ jobs, agents, worklogs }: { jobs: Job[]; agents: AgentWit
   }
   for (const wl of worklogs) {
     if (wl.milestone) {
-      entries.push({ t: Date.now(), who: 'implementer', kind: 'milestone', text: `✓ ${wl.milestone}` });
+      entries.push({ t: wl.updatedAt, who: 'implementer', kind: 'milestone', text: `✓ ${wl.milestone}` });
     }
     for (const c of wl.commits) {
-      entries.push({ t: Date.now(), who: 'implementer', kind: 'tool', text: `Commit · ${c}` });
+      entries.push({ t: wl.updatedAt, who: 'implementer', kind: 'tool', text: `Commit · ${c}` });
     }
   }
 
@@ -461,7 +455,7 @@ export function ControlRoom({ workflow, agents, onBack, onWorkflowUpdate }: Cont
   }, [onBack]);
 
   const milestones = useMemo(() => parsePlanMilestones(detail?.plan ?? null), [detail?.plan]);
-  const worklogs = useMemo(() => (detail?.worklogs ?? []).map(w => parseWorklog(w.value)), [detail?.worklogs]);
+  const worklogs = useMemo(() => (detail?.worklogs ?? []).map(parseWorklog), [detail?.worklogs]);
 
   const totalCost = useMemo(() => {
     return jobs.reduce((sum, job) => {

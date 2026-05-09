@@ -134,16 +134,16 @@ export function LeftRail({
 
       <div className="rail-section" style={{ marginTop: 'auto' }}>
         <div className="rail-label">Activity</div>
-        <button className="rail-item" type="button">
+        <div className="rail-item rail-item-static" aria-label={`${looseJobsCount} loose jobs`}>
           <span className="ico">⌖</span>
           <span>Loose jobs</span>
           <span className="count">{looseJobsCount}</span>
-        </button>
-        <button className="rail-item" type="button">
+        </div>
+        <div className="rail-item rail-item-static" aria-label={`${fileLocksCount} file locks`}>
           <span className="ico">⊙</span>
           <span>File locks</span>
           <span className="count">{fileLocksCount}</span>
-        </button>
+        </div>
         <button className="rail-item" onClick={onMemory} type="button">
           <span className="ico">⚿</span>
           <span>Memory</span>
