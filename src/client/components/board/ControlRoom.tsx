@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Workflow, Job, AgentWithJob, VerifyRun, WorkflowPhase, WorkflowStatus } from '@shared/types';
 import { PHASES, PHASE_SHORT, type LaneTone } from './lanes';
 
@@ -238,12 +238,17 @@ function MilestonesTab({ workflow, milestones, worklogs }: { workflow: Workflow;
             ? 'done'
             : (i === workflow.milestones_done && workflow.status === 'running' ? 'active' : 'todo');
           const wl = worklogByMilestone.get(i);
+          // Prefer the actual cycle pulled from the matched worklog; only fall
+          // back to the index-based approximation when no worklog matched.
+          const doneTag = wl?.cycle != null
+            ? `Cycle ${wl.cycle}`
+            : `Cycle ${Math.min(i + 1, workflow.current_cycle)}`;
           return (
             <div key={i} className={`stone ${status}`}>
               <div className="stitle">
                 <span title={m.full}>{m.title}</span>
                 <span className="tag">
-                  {status === 'done' ? `Cycle ${Math.min(i + 1, workflow.current_cycle)}` : status === 'active' ? 'In progress' : 'Pending'}
+                  {status === 'done' ? doneTag : status === 'active' ? 'In progress' : 'Pending'}
                 </span>
               </div>
               {wl && (wl.commits.length > 0 || wl.tests.length > 0 || wl.nextStep) && (
@@ -424,26 +429,45 @@ export function ControlRoom({ workflow, agents, onBack, onWorkflowUpdate }: Cont
   const [acting, setActing] = useState(false);
   useNowTick(workflow.status === 'running');
 
-  const fetchDetail = useCallback(async () => {
+  const fetchDetail = useCallback(async (signal?: AbortSignal) => {
     try {
       const [detailRes, jobsRes] = await Promise.all([
-        fetch(`/api/autonomous-agent-runs/${workflow.id}`),
-        fetch(`/api/autonomous-agent-runs/${workflow.id}/jobs`),
+        fetch(`/api/autonomous-agent-runs/${workflow.id}`, { signal }),
+        fetch(`/api/autonomous-agent-runs/${workflow.id}/jobs`, { signal }),
       ]);
+      if (signal?.aborted) return;
       if (detailRes.ok) setDetail(await detailRes.json());
       if (jobsRes.ok) setJobs(await jobsRes.json());
-    } catch { /* ignore */ }
+    } catch (err) {
+      if ((err as { name?: string })?.name === 'AbortError') return;
+      console.error('ControlRoom fetchDetail failed:', err);
+    }
   }, [workflow.id]);
 
+  // Single effect drives both initial load (on workflow.id change — clears
+  // stale state and refetches) and live refetches (when status/phase/cycle/
+  // milestones tick on the workflow). The `lastWorkflowId` ref distinguishes
+  // the two so we don't flicker the panel on every status change. An
+  // AbortController on each pass cancels the in-flight pair if a newer change
+  // races it — fixes the prior double-fetch race.
+  const lastWorkflowId = useRef<string | null>(null);
   useEffect(() => {
-    setDetail(null);
-    setJobs([]);
-    fetchDetail();
-  }, [workflow.id, fetchDetail]);
-
-  useEffect(() => {
-    fetchDetail();
-  }, [workflow.status, workflow.current_phase, workflow.current_cycle, workflow.milestones_done, fetchDetail]);
+    if (lastWorkflowId.current !== workflow.id) {
+      setDetail(null);
+      setJobs([]);
+      lastWorkflowId.current = workflow.id;
+    }
+    const ac = new AbortController();
+    fetchDetail(ac.signal);
+    return () => ac.abort();
+  }, [
+    workflow.id,
+    workflow.status,
+    workflow.current_phase,
+    workflow.current_cycle,
+    workflow.milestones_done,
+    fetchDetail,
+  ]);
 
   // Esc to go back
   useEffect(() => {
