@@ -6,6 +6,8 @@ interface TopBarProps {
   onEye?: () => void;
   /** Show the eye button at all (gated by the eye feature flag in settings). */
   eyeEnabled?: boolean;
+  /** True while the EyePanel modal is open — gives the button a pressed state. */
+  eyeActive?: boolean;
   /** Number of unread Eye discussions/proposals — renders a small badge. */
   eyeBadgeCount?: number;
   todayClaudeCost?: number;
@@ -19,6 +21,7 @@ export function TopBar({
   onSettings,
   onEye,
   eyeEnabled,
+  eyeActive,
   eyeBadgeCount,
   todayClaudeCost,
   todayCodexCost,
@@ -60,7 +63,12 @@ export function TopBar({
             title={`Eye${eyeBadgeCount ? ` · ${eyeBadgeCount} pending` : ''}`}
             onClick={onEye}
             aria-label="Eye"
-            style={{ position: 'relative' }}
+            aria-pressed={eyeActive}
+            style={{
+              position: 'relative',
+              background: eyeActive ? 'var(--active-bg)' : undefined,
+              color: eyeActive ? 'var(--active-2)' : undefined,
+            }}
           >
             <span aria-hidden>◉</span>
             {(eyeBadgeCount ?? 0) > 0 && (

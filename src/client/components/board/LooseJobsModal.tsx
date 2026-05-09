@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import type { AgentWithJob, Job, AgentStatus } from '@shared/types';
+import { fmtElapsedCompact, fmtRel } from './format';
 
 interface LooseJobsModalProps {
   open: boolean;
@@ -28,23 +29,6 @@ const STATUS_COLOR: Record<AgentStatus, string> = {
   cancelled: 'var(--ink-3)',
 };
 
-function fmtDur(ms: number): string {
-  if (ms < 1000) return '0s';
-  const s = Math.floor(ms / 1000);
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m`;
-  const h = Math.floor(m / 60);
-  return `${h}h ${m % 60}m`;
-}
-
-function fmtRel(ts: number): string {
-  const d = Date.now() - ts;
-  if (d < 60_000) return 'just now';
-  if (d < 3.6e6) return `${Math.floor(d / 60_000)}m ago`;
-  if (d < 86.4e6) return `${Math.floor(d / 3.6e6)}h ago`;
-  return `${Math.floor(d / 86.4e6)}d ago`;
-}
 
 export function LooseJobsModal({ open, agents, queuedJobs, onClose, onSelectAgent, onCancelJob }: LooseJobsModalProps) {
   useEffect(() => {
@@ -159,7 +143,7 @@ export function LooseJobsModal({ open, agents, queuedJobs, onClose, onSelectAgen
                       {STATUS_LABEL[agent.status]}
                     </span>
                     <span style={{ fontSize: 11, color: 'var(--ink-3)', fontVariantNumeric: 'tabular-nums', minWidth: 60, textAlign: 'right' }}>
-                      {fmtDur(elapsed)}
+                      {fmtElapsedCompact(elapsed)}
                     </span>
                     <span style={{ fontSize: 11, color: 'var(--ink-3)', fontVariantNumeric: 'tabular-nums', minWidth: 60, textAlign: 'right' }}>
                       {agent.cost_usd != null && agent.cost_usd > 0 ? `$${agent.cost_usd.toFixed(2)}` : ''}

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Workflow, Job, AgentWithJob, VerifyRun, WorkflowPhase, WorkflowStatus } from '@shared/types';
 import { PHASES, PHASE_SHORT, type LaneTone } from './lanes';
+import { fmtDur, fmtRel, fmtCost } from './format';
 
 interface WorkflowDetail extends Workflow {
   plan: string | null;
@@ -42,26 +43,6 @@ function useNowTick(enabled: boolean): number {
   return now;
 }
 
-function fmtDur(ms: number | null | undefined): string {
-  if (ms == null) return '—';
-  if (ms < 1000) return `${ms}ms`;
-  const s = Math.floor(ms / 1000);
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m`;
-  const h = Math.floor(m / 60);
-  return `${h}h ${m % 60}m`;
-}
-
-function fmtRel(ts: number): string {
-  const d = Date.now() - ts;
-  if (d < 60_000) return 'just now';
-  if (d < 3.6e6) return `${Math.floor(d / 60_000)}m ago`;
-  if (d < 86.4e6) return `${Math.floor(d / 3.6e6)}h ago`;
-  return `${Math.floor(d / 86.4e6)}d ago`;
-}
-
-function fmtCost(n: number): string { return `$${n.toFixed(2)}`; }
 
 function shortenMilestoneTitle(raw: string): { title: string; full: string } {
   const stripped = raw

@@ -407,6 +407,7 @@ export default function App() {
         onSettings={() => store.getState().setShowSettings(true)}
         onEye={() => store.getState().setShowEye(v => !v)}
         eyeEnabled={eyeEnabled}
+        eyeActive={showEye}
         eyeBadgeCount={discussions.filter(d => d.needs_reply).length + proposals.filter(p => p.needs_reply).length}
         todayClaudeCost={todayClaudeCost ?? undefined}
         todayCodexCost={todayCodexCost ?? undefined}

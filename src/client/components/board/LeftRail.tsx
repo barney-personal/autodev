@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { Workflow } from '@shared/types';
 import type { RepoGroup } from './lanes';
+import { fmtRelShort } from './format';
 
 interface LeftRailProps {
   repoGroups: RepoGroup[];
@@ -19,14 +20,6 @@ interface LeftRailProps {
 
 const FOLDER_DEFAULT_LIMIT = 5;
 
-function fmtRel(ts: number): string {
-  const d = Date.now() - ts;
-  if (d < 60_000) return 'now';
-  if (d < 3.6e6) return `${Math.floor(d / 60_000)}m`;
-  if (d < 86.4e6) return `${Math.floor(d / 3.6e6)}h`;
-  if (d < 86.4e6 * 7) return `${Math.floor(d / 86.4e6)}d`;
-  return `${Math.floor(d / 86.4e6 / 7)}w`;
-}
 
 export function LeftRail({
   repoGroups,
@@ -104,7 +97,7 @@ export function LeftRail({
                   title={w.title}
                 >
                   <span className="title">{w.title}</span>
-                  <span className="when">{fmtRel(w.updated_at)}</span>
+                  <span className="when">{fmtRelShort(w.updated_at)}</span>
                 </button>
               ))}
               {hidden > 0 && (

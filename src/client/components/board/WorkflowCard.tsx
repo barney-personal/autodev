@@ -1,6 +1,7 @@
 import { memo } from 'react';
 import type { Workflow, AgentWithJob, WorkflowPhase } from '@shared/types';
 import { laneFor, toneFor, PHASES, type LaneTone } from './lanes';
+import { fmtElapsedCompact, fmtRel, fmtCost } from './format';
 
 const MODEL_PRICING: Record<string, [number, number]> = {
   'claude-opus-4-7':         [15, 75],
@@ -17,25 +18,6 @@ function estimateCost(model: string | null, inputTokens: number, outputTokens: n
   return (inputTokens / 1_000_000) * inp + (outputTokens / 1_000_000) * out;
 }
 
-function fmtDur(ms: number): string {
-  if (ms < 1000) return '0s';
-  const s = Math.floor(ms / 1000);
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m`;
-  const h = Math.floor(m / 60);
-  return `${h}h ${m % 60}m`;
-}
-
-function fmtRel(ts: number): string {
-  const d = Date.now() - ts;
-  if (d < 60_000) return 'just now';
-  if (d < 3.6e6) return `${Math.floor(d / 60_000)}m ago`;
-  if (d < 86.4e6) return `${Math.floor(d / 3.6e6)}h ago`;
-  return `${Math.floor(d / 86.4e6)}d ago`;
-}
-
-function fmtCost(n: number): string { return `$${n.toFixed(2)}`; }
 
 function shortBlockedReason(reason: string | null): string {
   if (!reason) return 'Awaiting input';
@@ -188,7 +170,7 @@ function WorkflowCardInner({ workflow, workflowAgents, selected, now, density = 
           </>
         ) : (
           <>
-            <span title="elapsed">⏱ {fmtDur(wallElapsed)}</span>
+            <span title="elapsed">⏱ {fmtElapsedCompact(wallElapsed)}</span>
             <span className="sep">·</span>
             <span title="cost">{costStr}</span>
             <span className="sep">·</span>
