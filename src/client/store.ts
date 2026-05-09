@@ -19,7 +19,6 @@ export interface UIState {
   selectedDebate: Debate | null;
   selectedWorkflow: Workflow | null;
   activeProjectId: string | null;
-  leftTab: 'feed' | 'lineage';
 
   // Modal visibility
   showTaskForm: boolean;
@@ -27,8 +26,6 @@ export interface UIState {
   showBatchTemplates: boolean;
   showUsage: boolean;
   showSearch: boolean;
-  showGantt: boolean;
-  showDag: boolean;
   showProjects: boolean;
   showSettings: boolean;
   showDebateForm: boolean;
@@ -58,15 +55,12 @@ export interface UIActions {
   setSelectedDebate: (debate: Debate | null) => void;
   setSelectedWorkflow: (workflow: Workflow | null) => void;
   setActiveProjectId: (id: string | null) => void;
-  setLeftTab: (tab: 'feed' | 'lineage') => void;
 
   setShowTaskForm: (show: boolean) => void;
   setShowTemplates: (show: boolean) => void;
   setShowBatchTemplates: (show: boolean) => void;
   setShowUsage: (show: boolean) => void;
   setShowSearch: (show: boolean) => void;
-  setShowGantt: (show: boolean) => void;
-  setShowDag: (show: boolean) => void;
   setShowProjects: (show: boolean) => void;
   setShowSettings: (show: boolean) => void;
   setShowDebateForm: (show: boolean) => void;
@@ -155,15 +149,12 @@ export const useAppStore = create<AppStore>()((set) => ({
   selectedDebate: null,
   selectedWorkflow: null,
   activeProjectId: null,
-  leftTab: 'feed',
 
   showTaskForm: false,
   showTemplates: false,
   showBatchTemplates: false,
   showUsage: false,
   showSearch: false,
-  showGantt: false,
-  showDag: false,
   showProjects: false,
   showSettings: false,
   showDebateForm: false,
@@ -185,15 +176,12 @@ export const useAppStore = create<AppStore>()((set) => ({
   setSelectedDebate: (debate) => set({ selectedDebate: debate }),
   setSelectedWorkflow: (workflow) => set({ selectedWorkflow: workflow }),
   setActiveProjectId: (id) => set({ activeProjectId: id }),
-  setLeftTab: (tab) => set({ leftTab: tab }),
 
   setShowTaskForm: (show) => set({ showTaskForm: show }),
   setShowTemplates: (show) => set({ showTemplates: show }),
   setShowBatchTemplates: (show) => set({ showBatchTemplates: show }),
   setShowUsage: (show) => set({ showUsage: show }),
   setShowSearch: (show) => set({ showSearch: show }),
-  setShowGantt: (show) => set({ showGantt: show }),
-  setShowDag: (show) => set({ showDag: show }),
   setShowProjects: (show) => set({ showProjects: show }),
   setShowSettings: (show) => set({ showSettings: show }),
   setShowDebateForm: (show) => set({ showDebateForm: show }),
@@ -222,8 +210,6 @@ export const useAppStore = create<AppStore>()((set) => ({
     showBatchTemplates: false,
     showUsage: false,
     showSearch: false,
-    showGantt: false,
-    showDag: false,
     showProjects: false,
     showSettings: false,
     showDebateForm: false,
@@ -231,7 +217,7 @@ export const useAppStore = create<AppStore>()((set) => ({
     showEye: false,
   }),
 
-  closeTerminal: () => set({ selectedAgent: null, leftTab: 'feed' }),
+  closeTerminal: () => set({ selectedAgent: null }),
 
   // ── Data defaults ─────────────────────────────────────────────────────────
   agents: [],

@@ -1,0 +1,226 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+   Design tokens — Apple-flavored.
+   Direct port of the Claude Design "Autodev Board (Apple)" handoff.
+   Light, vibrancy-heavy, SF Pro, generous rounding, hairline borders.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+:root {
+  /* Surfaces — soft warm-cool grays, layered like macOS sidebar/content */
+  --bg:        #f5f5f7;          /* window background */
+  --bg-1:      #ffffff;          /* primary content */
+  --bg-2:      #fbfbfd;          /* card surface */
+  --bg-3:      #f0f0f2;          /* secondary fills */
+  --bg-4:      #e8e8eb;
+  --line:      rgba(0,0,0,0.07);
+  --line-2:    rgba(0,0,0,0.12);
+  --hair:      rgba(60,60,67,0.18);
+
+  --ink:       #1d1d1f;          /* primary label */
+  --ink-2:     #3c3c43;          /* secondary */
+  --ink-3:     rgba(60,60,67,0.6);  /* tertiary */
+  --ink-4:     rgba(60,60,67,0.3);  /* quaternary */
+
+  /* System accent — Apple system blue (legacy) */
+  --active:    #0071e3;
+  --active-2:  #0058b3;
+  --active-bg: rgba(0,113,227,0.10);
+
+  /* Status — Apple system colors */
+  --attn:      #ff9500;          /* system orange */
+  --attn-2:    #c47100;
+  --attn-bg:   rgba(255,149,0,0.12);
+  --done:      rgba(60,60,67,0.5);
+  --merged:    #ad52de;          /* system purple */
+  --green:     #30d158;
+  --red:       #ff3b30;
+
+  /* Radii */
+  --r-sm: 8px;
+  --r:    14px;
+  --r-lg: 20px;
+
+  /* Typography */
+  --sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display', 'Inter', system-ui, sans-serif;
+  --mono: ui-monospace, 'SF Mono', 'Menlo', monospace;
+
+  /* Shadows */
+  --shadow-card:    0 1px 0 rgba(255,255,255,0.6) inset, 0 1px 2px rgba(0,0,0,0.04), 0 8px 24px -12px rgba(0,0,0,0.10);
+  --shadow-pop:     0 30px 60px -16px rgba(0,0,0,0.20), 0 0 0 0.5px var(--hair);
+  --shadow-toolbar: 0 1px 0 var(--hair);
+
+  /* Motion */
+  --spring: cubic-bezier(0.32, 0.72, 0, 1);
+
+  /* ── Compatibility aliases (for unmigrated legacy CSS) ───────────────────── */
+  --bg-primary: var(--bg);
+  --bg-surface: var(--bg-1);
+  --bg-elevated: var(--bg-2);
+  --bg-interactive: var(--bg-3);
+
+  --surface-0: var(--bg);
+  --surface-1: var(--bg-1);
+  --surface-2: var(--bg-2);
+  --surface-3: var(--bg-3);
+  --surface-overlay: rgba(0,0,0,0.30);
+
+  --border-subtle: var(--line);
+  --border: var(--line-2);
+  --border-strong: var(--ink-4);
+  --separator: var(--hair);
+  --separator-subtle: var(--line);
+  --separator-opaque: var(--ink-4);
+
+  --text-primary: var(--ink);
+  --text-body: var(--ink-2);
+  --text-secondary: var(--ink-2);
+  --text-muted: var(--ink-3);
+  --text-dim: var(--ink-4);
+  --text-normal: var(--ink);
+
+  --label-primary: var(--ink);
+  --label-secondary: var(--ink-2);
+  --label-tertiary: var(--ink-3);
+  --label-quaternary: var(--ink-4);
+
+  --fill-quaternary: rgba(0,0,0,0.04);
+  --fill-tertiary: rgba(0,0,0,0.06);
+  --fill-secondary: rgba(0,0,0,0.10);
+  --fill-primary: rgba(0,0,0,0.15);
+
+  --accent: var(--active);
+  --accent-bright: #0a84ff;
+  --accent-muted: #5da9ff;
+  --accent-soft-bg: var(--active-bg);
+  --accent-deep: var(--active-2);
+
+  --phase-assess: var(--merged);
+  --phase-review: var(--active);
+  --phase-implement: var(--attn);
+  --phase-verify: var(--green);
+  --phase-idle: var(--ink-4);
+
+  --phase-assess-soft: rgba(173,82,222,0.10);
+  --phase-review-soft: var(--active-bg);
+  --phase-implement-soft: var(--attn-bg);
+  --phase-verify-soft: rgba(48,209,88,0.12);
+
+  --attention-blocked: var(--attn);
+  --attention-failed: var(--red);
+  --attention-running: var(--active);
+  --attention-idle: var(--active);
+  --attention-done: var(--green);
+  --attention-blocked-soft: var(--attn-bg);
+  --attention-failed-soft: rgba(255,59,48,0.10);
+  --attention-running-soft: var(--active-bg);
+  --attention-idle-soft: var(--active-bg);
+  --attention-done-soft: rgba(48,209,88,0.12);
+  --attention-none: var(--line);
+
+  --status-running: var(--active);
+  --status-done: var(--green);
+  --status-waiting: var(--attn);
+  --status-failed: var(--red);
+  --status-idle: var(--active);
+  --status-running-bg: var(--active-bg);
+  --status-done-bg: rgba(48,209,88,0.12);
+  --status-waiting-bg: var(--attn-bg);
+  --status-failed-bg: rgba(255,59,48,0.10);
+  --status-idle-bg: var(--active-bg);
+
+  --btn-primary-bg: var(--active);
+  --btn-primary-hover: #0077ed;
+  --btn-danger-bg: transparent;
+  --btn-danger-hover: rgba(255,59,48,0.10);
+  --danger: var(--red);
+  --danger-bg: rgba(255,59,48,0.10);
+  --success: var(--green);
+  --success-text: #1a8838;
+  --codex: var(--attn);
+
+  /* Type scale (legacy) */
+  --text-2xs: 10px;
+  --text-xs: 11px;
+  --text-sm: 11.5px;
+  --text-base: 12.5px;
+  --text-md: 13.5px;
+  --text-lg: 14px;
+  --text-xl: 17px;
+  --text-2xl: 22px;
+  --text-3xl: 26px;
+  --text-display: 32px;
+  --text-hero: 40px;
+
+  --leading-tight: 1.05;
+  --leading-snug: 1.32;
+  --leading-normal: 1.45;
+  --leading-loose: 1.6;
+
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+  --weight-heavy: 800;
+
+  --tracking-hero: -0.025em;
+  --tracking-display: -0.020em;
+  --tracking-tight: -0.015em;
+  --tracking-snug: -0.010em;
+  --tracking-normal: -0.005em;
+  --tracking-loose: 0.02em;
+
+  /* Space scale (legacy) */
+  --space-0-5: 2px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 32px;
+  --space-8: 40px;
+  --space-9: 48px;
+  --space-10: 64px;
+
+  --radius-xs: 4px;
+  --radius-sm: var(--r-sm);
+  --radius-md: 10px;
+  --radius-lg: var(--r);
+  --radius-xl: var(--r-lg);
+  --radius-2xl: 24px;
+  --radius-pill: 999px;
+  --radius-full: 50%;
+
+  --shadow-xs: 0 1px 0 rgba(0,0,0,0.03);
+  --shadow-sm: var(--shadow-card);
+  --shadow-md: var(--shadow-card);
+  --shadow-lg: 0 14px 30px -12px rgba(0,0,0,0.14);
+  --shadow-overlay: var(--shadow-pop);
+  --shadow-focus-accent: 0 0 0 3px rgba(0,113,227,0.30), 0 0 0 0.5px var(--active);
+  --shadow-card-hover: 0 1px 0 rgba(255,255,255,0.6) inset, 0 4px 8px rgba(0,0,0,0.05), 0 14px 30px -12px rgba(0,0,0,0.14);
+
+  --duration-fast: 120ms;
+  --duration-base: 220ms;
+  --duration-slow: 300ms;
+  --duration-slower: 420ms;
+  --ease-out: var(--spring);
+  --ease-spring: var(--spring);
+  --ease-in-out: cubic-bezier(0.42, 0, 0.58, 1);
+  --ease-emphasis: cubic-bezier(0.2, 0, 0, 1);
+
+  --z-sticky: 5;
+  --z-side-panel: 30;
+  --z-overlay: 50;
+  --z-modal: 100;
+  --z-toast: 200;
+  --z-popover: 300;
+
+  --font-display: var(--sans);
+  --font-text: var(--sans);
+  --font-sans: var(--sans);
+  --material-thin: rgba(255,255,255,0.55);
+  --material-regular: rgba(255,255,255,0.72);
+  --material-thick: rgba(255,255,255,0.85);
+  --material-chrome: rgba(246,246,248,0.78);
+  --material-blur: saturate(180%) blur(20px);
+  --material-blur-strong: saturate(180%) blur(24px);
+}

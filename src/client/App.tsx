@@ -1,12 +1,8 @@
-import { useCallback, useEffect, useRef, useMemo, lazy, Suspense } from 'react';
-import { Header } from './components/Header';
+import { useCallback, useEffect, useRef, useMemo, useState, lazy, Suspense } from 'react';
 import { AgentTerminal } from './components/AgentTerminal';
-import { WorkQueueSidebar } from './components/WorkQueueSidebar';
-import { FileLockMap } from './components/FileLockMap';
-import { JobLineagePanel } from './components/JobLineagePanel';
-import { RunningJobsPanel } from './components/RunningJobsPanel';
 import { EyePanel } from './components/EyePanel';
-import { TaskFeed } from './components/TaskFeed';
+import { WorkflowBoard, TopBar, LeftRail, ControlRoom, LooseJobsModal } from './components/board';
+import { buildRepoTree, repoFor } from './components/board/lanes';
 import { ErrorBoundary } from './components/ErrorBoundary';
 
 // Lazy-loaded modal components (only rendered when toggled open)
@@ -15,20 +11,19 @@ const TemplateManager = lazy(() => import('./components/TemplateManager').then(m
 const BatchTemplateManager = lazy(() => import('./components/BatchTemplateManager').then(m => ({ default: m.BatchTemplateManager })));
 const UsageModal = lazy(() => import('./components/UsageModal').then(m => ({ default: m.UsageModal })));
 const SearchModal = lazy(() => import('./components/SearchModal').then(m => ({ default: m.SearchModal })));
-const GanttModal = lazy(() => import('./components/GanttModal').then(m => ({ default: m.GanttModal })));
-const DAGModal = lazy(() => import('./components/DAGModal').then(m => ({ default: m.DAGModal })));
 const ProjectSelector = lazy(() => import('./components/ProjectSelector').then(m => ({ default: m.ProjectSelector })));
 const SettingsModal = lazy(() => import('./components/SettingsModal').then(m => ({ default: m.SettingsModal })));
 const DebateForm = lazy(() => import('./components/DebateForm').then(m => ({ default: m.DebateForm })));
 const DebateDetailModal = lazy(() => import('./components/DebateDetailModal').then(m => ({ default: m.DebateDetailModal })));
-const WorkflowDetailModal = lazy(() => import('./components/WorkflowDetailModal').then(m => ({ default: m.WorkflowDetailModal })));
 const KnowledgeBaseModal = lazy(() => import('./components/KnowledgeBaseModal').then(m => ({ default: m.KnowledgeBaseModal })));
 import { useSocket } from './hooks/useSocket';
 import { useToasts } from './hooks/useToasts';
 import { ToastFeed } from './components/ToastFeed';
 import { useAppStore } from './store';
 import socket from './socket';
-import type { AgentWithJob, AgentOutput, CreateTaskRequest, CreateDebateRequest, Workflow, Job, Discussion, Proposal } from '@shared/types';
+import type { AgentWithJob, AgentOutput, CreateTaskRequest, CreateDebateRequest, Job, Discussion, Proposal } from '@shared/types';
+
+type TimeWindow = 'today' | '7d' | '30d' | 'all';
 
 export default function App() {
   // ── Store selectors ─────────────────────────────────────────────────────
@@ -45,15 +40,12 @@ export default function App() {
   const selectedDebate = useAppStore(s => s.selectedDebate);
   const selectedWorkflow = useAppStore(s => s.selectedWorkflow);
   const activeProjectId = useAppStore(s => s.activeProjectId);
-  const leftTab = useAppStore(s => s.leftTab);
 
   const showTaskForm = useAppStore(s => s.showTaskForm);
   const showTemplates = useAppStore(s => s.showTemplates);
   const showBatchTemplates = useAppStore(s => s.showBatchTemplates);
   const showUsage = useAppStore(s => s.showUsage);
   const showSearch = useAppStore(s => s.showSearch);
-  const showGantt = useAppStore(s => s.showGantt);
-  const showDag = useAppStore(s => s.showDag);
   const showProjects = useAppStore(s => s.showProjects);
   const showSettings = useAppStore(s => s.showSettings);
   const showDebateForm = useAppStore(s => s.showDebateForm);
@@ -63,12 +55,7 @@ export default function App() {
   const todayClaudeCost = useAppStore(s => s.todayClaudeCost);
   const todayCodexCost = useAppStore(s => s.todayCodexCost);
   const costAutoUpdate = useAppStore(s => s.costAutoUpdate);
-  const ptyIdleAgents = useAppStore(s => s.ptyIdleAgents);
 
-  const archivedJobs = useAppStore(s => s.archivedJobs);
-  const archivedAgents = useAppStore(s => s.archivedAgents);
-  const archivedTotal = useAppStore(s => s.archivedTotal);
-  const archivedLoading = useAppStore(s => s.archivedLoading);
 
   // ── Store actions (accessed via getState to avoid re-render deps) ───────
   const store = useAppStore;
@@ -216,40 +203,6 @@ export default function App() {
     return () => clearInterval(id);
   }, []);
 
-  // ── Load archived jobs ────────────────────────────────────────────────────
-  const ARCHIVED_PAGE_SIZE = 50;
-  useEffect(() => {
-    if (activeProjectId !== '__archived__') return;
-    const s = store.getState();
-    s.setArchivedJobs([]);
-    s.setArchivedAgents([]);
-    s.setArchivedTotal(0);
-    fetch(`/api/jobs?archived=1&limit=${ARCHIVED_PAGE_SIZE}&offset=0`)
-      .then(r => r.ok ? r.json() : { jobs: [], total: 0, agents: [] })
-      .then((data: { jobs: Job[]; total: number; agents?: AgentWithJob[] }) => {
-        const s2 = store.getState();
-        s2.setArchivedJobs(data.jobs);
-        s2.setArchivedAgents(data.agents ?? []);
-        s2.setArchivedTotal(data.total);
-      })
-      .catch(() => {});
-  }, [activeProjectId]);
-
-  const loadMoreArchived = useCallback(async () => {
-    store.getState().setArchivedLoading(true);
-    try {
-      const currentLen = store.getState().archivedJobs.length;
-      const res = await fetch(`/api/jobs?archived=1&limit=${ARCHIVED_PAGE_SIZE}&offset=${currentLen}`);
-      if (!res.ok) return;
-      const data: { jobs: Job[]; total: number; agents?: AgentWithJob[] } = await res.json();
-      const s = store.getState();
-      s.appendArchivedJobs(data.jobs);
-      s.appendArchivedAgents(data.agents ?? []);
-      s.setArchivedTotal(data.total);
-    } catch { /* ignore */ } finally {
-      store.getState().setArchivedLoading(false);
-    }
-  }, []);
 
   // ── Filtering helpers ─────────────────────────────────────────────────────
   const isEyeJob = useCallback((j: Job) => {
@@ -257,16 +210,14 @@ export default function App() {
   }, []);
 
   const filteredJobs = useMemo(() => {
-    if (activeProjectId === '__archived__') return archivedJobs.filter(j => !isEyeJob(j));
     const activeJobs = jobs.filter(j => !j.archived_at && !isEyeJob(j));
     if (activeProjectId) return activeJobs.filter(j => j.project_id === activeProjectId);
     return activeJobs;
-  }, [jobs, activeProjectId, archivedJobs, isEyeJob]);
+  }, [jobs, activeProjectId, isEyeJob]);
 
   const filteredJobIds = useMemo(() => new Set(filteredJobs.map(j => j.id)), [filteredJobs]);
 
   const filteredAgents = useMemo(() => {
-    if (activeProjectId === '__archived__') return archivedAgents.filter(a => !isEyeJob(a.job));
     const matching = agents.filter(a => filteredJobIds.has(a.job_id));
     const latestByJob = new Map<string, AgentWithJob>();
     for (const a of matching) {
@@ -274,26 +225,47 @@ export default function App() {
       if (!existing || a.started_at > existing.started_at) latestByJob.set(a.job_id, a);
     }
     return [...latestByJob.values()];
-  }, [agents, filteredJobIds, activeProjectId, archivedAgents, isEyeJob]);
+  }, [agents, filteredJobIds]);
 
+  // Repo filter: groups workflows by work_dir basename. Replaces the old project_id filter for the rail.
+  const [activeRepo, setActiveRepo] = useState<string | null>(null);
+
+  // Loose-jobs modal — surfaces standalone (non-workflow) agents + queued single-shot jobs.
+  const [looseJobsOpen, setLooseJobsOpen] = useState(false);
+
+  // Time window: filters across all lanes by updated_at recency.
+  const [timeWindow, setTimeWindow] = useState<TimeWindow>('7d');
+  const timeCutoff = useMemo(() => {
+    if (timeWindow === 'all') return 0;
+    if (timeWindow === 'today') {
+      const d = new Date();
+      d.setHours(0, 0, 0, 0);
+      return d.getTime();
+    }
+    const days = timeWindow === '7d' ? 7 : 30;
+    return Date.now() - days * 86_400_000;
+  }, [timeWindow]);
+
+  // Workflows scoped by project + time window — but NOT by repo. The rail uses this
+  // so the user can still switch between repos within the chosen scope.
+  const scopedWorkflows = useMemo(() => {
+    let result = workflows;
+    if (activeProjectId) result = result.filter(w => w.project_id === activeProjectId);
+    if (timeCutoff > 0) result = result.filter(w => w.updated_at >= timeCutoff || w.status === 'running' || w.status === 'blocked');
+    return result;
+  }, [workflows, activeProjectId, timeCutoff]);
+
+  // Final filtered set — adds the active-repo filter on top of `scopedWorkflows`.
   const filteredWorkflows = useMemo(() => {
-    if (activeProjectId === '__archived__') return [] as Workflow[];
-    if (activeProjectId) return workflows.filter(w => w.project_id === activeProjectId);
-    return workflows;
-  }, [workflows, activeProjectId]);
+    if (activeRepo) return scopedWorkflows.filter(w => repoFor(w) === activeRepo);
+    return scopedWorkflows;
+  }, [scopedWorkflows, activeRepo]);
+
+  const repoGroups = useMemo(() => buildRepoTree(scopedWorkflows), [scopedWorkflows]);
 
   const queuedFilteredJobs = useMemo(
     () => filteredJobs.filter(j => j.status === 'queued'),
     [filteredJobs],
-  );
-
-  const waitingJobIds = useMemo(
-    () => new Set(
-      agents
-        .filter(a => a.status === 'waiting_user' || ptyIdleAgents.has(a.id))
-        .map(a => a.job_id),
-    ),
-    [agents, ptyIdleAgents],
   );
 
   const taskFeedNow = useMemo(
@@ -303,7 +275,6 @@ export default function App() {
 
   const activeProjectName = useMemo(() => {
     if (!activeProjectId) return null;
-    if (activeProjectId === '__archived__') return 'Archived';
     return projects.find(p => p.id === activeProjectId)?.name ?? null;
   }, [projects, activeProjectId]);
 
@@ -399,104 +370,123 @@ export default function App() {
     s.setActiveProjectId(canonicalJob?.project_id ?? agent.job.project_id ?? null);
   }, []);
 
-  const handleSelectJob = useCallback((job: Job) => {
-    const s = store.getState();
-    const agent = s.agents.find(a => a.job_id === job.id);
-    if (agent) s.setSelectedAgent(agent);
-    s.setActiveProjectId(job.project_id ?? null);
-  }, []);
-
   const handleCancelJob = useCallback(async (job: Job) => {
     await fetch(`/api/jobs/${job.id}`, { method: 'DELETE' });
-  }, []);
-
-  const handleRunJobNow = useCallback(async (job: Job) => {
-    await fetch(`/api/jobs/${job.id}/run-now`, { method: 'POST' });
-  }, []);
-
-  const handleArchiveJob = useCallback(async (job: Job) => {
-    await fetch(`/api/jobs/${job.id}/archive`, { method: 'POST' });
-  }, []);
-
-  const handleArchiveAll = useCallback(async (jobsToArchive: Job[]) => {
-    await Promise.all(jobsToArchive.map(j => fetch(`/api/jobs/${j.id}/archive`, { method: 'POST' })));
   }, []);
 
   const handleCloseTerminal = useCallback(() => {
     store.getState().closeTerminal();
   }, []);
 
+  const liveCount = useMemo(
+    () => filteredWorkflows.filter(w => w.status === 'running' || w.status === 'blocked').length,
+    [filteredWorkflows],
+  );
+  const looseJobsCount = useMemo(() => {
+    const inWindow = (ts: number, isLive: boolean) => timeCutoff === 0 || ts >= timeCutoff || isLive;
+    const looseAgents = filteredAgents.filter(a =>
+      !a.job.workflow_id &&
+      inWindow(a.updated_at, a.status === 'running' || a.status === 'starting' || a.status === 'waiting_user'),
+    );
+    const looseQueued = queuedFilteredJobs.filter(j =>
+      !j.workflow_id && inWindow(j.created_at, true),
+    );
+    return looseAgents.length + looseQueued.length;
+  }, [filteredAgents, queuedFilteredJobs, timeCutoff]);
+  const liveSelectedWorkflow = selectedWorkflow
+    ? (workflows.find(w => w.id === selectedWorkflow.id) ?? selectedWorkflow)
+    : null;
+  const pageTitle = activeRepo ?? activeProjectName ?? 'All repos';
+
   return (
-    <div className="app">
-      <Header onNewTask={() => store.getState().setShowTaskForm(true)} onTemplates={() => store.getState().setShowTemplates(true)} onBatchTemplates={() => store.getState().setShowBatchTemplates(true)} onUsage={() => store.getState().setShowUsage(true)} onSearch={() => store.getState().setShowSearch(true)} onTimeline={() => store.getState().setShowGantt(true)} onDag={() => store.getState().setShowDag(true)} onProjects={() => store.getState().setShowProjects(true)} onSettings={() => store.getState().setShowSettings(true)} onDebate={() => { store.getState().setDebateFormInitial(undefined); store.getState().setShowDebateForm(true); }} onDebates={debates.length > 0 ? debates : undefined} onSelectDebate={(d) => store.getState().setSelectedDebate(d)} onWorkflows={workflows.length > 0 ? workflows : undefined} onSelectWorkflow={(w) => store.getState().setSelectedWorkflow(w)} onKnowledgeBase={() => store.getState().setShowKnowledgeBase(true)} onEye={() => store.getState().setShowEye(v => !v)} eyeEnabled={eyeEnabled} eyeActive={showEye} eyeBadgeCount={showEye ? 0 : discussions.filter(d => d.needs_reply).length + proposals.filter(p => p.needs_reply).length} onHome={() => store.getState().resetToHome()} currentProjectName={activeProjectName} onClearProject={() => store.getState().setActiveProjectId(null)} todayClaudeCost={todayClaudeCost ?? undefined} todayCodexCost={todayCodexCost ?? undefined} costAutoUpdate={costAutoUpdate} onToggleCostAutoUpdate={() => store.getState().setCostAutoUpdate(v => !v)} />
-
-      <div className="main-layout">
-        <ErrorBoundary section="sidebar">
-          <div className={`left-sidebar-stack ${leftTab === 'lineage' && selectedAgent ? '' : 'left-sidebar-stack--narrow'}`}>
-            {selectedAgent && (
-              <div className="left-sidebar-tabs">
-                <button
-                  className={`left-sidebar-tab ${leftTab === 'feed' ? 'left-sidebar-tab--active' : ''}`}
-                  onClick={() => store.getState().setLeftTab('feed')}
-                >Feed</button>
-                <button
-                  className={`left-sidebar-tab ${leftTab === 'lineage' ? 'left-sidebar-tab--active' : ''}`}
-                  onClick={() => store.getState().setLeftTab('lineage')}
-                >Lineage</button>
-              </div>
-            )}
-            {leftTab === 'lineage' && selectedAgent ? (
-              <JobLineagePanel selectedAgent={selectedAgent} allAgents={agents} onSelectAgent={handleSelectAgent} />
-            ) : (
-              <WorkQueueSidebar jobs={jobs} projects={projects} onSelectJob={handleSelectJob} onCancelJob={handleCancelJob} onRunJobNow={handleRunJobNow} onArchiveJob={handleArchiveJob} waitingJobIds={waitingJobIds} />
-            )}
-            <RunningJobsPanel agents={agents} projects={projects} onSelectAgent={handleSelectAgent} ptyIdleAgentIds={ptyIdleAgents} />
-          </div>
-        </ErrorBoundary>
-
-        <ErrorBoundary section="task feed">
-          <main className={`agent-main ${selectedAgent ? 'agent-main-split' : ''}`}>
-            <section className="dashboard-home-section">
-              <div className="dashboard-home-section-header">
-                <div>
-                  <h2 className="dashboard-home-section-title">Tasks</h2>
-                  <p className="dashboard-home-section-subtitle">All workflows and standalone jobs, grouped by urgency.</p>
+    <div className="ad-app">
+      <TopBar
+        onHome={() => store.getState().resetToHome()}
+        onNewTask={() => store.getState().setShowTaskForm(true)}
+        onSearch={() => store.getState().setShowSearch(true)}
+        onSettings={() => store.getState().setShowSettings(true)}
+        onEye={() => store.getState().setShowEye(v => !v)}
+        eyeEnabled={eyeEnabled}
+        eyeActive={showEye}
+        eyeBadgeCount={discussions.filter(d => d.needs_reply).length + proposals.filter(p => p.needs_reply).length}
+        todayClaudeCost={todayClaudeCost ?? undefined}
+        todayCodexCost={todayCodexCost ?? undefined}
+      />
+      <ErrorBoundary section="left rail">
+        <LeftRail
+          repoGroups={repoGroups}
+          activeRepo={activeRepo}
+          onSelectRepo={setActiveRepo}
+          onSelectWorkflow={(w) => store.getState().setSelectedWorkflow(w)}
+          liveCount={liveCount}
+          looseJobsCount={looseJobsCount}
+          fileLocksCount={locks.length}
+          totalWorkflowCount={scopedWorkflows.length}
+          onUsage={() => store.getState().setShowUsage(true)}
+          onMemory={() => store.getState().setShowKnowledgeBase(true)}
+          onProjects={() => store.getState().setShowProjects(true)}
+          onLooseJobs={() => setLooseJobsOpen(true)}
+        />
+      </ErrorBoundary>
+      <main className="ad-page">
+        {liveSelectedWorkflow ? (
+          <ErrorBoundary section="control room">
+            <ControlRoom
+              workflow={liveSelectedWorkflow}
+              agents={agents}
+              onBack={() => store.getState().setSelectedWorkflow(null)}
+              onWorkflowUpdate={store.getState().updateWorkflow}
+            />
+          </ErrorBoundary>
+        ) : selectedAgent ? (
+          <ErrorBoundary section="terminal">
+            <AgentTerminal agent={selectedAgent} onClose={handleCloseTerminal} onContinued={handleSelectAgent} onRenameJob={handleRenameJob} />
+          </ErrorBoundary>
+        ) : (
+          <ErrorBoundary section="board">
+            <div className="page-head">
+              <h1>{pageTitle}</h1>
+              <span className="sub">
+                {activeRepo
+                  ? `Workflows in ${activeRepo}, grouped by progress through cycles.`
+                  : 'All workflows, grouped by progress through cycles.'}
+              </span>
+              <div className="right">
+                {activeRepo && (
+                  <button className="ad-btn-ghost" type="button" onClick={() => setActiveRepo(null)}>
+                    Clear repo
+                  </button>
+                )}
+                <div className="seg-control" role="group" aria-label="Time window">
+                  {([
+                    { id: 'today', label: 'Today' },
+                    { id: '7d',    label: '7d' },
+                    { id: '30d',   label: '30d' },
+                    { id: 'all',   label: 'All time' },
+                  ] as Array<{ id: TimeWindow; label: string }>).map(opt => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      className={timeWindow === opt.id ? 'active' : ''}
+                      onClick={() => setTimeWindow(opt.id)}
+                      aria-pressed={timeWindow === opt.id}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
                 </div>
               </div>
-              <TaskFeed
-                workflows={filteredWorkflows}
-                agents={filteredAgents}
-                allAgents={agents}
-                jobs={filteredJobs}
-                queuedJobs={queuedFilteredJobs}
-                now={taskFeedNow}
-                onSelectAgent={handleSelectAgent}
-                onSelectWorkflow={store.getState().setSelectedWorkflow}
-                onArchiveJob={handleArchiveJob}
-                onArchiveAll={handleArchiveAll}
-                selectedAgentId={selectedAgent?.id ?? null}
-                ptyIdleAgentIds={ptyIdleAgents}
-                isArchived={activeProjectId === '__archived__'}
-              />
-            </section>
-            {activeProjectId === '__archived__' && archivedJobs.length < archivedTotal && (
-              <div style={{ textAlign: 'center', padding: '12px' }}>
-                <button className="btn btn-secondary" onClick={loadMoreArchived} disabled={archivedLoading}>
-                  {archivedLoading ? 'Loading\u2026' : `Load more (${archivedJobs.length} of ${archivedTotal})`}
-                </button>
-              </div>
-            )}
-          </main>
-        </ErrorBoundary>
-
-        <ErrorBoundary section="terminal">
-          {selectedAgent ? (
-            <AgentTerminal agent={selectedAgent} onClose={handleCloseTerminal} onContinued={handleSelectAgent} onRenameJob={handleRenameJob} />
-          ) : (
-            <FileLockMap locks={locks} />
-          )}
-        </ErrorBoundary>
-      </div>
+            </div>
+            <WorkflowBoard
+              workflows={filteredWorkflows}
+              allAgents={agents}
+              selectedWorkflowId={selectedWorkflow?.id ?? null}
+              now={taskFeedNow}
+              onSelectWorkflow={(w) => store.getState().setSelectedWorkflow(w)}
+            />
+          </ErrorBoundary>
+        )}
+      </main>
 
       <Suspense fallback={null}>
       {showTaskForm && (
@@ -529,32 +519,8 @@ export default function App() {
           }}
         />
       )}
-      {showGantt && (
-        <GanttModal
-          jobs={filteredJobs}
-          agents={filteredAgents}
-          onClose={() => store.getState().setShowGantt(false)}
-          onSelectAgent={(agent) => { handleSelectAgent(agent); store.getState().setShowGantt(false); }}
-        />
-      )}
-      {showDag && (
-        <DAGModal
-          jobs={filteredJobs}
-          agents={filteredAgents}
-          onClose={() => store.getState().setShowDag(false)}
-          onSelectAgent={(agent) => { handleSelectAgent(agent); store.getState().setShowDag(false); }}
-        />
-      )}
       {showSettings && (
         <SettingsModal onClose={() => store.getState().setShowSettings(false)} eyeEnabled={eyeEnabled} onEyeEnabledChange={store.getState().setEyeEnabled} />
-      )}
-      {selectedWorkflow && (
-        <WorkflowDetailModal
-          workflow={workflows.find(w => w.id === selectedWorkflow.id) ?? selectedWorkflow}
-          agents={agents}
-          onClose={() => store.getState().setSelectedWorkflow(null)}
-          onWorkflowUpdate={store.getState().updateWorkflow}
-        />
       )}
       {showDebateForm && (
         <DebateForm
@@ -594,6 +560,15 @@ export default function App() {
         />
       )}
       </Suspense>
+
+      <LooseJobsModal
+        open={looseJobsOpen}
+        agents={filteredAgents}
+        queuedJobs={queuedFilteredJobs}
+        onClose={() => setLooseJobsOpen(false)}
+        onSelectAgent={handleSelectAgent}
+        onCancelJob={handleCancelJob}
+      />
 
       <ToastFeed
         toasts={toasts}
