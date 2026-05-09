@@ -27,8 +27,6 @@ export interface UIState {
   showBatchTemplates: boolean;
   showUsage: boolean;
   showSearch: boolean;
-  showGantt: boolean;
-  showDag: boolean;
   showProjects: boolean;
   showSettings: boolean;
   showDebateForm: boolean;
@@ -65,8 +63,6 @@ export interface UIActions {
   setShowBatchTemplates: (show: boolean) => void;
   setShowUsage: (show: boolean) => void;
   setShowSearch: (show: boolean) => void;
-  setShowGantt: (show: boolean) => void;
-  setShowDag: (show: boolean) => void;
   setShowProjects: (show: boolean) => void;
   setShowSettings: (show: boolean) => void;
   setShowDebateForm: (show: boolean) => void;
@@ -162,8 +158,6 @@ export const useAppStore = create<AppStore>()((set) => ({
   showBatchTemplates: false,
   showUsage: false,
   showSearch: false,
-  showGantt: false,
-  showDag: false,
   showProjects: false,
   showSettings: false,
   showDebateForm: false,
@@ -192,8 +186,6 @@ export const useAppStore = create<AppStore>()((set) => ({
   setShowBatchTemplates: (show) => set({ showBatchTemplates: show }),
   setShowUsage: (show) => set({ showUsage: show }),
   setShowSearch: (show) => set({ showSearch: show }),
-  setShowGantt: (show) => set({ showGantt: show }),
-  setShowDag: (show) => set({ showDag: show }),
   setShowProjects: (show) => set({ showProjects: show }),
   setShowSettings: (show) => set({ showSettings: show }),
   setShowDebateForm: (show) => set({ showDebateForm: show }),
@@ -222,8 +214,6 @@ export const useAppStore = create<AppStore>()((set) => ({
     showBatchTemplates: false,
     showUsage: false,
     showSearch: false,
-    showGantt: false,
-    showDag: false,
     showProjects: false,
     showSettings: false,
     showDebateForm: false,

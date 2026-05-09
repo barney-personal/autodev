@@ -13,6 +13,7 @@ data/*.db-journal
 
 # Claude artifacts
 .claude/
+.design-audit/
 
 # Environment
 .env

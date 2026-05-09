@@ -1,0 +1,53 @@
+/* ─── Base resets and globals ──────────────────────────────────────────────── */
+
+* { box-sizing: border-box; }
+*::before, *::after { box-sizing: border-box; }
+
+html, body, #root { height: 100%; margin: 0; }
+
+body {
+  font-family: var(--sans);
+  font-size: 13.5px;
+  line-height: 1.45;
+  letter-spacing: -0.005em;
+  color: var(--ink);
+  background:
+    radial-gradient(1200px 600px at 50% -200px, #ffffff 0%, var(--bg) 60%),
+    var(--bg);
+  height: 100vh;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+#root {
+  display: flex;
+  flex-direction: column;
+}
+
+::selection { background: rgba(0,113,227,0.22); color: var(--ink); }
+
+button { font-family: inherit; cursor: pointer; }
+input, textarea, select { font-family: inherit; color: inherit; }
+
+:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus-accent);
+  border-radius: var(--radius-sm);
+}
+:focus:not(:focus-visible) { outline: none; }
+
+/* Discreet scrollbars */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: rgba(0,0,0,0.18);
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0,0,0,0.28);
+  background-clip: padding-box;
+}
