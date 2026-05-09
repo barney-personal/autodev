@@ -14,6 +14,7 @@ interface LeftRailProps {
   onUsage?: () => void;
   onMemory?: () => void;
   onProjects?: () => void;
+  onLooseJobs?: () => void;
 }
 
 const FOLDER_DEFAULT_LIMIT = 5;
@@ -39,6 +40,7 @@ export function LeftRail({
   onUsage,
   onMemory,
   onProjects,
+  onLooseJobs,
 }: LeftRailProps) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
@@ -130,11 +132,11 @@ export function LeftRail({
 
       <div className="rail-section" style={{ marginTop: 'auto' }}>
         <div className="rail-label">Activity</div>
-        <div className="rail-item rail-item-static" aria-label={`${looseJobsCount} loose jobs`}>
+        <button className="rail-item" onClick={onLooseJobs} type="button">
           <span className="ico">⌖</span>
           <span>Loose jobs</span>
           <span className="count">{looseJobsCount}</span>
-        </div>
+        </button>
         <div className="rail-item rail-item-static" aria-label={`${fileLocksCount} file locks`}>
           <span className="ico">⊙</span>
           <span>File locks</span>

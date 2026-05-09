@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useMemo, useState, lazy, Suspense } from 'react';
 import { AgentTerminal } from './components/AgentTerminal';
 import { EyePanel } from './components/EyePanel';
-import { WorkflowBoard, TopBar, LeftRail, ControlRoom } from './components/board';
+import { WorkflowBoard, TopBar, LeftRail, ControlRoom, LooseJobsModal } from './components/board';
 import { buildRepoTree, repoFor } from './components/board/lanes';
 import { ErrorBoundary } from './components/ErrorBoundary';
 
@@ -21,7 +21,9 @@ import { useToasts } from './hooks/useToasts';
 import { ToastFeed } from './components/ToastFeed';
 import { useAppStore } from './store';
 import socket from './socket';
-import type { AgentWithJob, AgentOutput, CreateTaskRequest, CreateDebateRequest, Workflow, Job, Discussion, Proposal } from '@shared/types';
+import type { AgentWithJob, AgentOutput, CreateTaskRequest, CreateDebateRequest, Job, Discussion, Proposal } from '@shared/types';
+
+type TimeWindow = 'today' | '7d' | '30d' | 'all';
 
 export default function App() {
   // ── Store selectors ─────────────────────────────────────────────────────
@@ -54,10 +56,6 @@ export default function App() {
   const todayCodexCost = useAppStore(s => s.todayCodexCost);
   const costAutoUpdate = useAppStore(s => s.costAutoUpdate);
 
-  const archivedJobs = useAppStore(s => s.archivedJobs);
-  const archivedAgents = useAppStore(s => s.archivedAgents);
-  const archivedTotal = useAppStore(s => s.archivedTotal);
-  const archivedLoading = useAppStore(s => s.archivedLoading);
 
   // ── Store actions (accessed via getState to avoid re-render deps) ───────
   const store = useAppStore;
@@ -205,40 +203,6 @@ export default function App() {
     return () => clearInterval(id);
   }, []);
 
-  // ── Load archived jobs ────────────────────────────────────────────────────
-  const ARCHIVED_PAGE_SIZE = 50;
-  useEffect(() => {
-    if (activeProjectId !== '__archived__') return;
-    const s = store.getState();
-    s.setArchivedJobs([]);
-    s.setArchivedAgents([]);
-    s.setArchivedTotal(0);
-    fetch(`/api/jobs?archived=1&limit=${ARCHIVED_PAGE_SIZE}&offset=0`)
-      .then(r => r.ok ? r.json() : { jobs: [], total: 0, agents: [] })
-      .then((data: { jobs: Job[]; total: number; agents?: AgentWithJob[] }) => {
-        const s2 = store.getState();
-        s2.setArchivedJobs(data.jobs);
-        s2.setArchivedAgents(data.agents ?? []);
-        s2.setArchivedTotal(data.total);
-      })
-      .catch(() => {});
-  }, [activeProjectId]);
-
-  const loadMoreArchived = useCallback(async () => {
-    store.getState().setArchivedLoading(true);
-    try {
-      const currentLen = store.getState().archivedJobs.length;
-      const res = await fetch(`/api/jobs?archived=1&limit=${ARCHIVED_PAGE_SIZE}&offset=${currentLen}`);
-      if (!res.ok) return;
-      const data: { jobs: Job[]; total: number; agents?: AgentWithJob[] } = await res.json();
-      const s = store.getState();
-      s.appendArchivedJobs(data.jobs);
-      s.appendArchivedAgents(data.agents ?? []);
-      s.setArchivedTotal(data.total);
-    } catch { /* ignore */ } finally {
-      store.getState().setArchivedLoading(false);
-    }
-  }, []);
 
   // ── Filtering helpers ─────────────────────────────────────────────────────
   const isEyeJob = useCallback((j: Job) => {
@@ -246,16 +210,14 @@ export default function App() {
   }, []);
 
   const filteredJobs = useMemo(() => {
-    if (activeProjectId === '__archived__') return archivedJobs.filter(j => !isEyeJob(j));
     const activeJobs = jobs.filter(j => !j.archived_at && !isEyeJob(j));
     if (activeProjectId) return activeJobs.filter(j => j.project_id === activeProjectId);
     return activeJobs;
-  }, [jobs, activeProjectId, archivedJobs, isEyeJob]);
+  }, [jobs, activeProjectId, isEyeJob]);
 
   const filteredJobIds = useMemo(() => new Set(filteredJobs.map(j => j.id)), [filteredJobs]);
 
   const filteredAgents = useMemo(() => {
-    if (activeProjectId === '__archived__') return archivedAgents.filter(a => !isEyeJob(a.job));
     const matching = agents.filter(a => filteredJobIds.has(a.job_id));
     const latestByJob = new Map<string, AgentWithJob>();
     for (const a of matching) {
@@ -263,13 +225,15 @@ export default function App() {
       if (!existing || a.started_at > existing.started_at) latestByJob.set(a.job_id, a);
     }
     return [...latestByJob.values()];
-  }, [agents, filteredJobIds, activeProjectId, archivedAgents, isEyeJob]);
+  }, [agents, filteredJobIds]);
 
   // Repo filter: groups workflows by work_dir basename. Replaces the old project_id filter for the rail.
   const [activeRepo, setActiveRepo] = useState<string | null>(null);
 
+  // Loose-jobs modal — surfaces standalone (non-workflow) agents + queued single-shot jobs.
+  const [looseJobsOpen, setLooseJobsOpen] = useState(false);
+
   // Time window: filters across all lanes by updated_at recency.
-  type TimeWindow = 'today' | '7d' | '30d' | 'all';
   const [timeWindow, setTimeWindow] = useState<TimeWindow>('7d');
   const timeCutoff = useMemo(() => {
     if (timeWindow === 'all') return 0;
@@ -285,7 +249,6 @@ export default function App() {
   // Workflows scoped by project + time window — but NOT by repo. The rail uses this
   // so the user can still switch between repos within the chosen scope.
   const scopedWorkflows = useMemo(() => {
-    if (activeProjectId === '__archived__') return [] as Workflow[];
     let result = workflows;
     if (activeProjectId) result = result.filter(w => w.project_id === activeProjectId);
     if (timeCutoff > 0) result = result.filter(w => w.updated_at >= timeCutoff || w.status === 'running' || w.status === 'blocked');
@@ -312,7 +275,6 @@ export default function App() {
 
   const activeProjectName = useMemo(() => {
     if (!activeProjectId) return null;
-    if (activeProjectId === '__archived__') return 'Archived';
     return projects.find(p => p.id === activeProjectId)?.name ?? null;
   }, [projects, activeProjectId]);
 
@@ -408,6 +370,10 @@ export default function App() {
     s.setActiveProjectId(canonicalJob?.project_id ?? agent.job.project_id ?? null);
   }, []);
 
+  const handleCancelJob = useCallback(async (job: Job) => {
+    await fetch(`/api/jobs/${job.id}`, { method: 'DELETE' });
+  }, []);
+
   const handleCloseTerminal = useCallback(() => {
     store.getState().closeTerminal();
   }, []);
@@ -458,6 +424,7 @@ export default function App() {
           onUsage={() => store.getState().setShowUsage(true)}
           onMemory={() => store.getState().setShowKnowledgeBase(true)}
           onProjects={() => store.getState().setShowProjects(true)}
+          onLooseJobs={() => setLooseJobsOpen(true)}
         />
       </ErrorBoundary>
       <main className="ad-page">
@@ -516,13 +483,6 @@ export default function App() {
               now={taskFeedNow}
               onSelectWorkflow={(w) => store.getState().setSelectedWorkflow(w)}
             />
-            {activeProjectId === '__archived__' && archivedJobs.length < archivedTotal && (
-              <div style={{ textAlign: 'center', padding: '12px' }}>
-                <button className="ad-btn-ghost" onClick={loadMoreArchived} disabled={archivedLoading}>
-                  {archivedLoading ? 'Loading\u2026' : `Load more (${archivedJobs.length} of ${archivedTotal})`}
-                </button>
-              </div>
-            )}
           </ErrorBoundary>
         )}
       </main>
@@ -599,6 +559,15 @@ export default function App() {
         />
       )}
       </Suspense>
+
+      <LooseJobsModal
+        open={looseJobsOpen}
+        agents={filteredAgents}
+        queuedJobs={queuedFilteredJobs}
+        onClose={() => setLooseJobsOpen(false)}
+        onSelectAgent={handleSelectAgent}
+        onCancelJob={handleCancelJob}
+      />
 
       <ToastFeed
         toasts={toasts}

@@ -163,9 +163,14 @@ function CycleLadder({ workflow, jobs }: { workflow: Workflow; jobs: Job[] }) {
       map.set(i, { idle: 'todo', assess: 'todo', review: 'todo', implement: 'todo', verify: 'todo' });
     }
     for (const job of jobs) {
-      const c = job.workflow_cycle ?? 0;
       const phase = (job.workflow_phase ?? null) as WorkflowPhase | null;
       if (!phase || !PHASES.includes(phase)) continue;
+      // Clamp the cycle into the expected range. A stray off-by-one in
+      // `workflow_cycle` (e.g. mid-cycle transition writing the next cycle
+      // before the workflow's `current_cycle` ticks) used to spawn a phantom
+      // cycle row beyond `total - 1`.
+      const rawCycle = job.workflow_cycle ?? 0;
+      const c = Math.max(0, Math.min(rawCycle, total - 1));
       const bucket = map.get(c) ?? { idle: 'todo', assess: 'todo', review: 'todo', implement: 'todo', verify: 'todo' };
       const isRunning = job.status === 'running' || job.status === 'assigned';
       const isDone = job.status === 'done';
