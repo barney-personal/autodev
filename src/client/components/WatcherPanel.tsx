@@ -136,15 +136,39 @@ export function WatcherPanel({ agentId, agentStatus }: WatcherPanelProps) {
   const handleStart = async () => {
     if (busy) return;
     setBusy(true);
-    try { await fetch(`/api/agents/${agentId}/watcher/start`, { method: 'POST' }); }
-    finally { setBusy(false); }
+    try {
+      const r = await fetch(`/api/agents/${agentId}/watcher/start`, { method: 'POST' });
+      if (!r.ok) {
+        // The route returns 400 with a clear `error` field for the
+        // common cases (agent not running, ANTHROPIC_API_KEY missing).
+        // Surface that to the user instead of silently re-enabling the
+        // button.
+        let msg = `Start failed (HTTP ${r.status})`;
+        try { const body = await r.json(); if (body?.error) msg = `Start failed: ${body.error}`; } catch { /* body may be empty */ }
+        setTickCooldown({ until: Date.now() + 5000, message: msg });
+      } else {
+        setTickCooldown(null);
+      }
+    } catch (err) {
+      setTickCooldown({ until: Date.now() + 5000, message: `Start failed: ${(err as Error).message}` });
+    } finally { setBusy(false); }
   };
 
   const handleStop = async () => {
     if (busy) return;
     setBusy(true);
-    try { await fetch(`/api/agents/${agentId}/watcher/stop`, { method: 'POST' }); }
-    finally { setBusy(false); }
+    try {
+      const r = await fetch(`/api/agents/${agentId}/watcher/stop`, { method: 'POST' });
+      if (!r.ok) {
+        let msg = `Stop failed (HTTP ${r.status})`;
+        try { const body = await r.json(); if (body?.error) msg = `Stop failed: ${body.error}`; } catch { /* body may be empty */ }
+        setTickCooldown({ until: Date.now() + 5000, message: msg });
+      } else {
+        setTickCooldown(null);
+      }
+    } catch (err) {
+      setTickCooldown({ until: Date.now() + 5000, message: `Stop failed: ${(err as Error).message}` });
+    } finally { setBusy(false); }
   };
 
   return (

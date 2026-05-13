@@ -296,7 +296,14 @@ function appendNudgeToNote(agentId: string, message: string): void {
  * description. Capped per-agent — exceeding the cap auto-escalates instead.
  */
 export function execRestartJob(watcher: JobWatcher, input: RestartJobInput): ToolExecResult {
-  const reason = (input.reason ?? '').trim();
+  // Sanitise at the entry point — consistent with execNudgeJob /
+  // execEscalateToUser / execPostCommentary. Previously `reason` reached
+  // watcher_actions raw (control chars survived) and was sanitised later
+  // inside appendWatcherDiagnosis before being passed to the next agent's
+  // prompt. Doing it up front means the action row + auto-escalation
+  // question also benefit from the strip, and the sanitisation point is
+  // uniform across all four tool entries.
+  const reason = capUntrustedText((input.reason ?? '').trim(), WATCHER_DIAGNOSIS_REASON_CAP);
   if (!reason) return { ok: false, message: 'reason is required' };
 
   const applied = queries.countActionsForAgent(watcher.agent_id, 'restart');
