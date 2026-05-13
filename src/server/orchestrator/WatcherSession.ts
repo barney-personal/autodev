@@ -302,7 +302,15 @@ export class WatcherSession {
           max_tokens: MAX_OUTPUT_TOKENS,
           system: SYSTEM,
           tools: TOOLS,
-          messages: trimHistory(this.history),
+          // pinCacheControlToLast: Anthropic caps total cache_control
+          // breakpoints at 4 per request (system + tools + up to two
+          // message-level marks). We tag every user tick prompt with
+          // cache_control: ephemeral so the prefix gets cached; without
+          // stripping the older marks we'd hit 5 breakpoints by tick 3-4
+          // and the API would 400 the whole request. Only the most-recent
+          // user turn needs the mark — caching is prefix-based, so the
+          // last breakpoint covers everything before it.
+          messages: pinCacheControlToLast(trimHistory(this.history)),
         });
 
         totalInput += resp.usage.input_tokens ?? 0;
@@ -478,6 +486,54 @@ export class WatcherSession {
  *
  * Exported for unit testing this invariant directly.
  */
+/**
+ * Strip `cache_control` from every message except the last user turn.
+ *
+ * Anthropic enforces a maximum of 4 cache_control breakpoints per request
+ * (counting system, tools, and message-level marks combined). We already
+ * pin one mark on the system prompt, so the messages array can carry at
+ * most three more — but we'd accumulate one per tick if we leave the mark
+ * on every historical user turn. By tick 4 we'd hit 5 breakpoints and the
+ * API would 400 the entire request.
+ *
+ * Prefix-based caching means only the LAST mark in the messages array
+ * matters for cache lookup — every byte before it is already covered.
+ * So we keep cache_control on the most-recent user turn and drop it from
+ * earlier ones, leaving the request with exactly two breakpoints
+ * (system + latest user) plus optional tools.
+ *
+ * Operates on a shallow-cloned array so the in-memory history isn't
+ * mutated — older turns keep their cache_control marker for the next
+ * tick (when they'll once again be stripped before sending).
+ */
+export function pinCacheControlToLast(messages: Anthropic.Messages.MessageParam[]): Anthropic.Messages.MessageParam[] {
+  if (messages.length === 0) return messages;
+  // Find the index of the last USER message — assistant turns never carry
+  // cache_control in our code path, so we don't need to scan them.
+  let lastUserIdx = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'user') { lastUserIdx = i; break; }
+  }
+  return messages.map((m, idx) => {
+    if (idx === lastUserIdx) return m;  // keep cache_control as-is on the latest user turn
+    if (typeof m.content === 'string') return m;  // string content has no per-block marks
+    if (!Array.isArray(m.content)) return m;
+    let stripped = false;
+    const cleaned = m.content.map(block => {
+      // Narrow without coupling to every block-type shape — the SDK's
+      // ContentBlockParam union is too wide for a clean type guard here.
+      const b = block as unknown as { cache_control?: unknown };
+      if (b.cache_control !== undefined) {
+        stripped = true;
+        const { cache_control: _drop, ...rest } = b;
+        return rest as typeof block;
+      }
+      return block;
+    });
+    return stripped ? { ...m, content: cleaned } : m;
+  });
+}
+
 export function trimHistory(history: Anthropic.Messages.MessageParam[]): Anthropic.Messages.MessageParam[] {
   if (history.length <= MAX_HISTORY_TURNS) return history;
   const head = history.slice(0, 1);  // always [user]
