@@ -325,6 +325,23 @@ function runHeartbeats(): void {
 }
 
 async function rehydrateActiveWatchers(): Promise<void> {
+  // Step 1: orphan cleanup. stopSession runs in a setTimeout(debounce+200ms)
+  // after onAgentFinished, so if the server crashes in that narrow window the
+  // watcher row stays in 'starting' / 'running' even though its agent is
+  // already terminal. Mark those rows 'stopped' on boot so the dashboard
+  // doesn't show ghost active watchers attached to dead agents.
+  const activeWatchers = queries.listActiveWatchers();
+  let orphansCleared = 0;
+  for (const w of activeWatchers) {
+    const agent = queries.getAgentById(w.agent_id);
+    const stillRunning = !!agent && ['starting', 'running', 'waiting_user'].includes(agent.status);
+    if (stillRunning) continue;
+    queries.updateWatcher(w.id, { status: 'stopped', finished_at: Date.now() });
+    orphansCleared++;
+  }
+  if (orphansCleared > 0) log.info({ orphansCleared }, 'cleared orphan watcher rows attached to terminal agents');
+
+  // Step 2: re-attach in-process sessions for currently-running agents.
   const runningAgents = queries.listAllRunningAgents();
   let restored = 0;
   for (const agent of runningAgents) {

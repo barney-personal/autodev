@@ -454,12 +454,22 @@ function extractAssistantText(row: AgentOutput): string | null {
   return null;
 }
 
+// Git SHA format check. Stops a malformed `base_sha` like "--output=foo" from
+// being passed as a positional git argument (treated as a flag by git).
+// base_sha is written server-side via `git rev-parse HEAD` so this is
+// belt-and-suspenders, but the check is essentially free.
+const GIT_SHA_REGEX = /^[0-9a-f]{7,40}$/;
+export function isValidGitSha(s: string | null | undefined): boolean {
+  return typeof s === 'string' && GIT_SHA_REGEX.test(s);
+}
+
 /**
  * Async — runs `git diff --stat` without blocking the event loop. Bounded by
  * a 4s timeout AND a 64KB maxBuffer so an unexpectedly huge diff can't
  * stall the runtime or run the process out of memory.
  */
 async function safeDiffStat(workDir: string, baseSha: string): Promise<string | null> {
+  if (!isValidGitSha(baseSha)) return null;
   try {
     const { stdout } = await execFileAsync(
       'git',

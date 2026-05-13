@@ -145,7 +145,13 @@ export function insertCommentary(input: InsertCommentaryInput): WatcherCommentar
   return cast<WatcherCommentary>(db.prepare('SELECT * FROM watcher_commentary WHERE id = ?').get(input.id));
 }
 
-export function listCommentaryForAgent(agentId: string, limit = 200): WatcherCommentary[] {
+/** Matches the client store's per-agent cap so a default-call returns the
+ * same window the live socket stream maintains. The API explicitly passes
+ * its own WATCHER_HYDRATE_LIMIT, but aligning the default keeps any future
+ * direct call from silently returning a narrower window. */
+export const DEFAULT_WATCHER_LIST_LIMIT = 500;
+
+export function listCommentaryForAgent(agentId: string, limit = DEFAULT_WATCHER_LIST_LIMIT): WatcherCommentary[] {
   const db = getDb();
   const rows = db.prepare(
     'SELECT * FROM watcher_commentary WHERE agent_id = ? ORDER BY created_at ASC LIMIT ?'
@@ -195,7 +201,7 @@ export function updateActionOutcome(id: string, outcome: WatcherActionOutcome, d
     .run(outcome, detail ?? null, id);
 }
 
-export function listActionsForAgent(agentId: string, limit = 200): WatcherAction[] {
+export function listActionsForAgent(agentId: string, limit = DEFAULT_WATCHER_LIST_LIMIT): WatcherAction[] {
   const db = getDb();
   const rows = db.prepare(
     'SELECT * FROM watcher_actions WHERE agent_id = ? ORDER BY created_at ASC LIMIT ?'

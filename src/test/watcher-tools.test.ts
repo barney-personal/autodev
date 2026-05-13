@@ -373,12 +373,26 @@ describe('watcherTools.execReadDiff', () => {
     expect(r.message).toContain('base_sha');
   });
 
+  it('rejects a malformed base_sha that looks like a git flag', async () => {
+    // base_sha is written server-side by AgentRunner so this is
+    // belt-and-suspenders, but a corrupted/forged value masquerading as a
+    // git flag (e.g. "--upload-pack=foo") should not be passed positionally.
+    const { execReadDiff } = await import('../server/orchestrator/watcherTools.js');
+    const queries = await import('../server/db/queries.js');
+    const { watcher } = await makeWatcher();
+    queries.updateAgent(watcher.agent_id, { base_sha: '--upload-pack=evil' });
+    const r = await execReadDiff(watcher);
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain('not a valid git SHA');
+  });
+
   it('returns ok=false when the job has no work_dir', async () => {
     const { execReadDiff } = await import('../server/orchestrator/watcherTools.js');
     const queries = await import('../server/db/queries.js');
     const { watcher } = await makeWatcher();
-    // Add a base_sha, but the test job has work_dir=null by default.
-    queries.updateAgent(watcher.agent_id, { base_sha: 'abc123' });
+    // Add a well-formed base_sha (40 hex chars), but the test job has
+    // work_dir=null by default — the missing work_dir check should fire.
+    queries.updateAgent(watcher.agent_id, { base_sha: 'a'.repeat(40) });
     const r = await execReadDiff(watcher);
     expect(r.ok).toBe(false);
     expect(r.message).toContain('work_dir');

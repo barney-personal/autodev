@@ -41,6 +41,7 @@ function execFileAsync(
 import * as socket from '../socket/SocketManager.js';
 import { agentLogger } from '../lib/logger.js';
 import { cancelledAgents } from './AgentConfig.js';
+import { isValidGitSha } from './watcherFeed.js';
 import { getFileLockRegistry } from './FileLockRegistry.js';
 import { nudgeQueue } from './WorkQueueManager.js';
 // Note: closeMcpSessionsForAgent is loaded via dynamic import inside
@@ -170,6 +171,10 @@ export function execReadRecentOutput(watcher: JobWatcher, input: ReadRecentOutpu
 export async function execReadDiff(watcher: JobWatcher): Promise<ToolExecResult> {
   const agent = queries.getAgentById(watcher.agent_id);
   if (!agent || !agent.base_sha) return { ok: false, message: 'no base_sha recorded for this agent' };
+  // base_sha is written by AgentRunner from `git rev-parse HEAD` so this is
+  // belt-and-suspenders, but rejecting a malformed value (e.g. "--upload-pack=…")
+  // before it lands as a positional git arg costs nothing.
+  if (!isValidGitSha(agent.base_sha)) return { ok: false, message: 'recorded base_sha is not a valid git SHA' };
   const job = queries.getJobById(agent.job_id);
   if (!job?.work_dir) return { ok: false, message: 'job has no work_dir' };
   try {
@@ -404,10 +409,15 @@ function capUntrustedText(s: string, max: number): string {
   return stripped.length > max ? stripped.slice(0, max - 1) + '…' : stripped;
 }
 
-// Strip C0 (\x00–\x1F) and C1 (\x7F–\x9F) control characters,
-// while preserving tab (\x09), LF (\x0A), and CR (\x0D). Control characters
-// in LLM-authored content (diagnosis, headlines) could otherwise corrupt log
-// output, terminal renderers, or trick downstream parsers / agent prompts.
+// Strip control + invisible-formatting characters that could corrupt log
+// output, terminal renderers, or downstream parsers / agent prompts.
+//
+//   - C0 (\x00–\x1F) except common whitespace (\x09 tab, \x0A LF, \x0D CR)
+//   - C1 (\x7F DEL, \x80–\x9F)
+//   - Unicode bidirectional overrides (U+202A–U+202E, U+2066–U+2069) —
+//     these reorder text in terminals/editors that honour bidi, letting an
+//     attacker make pasted strings render very differently from their bytes.
+//
 // Built via String.fromCharCode so the source stays free of literal control
 // bytes (which Edit tooling tends to mangle).
 const CONTROL_CHAR_REGEX = (() => {
@@ -418,6 +428,8 @@ const CONTROL_CHAR_REGEX = (() => {
       cc(0x0B) + cc(0x0C) +
       cc(0x0E) + '-' + cc(0x1F) +
       cc(0x7F) + '-' + cc(0x9F) +
+      cc(0x202A) + '-' + cc(0x202E) +
+      cc(0x2066) + '-' + cc(0x2069) +
     ']',
     'g',
   );

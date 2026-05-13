@@ -164,6 +164,34 @@ describe('JobWatcherManager', () => {
     expect(result).toEqual({ ok: false, reason: 'no_session' });
   });
 
+  it('clears orphan watcher rows attached to terminal agents on startup', async () => {
+    // Regression: stopSession runs via setTimeout(debounce+200ms) after
+    // onAgentFinished. If the server crashes inside that window the
+    // watcher row stays 'running' in the DB even though the agent is
+    // already done. On restart, rehydrateActiveWatchers should mark
+    // those orphan rows 'stopped' so the dashboard doesn't show ghost
+    // active watchers.
+    const mod = await import('../server/orchestrator/JobWatcherManager.js');
+    const queries = await import('../server/db/queries.js');
+    mod.stopJobWatcherManager();
+    mod._resetForTest();
+
+    // Build the orphan state directly: agent in terminal status,
+    // watcher row still 'running'.
+    const job = await insertTestJob({ status: 'done' });
+    const agentId = randomUUID();
+    queries.insertAgent({ id: agentId, job_id: job.id, status: 'done', started_at: Date.now() - 60_000, finished_at: Date.now() });
+    const watcher = queries.insertWatcher({ id: randomUUID(), agent_id: agentId, job_id: job.id, model: 'claude-opus-4-7' });
+    queries.updateWatcher(watcher.id, { status: 'running' });
+
+    mod.startJobWatcherManager();
+    await new Promise(r => setTimeout(r, 50));
+
+    const after = queries.getWatcherById(watcher.id)!;
+    expect(after.status).toBe('stopped');
+    expect(after.finished_at).toBeGreaterThan(0);
+  });
+
   it('rehydrates a session for an agent already running when the manager starts (crash-recovery)', async () => {
     const mod = await import('../server/orchestrator/JobWatcherManager.js');
     // Tear down the auto-started manager from beforeEach so we can simulate

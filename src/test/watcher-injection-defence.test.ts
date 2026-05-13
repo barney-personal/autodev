@@ -53,6 +53,28 @@ describe('stripControlChars', () => {
   it('preserves Unicode beyond the C1 range', () => {
     expect(stripControlChars('héllo — 🚀 — café')).toBe('héllo — 🚀 — café');
   });
+
+  it('strips Unicode bidirectional override characters', () => {
+    // These reorder text in terminals that honour bidi — a known display
+    // spoofing vector (CVE-2021-42574 family). Strip them out of any
+    // LLM-authored content surfaced to the dashboard or piped back into
+    // the watched agent.
+    const RLO = String.fromCharCode(0x202E);
+    const LRO = String.fromCharCode(0x202D);
+    const PDF = String.fromCharCode(0x202C);
+    const LRI = String.fromCharCode(0x2066);
+    const PDI = String.fromCharCode(0x2069);
+    const dirty = `safe-${RLO}gnp.evitca${PDF}-${LRO}reverse${PDF}-${LRI}isolate${PDI}`;
+    const clean = stripControlChars(dirty);
+    expect(clean).not.toContain(RLO);
+    expect(clean).not.toContain(LRO);
+    expect(clean).not.toContain(PDF);
+    expect(clean).not.toContain(LRI);
+    expect(clean).not.toContain(PDI);
+    // ASCII content survives.
+    expect(clean).toContain('safe-');
+    expect(clean).toContain('reverse');
+  });
 });
 
 describe('appendWatcherDiagnosis', () => {
