@@ -19,6 +19,7 @@ import * as socket from '../socket/SocketManager.js';
 import { SYSTEM_PROMPT, HOOK_SETTINGS, CLAUDE, CODEX, MCP_PORT, readClaudeMd, buildMemorySection, ensureCodexTrusted, sessionName, getExistingCwd } from './AgentConfig.js';
 import { AgentState } from './AgentLifecycle.js';
 import { markJobRunning } from './JobLifecycle.js';
+import * as jobWatcher from './JobWatcherManager.js';
 import { wrapExecLineWithNice } from './ProcessPriority.js';
 import { logResilienceEvent } from './ResilienceLogger.js';
 import { errMsg } from '../../shared/errors.js';
@@ -491,6 +492,13 @@ export function startInteractiveAgent(
       logPtyLifecycleEvent('pty_agent_running', agentId, job, {
         transport: isStandalonePrintJob(job) ? 'ndjson_tail_poll' : 'pty_attach',
       });
+
+      // Live watcher: mirror AgentRunner.ts:282 — interactive / tmux-spawned
+      // agents go through this path (every non-Codex-batch job), and without
+      // this call no watcher session ever auto-attaches to a running agent.
+      // Manual /watcher/start still works, but the auto-spawn-on-start
+      // promise of the feature is broken without this line.
+      try { jobWatcher.onAgentStarted(agentId); } catch (err) { console.warn(`[watcher ${agentId}] onAgentStarted failed:`, errMsg(err)); }
 
       // Attach node-pty to the tmux session
       ctx.attachPty(agentId, job, cols, rows);

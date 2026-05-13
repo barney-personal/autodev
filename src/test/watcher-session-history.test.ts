@@ -393,6 +393,65 @@ describe('validateWatcherModel', () => {
   });
 });
 
+describe('pinCacheControlToLast — Anthropic 4-breakpoint cap', () => {
+  it('strips cache_control from earlier user turns and keeps it on the latest', async () => {
+    // Regression: a real production smoke test errored at tick 4 with
+    // "A maximum of 4 blocks with cache_control may be provided. Found 5."
+    // Each tick added a user turn with cache_control: ephemeral. By tick 4
+    // we had system(1) + 4 user-turn marks = 5 breakpoints. Prefix-based
+    // caching only needs the LATEST breakpoint, so older marks are dropped
+    // before sending.
+    const { pinCacheControlToLast } = await import('../server/orchestrator/WatcherSession.js');
+    const messages = [
+      { role: 'user' as const, content: [{ type: 'text' as const, text: 'first', cache_control: { type: 'ephemeral' as const } }] },
+      { role: 'assistant' as const, content: [{ type: 'text' as const, text: 'reply 1' }] },
+      { role: 'user' as const, content: [{ type: 'text' as const, text: 'second', cache_control: { type: 'ephemeral' as const } }] },
+      { role: 'assistant' as const, content: [{ type: 'text' as const, text: 'reply 2' }] },
+      { role: 'user' as const, content: [{ type: 'text' as const, text: 'third (latest)', cache_control: { type: 'ephemeral' as const } }] },
+    ];
+    const out = pinCacheControlToLast(messages);
+
+    // Only the LAST user turn keeps cache_control.
+    const userTurns = out.filter(m => m.role === 'user');
+    expect(userTurns.length).toBe(3);
+    const hasCacheCtrl = (m: typeof userTurns[number]) => Array.isArray(m.content) && m.content.some(b => (b as { cache_control?: unknown }).cache_control !== undefined);
+    expect(hasCacheCtrl(userTurns[0])).toBe(false);
+    expect(hasCacheCtrl(userTurns[1])).toBe(false);
+    expect(hasCacheCtrl(userTurns[2])).toBe(true);
+  });
+
+  it('does not mutate the input array (history must keep cache_control for the next tick)', async () => {
+    // The in-memory history is reused across ticks. If pinCacheControlToLast
+    // mutated it, the helper would have to be re-applied differently on
+    // each subsequent call. The shallow-clone contract makes the helper
+    // pure-ish so callers don't have to think about it.
+    const { pinCacheControlToLast } = await import('../server/orchestrator/WatcherSession.js');
+    const msg = { role: 'user' as const, content: [{ type: 'text' as const, text: 'a', cache_control: { type: 'ephemeral' as const } }] };
+    const input = [msg, { role: 'assistant' as const, content: [{ type: 'text' as const, text: 'b' }] }, msg];
+    const before = JSON.stringify(input);
+    pinCacheControlToLast(input);
+    expect(JSON.stringify(input)).toBe(before);
+  });
+
+  it('handles an empty messages array', async () => {
+    const { pinCacheControlToLast } = await import('../server/orchestrator/WatcherSession.js');
+    expect(pinCacheControlToLast([])).toEqual([]);
+  });
+
+  it('preserves messages whose content is a plain string (no cache_control to strip)', async () => {
+    const { pinCacheControlToLast } = await import('../server/orchestrator/WatcherSession.js');
+    const messages = [
+      { role: 'user' as const, content: 'plain old string' },
+      { role: 'assistant' as const, content: 'reply' },
+      { role: 'user' as const, content: [{ type: 'text' as const, text: 'latest', cache_control: { type: 'ephemeral' as const } }] },
+    ];
+    const out = pinCacheControlToLast(messages);
+    expect(out[0].content).toBe('plain old string');
+    expect(out[1].content).toBe('reply');
+    expect(Array.isArray(out[2].content)).toBe(true);
+  });
+});
+
 describe('lastActionAtForAgent — applied-only filter', () => {
   beforeEach(async () => { await setupTestDb(); });
   afterEach(async () => { await cleanupTestDb(); });
