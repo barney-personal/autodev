@@ -119,6 +119,10 @@ export function createSocketMock() {
     emitPrReviewNew: vi.fn(),
     emitPrReviewUpdate: vi.fn(),
     emitPrReviewMessage: vi.fn(),
+    emitWatcherSessionNew: vi.fn(),
+    emitWatcherSessionUpdate: vi.fn(),
+    emitWatcherCommentaryNew: vi.fn(),
+    emitWatcherActionNew: vi.fn(),
   };
 }
 

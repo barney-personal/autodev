@@ -1,5 +1,6 @@
 import React from 'react';
 import type { AgentWithJob } from '@shared/types';
+import { useAppStore } from '../store';
 
 interface AgentCardProps {
   agent: AgentWithJob;
@@ -101,6 +102,15 @@ function getStatusLabel(agent: AgentWithJob, isPtyIdle?: boolean): React.ReactNo
 function AgentCardInner({ agent, onClick, onSelectParent, onArchiveJob, onInteractiveChange, templateName, isSelected, isPtyIdle, now }: AgentCardProps) {
   const borderColor = getBorderColor(agent, isPtyIdle);
   const isWaiting = agent.status === 'waiting_user';
+  const watcher = useAppStore(s => s.watchersByAgent[agent.id]);
+  const watcherCommentary = useAppStore(s => s.commentaryByAgent[agent.id]);
+  const watcherDotColor = watcher
+    ? (watcher.next_severity === 'blocker' ? '#ef4444'
+       : watcher.next_severity === 'concern' ? '#f59e0b'
+       : watcher.next_severity === 'progress' || watcher.next_severity === 'resolved' ? '#22c55e'
+       : watcher.status === 'running' ? '#3b82f6'
+       : null)
+    : null;
 
   function handleFlag(e: React.MouseEvent) {
     e.stopPropagation();
@@ -197,6 +207,21 @@ function AgentCardInner({ agent, onClick, onSelectParent, onArchiveJob, onIntera
         <span className={`agent-status-badge status-${agent.status}${isPtyIdle && agent.status === 'running' ? ' status-pty-idle' : ''}`}>
           {agent.status}
         </span>
+        {watcherDotColor && (
+          <span
+            className="watcher-card-dot"
+            title={`Watcher: ${watcher?.status ?? 'idle'} · ${watcherCommentary?.length ?? 0} notes`}
+            style={{
+              display: 'inline-block',
+              width: 7,
+              height: 7,
+              borderRadius: '50%',
+              background: watcherDotColor,
+              marginLeft: 6,
+              verticalAlign: 'middle',
+            }}
+          />
+        )}
       </div>
       <div className="agent-job-title">{agent.job.title}</div>
       <div className="agent-status-msg">{getStatusLabel(agent, isPtyIdle)}</div>
@@ -287,7 +312,10 @@ function AgentCardInner({ agent, onClick, onSelectParent, onArchiveJob, onIntera
 }
 
 export const AgentCard = React.memo(AgentCardInner, (prev, next) => {
-  // Always re-render if agent data changed
+  // Always re-render if agent data changed.
+  // Note: watcher store reads happen inside the component via useAppStore, so
+  // zustand re-renders automatically on watcher state changes — we don't need
+  // to compare watcher props here.
   if (prev.agent !== next.agent || prev.isSelected !== next.isSelected || prev.isPtyIdle !== next.isPtyIdle || prev.templateName !== next.templateName) return false;
   // Only re-render on tick if agent is actively running
   const isRunning = prev.agent.status === 'running' || prev.agent.status === 'starting';

@@ -1,0 +1,241 @@
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useAppStore } from '../store';
+import type { JobWatcher, WatcherCommentary, WatcherAction, WatcherSeverity } from '@shared/types';
+
+interface WatcherPanelProps {
+  agentId: string;
+  agentStatus: string;
+}
+
+const SEVERITY_COLOR: Record<WatcherSeverity, string> = {
+  info: '#64748b',
+  progress: '#22c55e',
+  concern: '#f59e0b',
+  blocker: '#ef4444',
+  resolved: '#22c55e',
+};
+
+const SEVERITY_ICON: Record<WatcherSeverity, string> = {
+  info: '•',
+  progress: '✓',
+  concern: '!',
+  blocker: '⛔',
+  resolved: '✓',
+};
+
+const ACTION_COLOR: Record<string, string> = {
+  nudge: '#3b82f6',
+  restart: '#f59e0b',
+  escalate: '#ef4444',
+  comment: '#64748b',
+};
+
+function relTime(ts: number, now: number): string {
+  const diff = Math.max(0, now - ts);
+  if (diff < 1000) return 'just now';
+  if (diff < 60_000) return `${Math.floor(diff / 1000)}s ago`;
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+  return `${Math.floor(diff / 3_600_000)}h ago`;
+}
+
+export function WatcherPanel({ agentId, agentStatus }: WatcherPanelProps) {
+  const watcher = useAppStore(s => s.watchersByAgent[agentId]) as JobWatcher | undefined;
+  const commentary = useAppStore(s => s.commentaryByAgent[agentId]) as WatcherCommentary[] | undefined;
+  const actions = useAppStore(s => s.actionsByAgent[agentId]) as WatcherAction[] | undefined;
+  const setCommentary = useAppStore(s => s.setWatcherCommentary);
+  const setActions = useAppStore(s => s.setWatcherActions);
+  const upsertWatcher = useAppStore(s => s.upsertWatcher);
+
+  const [now, setNow] = useState(Date.now());
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const endRef = useRef<HTMLDivElement>(null);
+  const fetchedAgentId = useRef<string | null>(null);
+
+  // One-time hydrate per agent
+  useEffect(() => {
+    if (fetchedAgentId.current === agentId) return;
+    fetchedAgentId.current = agentId;
+    setLoading(true);
+    fetch(`/api/agents/${agentId}/watcher`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (!data) return;
+        if (data.watcher) upsertWatcher(data.watcher);
+        if (Array.isArray(data.commentary)) setCommentary(agentId, data.commentary);
+        if (Array.isArray(data.actions)) setActions(agentId, data.actions);
+      })
+      .finally(() => setLoading(false));
+  }, [agentId, upsertWatcher, setCommentary, setActions]);
+
+  // Live clock for "x ago" formatting
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 5000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Auto-scroll to newest commentary
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  }, [commentary?.length]);
+
+  const merged = useMemo(() => mergeTimeline(commentary ?? [], actions ?? []), [commentary, actions]);
+
+  const isRunning = ['starting', 'running', 'waiting_user'].includes(agentStatus);
+
+  const handleTickNow = async () => {
+    if (busy) return;
+    setBusy(true);
+    try { await fetch(`/api/agents/${agentId}/watcher/tick`, { method: 'POST' }); }
+    finally { setBusy(false); }
+  };
+
+  const handleStart = async () => {
+    if (busy) return;
+    setBusy(true);
+    try { await fetch(`/api/agents/${agentId}/watcher/start`, { method: 'POST' }); }
+    finally { setBusy(false); }
+  };
+
+  const handleStop = async () => {
+    if (busy) return;
+    setBusy(true);
+    try { await fetch(`/api/agents/${agentId}/watcher/stop`, { method: 'POST' }); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="watcher-panel">
+      <WatcherHeader
+        watcher={watcher}
+        isRunning={isRunning}
+        busy={busy}
+        onStart={handleStart}
+        onStop={handleStop}
+        onTickNow={handleTickNow}
+      />
+      <div className="watcher-stream">
+        {loading && merged.length === 0 && (
+          <div className="watcher-empty">Loading watcher state…</div>
+        )}
+        {!loading && merged.length === 0 && (
+          <div className="watcher-empty">
+            {watcher
+              ? 'No commentary yet — the watcher is observing.'
+              : isRunning
+                ? 'No watcher attached. Click "Start watcher" to spawn one.'
+                : 'No watcher ran for this agent.'}
+          </div>
+        )}
+        {merged.map(item => {
+          if (item.kind === 'commentary') return <CommentaryItem key={`c-${item.entry.id}`} item={item.entry} now={now} />;
+          return <ActionItem key={`a-${item.entry.id}`} item={item.entry} now={now} />;
+        })}
+        <div ref={endRef} />
+      </div>
+    </div>
+  );
+}
+
+function WatcherHeader({
+  watcher, isRunning, busy, onStart, onStop, onTickNow,
+}: {
+  watcher: JobWatcher | undefined;
+  isRunning: boolean;
+  busy: boolean;
+  onStart: () => void;
+  onStop: () => void;
+  onTickNow: () => void;
+}) {
+  const status = watcher?.status ?? 'inactive';
+  const dotColor =
+    status === 'running' ? '#22c55e' :
+    status === 'starting' ? '#f59e0b' :
+    status === 'error' ? '#ef4444' :
+    '#64748b';
+
+  return (
+    <div className="watcher-header">
+      <div className="watcher-header-left">
+        <span className="watcher-status-dot" style={{ background: dotColor }} />
+        <span className="watcher-title">Live watcher</span>
+        <span className="watcher-status-text">{status}</span>
+        {watcher && (
+          <span className="watcher-stats" title={`${watcher.tick_count} ticks · $${watcher.cost_usd.toFixed(4)}`}>
+            {watcher.tick_count} ticks · ${watcher.cost_usd.toFixed(4)}
+          </span>
+        )}
+      </div>
+      <div className="watcher-header-right">
+        {isRunning && (watcher?.status === 'running' || watcher?.status === 'starting') && (
+          <button className="btn btn-sm" onClick={onTickNow} disabled={busy} title="Re-evaluate now">↻ Re-tick</button>
+        )}
+        {isRunning && (!watcher || watcher.status === 'stopped' || watcher.status === 'error') && (
+          <button className="btn btn-sm btn-primary" onClick={onStart} disabled={busy}>Start watcher</button>
+        )}
+        {isRunning && (watcher?.status === 'running' || watcher?.status === 'starting') && (
+          <button className="btn btn-sm" onClick={onStop} disabled={busy}>Stop</button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CommentaryItem({ item, now }: { item: WatcherCommentary; now: number }) {
+  const color = SEVERITY_COLOR[item.severity] ?? '#64748b';
+  const icon = SEVERITY_ICON[item.severity] ?? '•';
+  return (
+    <div className="watcher-item watcher-item-commentary" style={{ borderLeftColor: color }}>
+      <div className="watcher-item-head">
+        <span className="watcher-item-icon" style={{ color }}>{icon}</span>
+        <span className="watcher-item-severity" style={{ color }}>{item.severity}</span>
+        <span className="watcher-item-time">{relTime(item.created_at, now)}</span>
+      </div>
+      <div className="watcher-item-headline">{item.headline}</div>
+      {item.detail && <div className="watcher-item-detail">{item.detail}</div>}
+      {item.evidence && (
+        <details className="watcher-item-evidence">
+          <summary>Evidence</summary>
+          <pre>{item.evidence}</pre>
+        </details>
+      )}
+    </div>
+  );
+}
+
+function ActionItem({ item, now }: { item: WatcherAction; now: number }) {
+  const color = ACTION_COLOR[item.type] ?? '#64748b';
+  const verb = item.type === 'nudge' ? 'Nudged' : item.type === 'restart' ? 'Restarted' : item.type === 'escalate' ? 'Escalated' : 'Comment';
+  const outcome = item.outcome;
+  const outcomeColor = outcome === 'applied' ? '#22c55e' : outcome === 'gated' ? '#f59e0b' : outcome === 'failed' ? '#ef4444' : '#64748b';
+  return (
+    <div className="watcher-item watcher-item-action" style={{ borderLeftColor: color }}>
+      <div className="watcher-item-head">
+        <span className="watcher-item-icon" style={{ color }}>⚡</span>
+        <span className="watcher-item-severity" style={{ color }}>{verb}</span>
+        <span className="watcher-action-outcome" style={{ color: outcomeColor }}>{outcome}</span>
+        <span className="watcher-item-time">{relTime(item.created_at, now)}</span>
+      </div>
+      {item.reason && <div className="watcher-item-detail">Reason: {item.reason}</div>}
+      {item.payload && <div className="watcher-item-detail">Payload: {item.payload}</div>}
+      {item.outcome_detail && <div className="watcher-item-detail watcher-item-detail-muted">{item.outcome_detail}</div>}
+    </div>
+  );
+}
+
+type MergedItem =
+  | { kind: 'commentary'; entry: WatcherCommentary; at: number }
+  | { kind: 'action'; entry: WatcherAction; at: number };
+
+function mergeTimeline(commentary: WatcherCommentary[], actions: WatcherAction[]): MergedItem[] {
+  // 'comment' actions duplicate commentary; we keep commentary as the canonical timeline source
+  // and only inject explicit interventions (nudge/restart/escalate).
+  const out: MergedItem[] = [];
+  for (const c of commentary) out.push({ kind: 'commentary', entry: c, at: c.created_at });
+  for (const a of actions) {
+    if (a.type === 'comment') continue;
+    out.push({ kind: 'action', entry: a, at: a.created_at });
+  }
+  out.sort((x, y) => x.at - y.at);
+  return out;
+}

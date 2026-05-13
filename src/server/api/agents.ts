@@ -8,6 +8,7 @@ import { markJobRunning } from '../orchestrator/JobLifecycle.js';
 import { disconnectAgent, disconnectAll, getPtyBuffer, getSnapshot, attachPty, isTmuxSessionAlive, saveSnapshot } from '../orchestrator/PtyManager.js';
 import { getFileLockRegistry } from '../orchestrator/FileLockRegistry.js';
 import { nudgeQueue } from '../orchestrator/WorkQueueManager.js';
+import { requestTickNow, startWatcherForAgent, stopWatcherForAgent } from '../orchestrator/JobWatcherManager.js';
 import { agentReadAllSchema, agentRetrySchema, agentContinueSchema, validateBody } from './validation.js';
 
 const router = Router();
@@ -307,6 +308,46 @@ router.post('/:id/requeue', (req, res) => {
   nudgeQueue();
 
   res.json(updated);
+});
+
+// ─── Live Watcher ─────────────────────────────────────────────────────────
+router.get('/:id/watcher', (req, res) => {
+  const agent = queries.getAgentById(req.params.id);
+  if (!agent) { res.status(404).json({ error: 'not found' }); return; }
+  const watcher = queries.getWatcherByAgentId(req.params.id);
+  const commentary = queries.listCommentaryForAgent(req.params.id, 200);
+  const actions = queries.listActionsForAgent(req.params.id, 200);
+  res.json({ watcher: watcher ?? null, commentary, actions });
+});
+
+router.get('/:id/commentary', (req, res) => {
+  const agent = queries.getAgentById(req.params.id);
+  if (!agent) { res.status(404).json({ error: 'not found' }); return; }
+  const limit = req.query.limit ? Math.min(parseInt(req.query.limit as string, 10) || 200, 1000) : 200;
+  res.json(queries.listCommentaryForAgent(req.params.id, limit));
+});
+
+router.post('/:id/watcher/start', (req, res) => {
+  const agent = queries.getAgentById(req.params.id);
+  if (!agent) { res.status(404).json({ error: 'not found' }); return; }
+  const ok = startWatcherForAgent(req.params.id);
+  if (!ok) { res.status(400).json({ error: 'unable to start watcher (manager disabled, agent not running, or API key missing)' }); return; }
+  const watcher = queries.getWatcherByAgentId(req.params.id);
+  res.json({ ok: true, watcher });
+});
+
+router.post('/:id/watcher/stop', (req, res) => {
+  const agent = queries.getAgentById(req.params.id);
+  if (!agent) { res.status(404).json({ error: 'not found' }); return; }
+  const ok = stopWatcherForAgent(req.params.id);
+  res.json({ ok });
+});
+
+router.post('/:id/watcher/tick', (req, res) => {
+  const agent = queries.getAgentById(req.params.id);
+  if (!agent) { res.status(404).json({ error: 'not found' }); return; }
+  const ok = requestTickNow(req.params.id);
+  res.json({ ok });
 });
 
 router.post('/:id/dismiss-warnings', (req, res) => {

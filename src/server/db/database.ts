@@ -579,6 +579,12 @@ export function initDb(dbPath: string): DatabaseSync {
   db.exec('CREATE INDEX IF NOT EXISTS idx_wfc_workflow ON workflow_file_claims(workflow_id)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_wfc_file ON workflow_file_claims(file_path) WHERE released_at IS NULL');
 
+  // ── Live Watcher (Opus 4.7-powered per-agent supervisor) ──────────────────
+  createWatcherTables(db);
+  if (!jobCols.includes('watch')) {
+    db.exec('ALTER TABLE jobs ADD COLUMN watch INTEGER NOT NULL DEFAULT 1');
+  }
+
   // ── Performance indexes ────────────────────────────────────────────────────
   // Covering partial indexes for the hot jobs-list queries. Without these
   // the planner falls back to USE TEMP B-TREE FOR ORDER BY, which at
@@ -646,6 +652,69 @@ export function initDb(dbPath: string): DatabaseSync {
 
   _db = db;
   return db;
+}
+
+/**
+ * Live watcher tables — separated into a helper so the migration block stays
+ * easy to scan. `job_watchers` is 1:1 with the agent being supervised;
+ * `watcher_commentary` is the chronological dashboard feed; `watcher_actions`
+ * is the intervention log used for gating + audit.
+ */
+function createWatcherTables(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS job_watchers (
+      id              TEXT PRIMARY KEY,
+      agent_id        TEXT NOT NULL,
+      job_id          TEXT NOT NULL,
+      status          TEXT NOT NULL DEFAULT 'starting',
+      model           TEXT NOT NULL,
+      tick_count      INTEGER NOT NULL DEFAULT 0,
+      input_tokens    INTEGER NOT NULL DEFAULT 0,
+      output_tokens   INTEGER NOT NULL DEFAULT 0,
+      cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_create_tokens INTEGER NOT NULL DEFAULT 0,
+      cost_usd        REAL NOT NULL DEFAULT 0,
+      last_seq        INTEGER NOT NULL DEFAULT -1,
+      last_tick_at    INTEGER,
+      next_severity   TEXT NOT NULL DEFAULT 'info',
+      error_message   TEXT,
+      started_at      INTEGER NOT NULL,
+      finished_at     INTEGER
+    )
+  `);
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_job_watchers_agent ON job_watchers(agent_id)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_job_watchers_status ON job_watchers(status)');
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS watcher_commentary (
+      id         TEXT PRIMARY KEY,
+      watcher_id TEXT NOT NULL,
+      agent_id   TEXT NOT NULL,
+      severity   TEXT NOT NULL,
+      headline   TEXT NOT NULL,
+      detail     TEXT,
+      evidence   TEXT,
+      created_at INTEGER NOT NULL
+    )
+  `);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_watcher_commentary_agent ON watcher_commentary(agent_id, created_at)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_watcher_commentary_watcher ON watcher_commentary(watcher_id, created_at)');
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS watcher_actions (
+      id         TEXT PRIMARY KEY,
+      watcher_id TEXT NOT NULL,
+      agent_id   TEXT NOT NULL,
+      type       TEXT NOT NULL,
+      reason     TEXT,
+      payload    TEXT,
+      outcome    TEXT NOT NULL DEFAULT 'pending',
+      outcome_detail TEXT,
+      created_at INTEGER NOT NULL
+    )
+  `);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_watcher_actions_agent ON watcher_actions(agent_id, created_at)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_watcher_actions_type ON watcher_actions(type, created_at)');
 }
 
 export function closeDb(): void {

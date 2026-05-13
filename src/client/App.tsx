@@ -164,6 +164,10 @@ export default function App() {
     onDiscussionUpdate: (discussion: Discussion) => store.getState().addOrUpdateDiscussion(discussion),
     onProposalNew: (proposal: Proposal) => store.getState().addOrUpdateProposal(proposal),
     onProposalUpdate: (proposal: Proposal) => store.getState().addOrUpdateProposal(proposal),
+    onWatcherSessionNew: (watcher) => store.getState().upsertWatcher(watcher),
+    onWatcherSessionUpdate: (watcher) => store.getState().upsertWatcher(watcher),
+    onWatcherCommentaryNew: (commentary) => store.getState().appendWatcherCommentary(commentary),
+    onWatcherActionNew: (action) => store.getState().appendWatcherAction(action),
   });
 
   // Fetch eyeEnabled from settings on mount

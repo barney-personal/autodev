@@ -10,6 +10,7 @@ import { getFileLockRegistry } from './FileLockRegistry.js';
 import { onJobCompleted as debateOnJobCompleted } from './DebateManager.js';
 import { markJobRunning } from './JobLifecycle.js';
 import { onJobCompleted as workflowOnJobCompleted } from './WorkflowManager.js';
+import * as jobWatcher from './JobWatcherManager.js';
 import type { StopMode } from '../../shared/types.js';
 
 const PTY_LOG_DIR = path.join(process.cwd(), 'data', 'agent-logs');
@@ -329,5 +330,7 @@ function emitWarning(agentId: string, type: string, message: string): void {
   if (agentWithJob) {
     try { socket.emitAgentUpdate(agentWithJob); } catch (err) { console.debug('[health] socket emit failed for agent card update in emitWarning:', err); }
   }
+  // Live watcher: poke the watcher so it can interpret the warning and decide whether to intervene.
+  try { jobWatcher.onWarning(warning); } catch (err) { console.debug('[health] watcher onWarning failed:', err); }
   console.log(`[health] warning for agent ${agentId.slice(0, 6)}: [${type}] ${message}`);
 }

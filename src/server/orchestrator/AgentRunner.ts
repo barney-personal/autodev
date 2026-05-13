@@ -49,6 +49,7 @@ import { buildNiceSpawn, isNiceAvailable } from './ProcessPriority.js';
 import { registerCompletionHandler } from './JobCompletionNotifier.js';
 import { getCircuitBreaker } from './ModelClassifier.js';
 import { classifyJobFailure } from './FailureClassifier.js';
+import * as jobWatcher from './JobWatcherManager.js';
 import {
   CLAUDE,
   CODEX,
@@ -276,6 +277,9 @@ export function runAgent(options: RunOptions): void {
   markJobRunning(job.id);
   const agentWithJob = queries.getAgentWithJob(agentId);
   if (agentWithJob) socket.emitAgentUpdate(agentWithJob);
+
+  // Live watcher: spawn an Opus 4.7 supervisor that narrates progress and intervenes if stuck.
+  try { jobWatcher.onAgentStarted(agentId); } catch (err) { agentLogger(agentId).warn({ err }, 'watcher onAgentStarted failed'); }
 
   // Start tailing the log file; pass the child so we know when it exits
   startTailing(agentId, job, logPath, 0, child);
@@ -628,6 +632,10 @@ export async function handleJobCompletion(
   if (finalStatus === 'done') clearRecoveryState(activeJob);
   getFileLockRegistry().releaseAll(agentId);
 
+  // Live watcher: deliver final tick so a postmortem commentary is posted,
+  // then the session stops itself.
+  try { jobWatcher.onAgentFinished(agentId, finalStatus); } catch (err) { agentLogger(agentId).debug({ err }, 'watcher onAgentFinished failed'); }
+
   // Notify circuit breaker of job outcome
   try {
     if (finalStatus === 'done') {
@@ -904,6 +912,9 @@ function handleStreamEvent(agentId: string, event: ClaudeStreamEvent | CodexStre
 
   // Token accumulation for cost estimation (budget stop mode)
   extractAndAccumulateTokens(agentId, event, raw);
+
+  // Live watcher: notify on tool_use / turn results so it can interpret progress.
+  try { jobWatcher.onAgentEvent(agentId, event); } catch (err) { agentLogger(agentId).debug({ err }, 'watcher onAgentEvent failed'); }
 
   const latestRow = queries.getLatestAgentOutput(agentId);
   if (latestRow) socket.emitAgentOutput(agentId, latestRow);

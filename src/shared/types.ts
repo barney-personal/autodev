@@ -69,6 +69,7 @@ export interface Job {
   workflow_cycle: number | null;        // which cycle this job belongs to (0-based)
   workflow_phase: WorkflowPhase | null; // 'assess' | 'review' | 'implement'
   pr_url: string | null;          // GitHub PR URL, auto-created for worktree jobs on completion
+  watch: number;                  // 0=watcher disabled, 1=enabled (default)
   archived_at: number | null;
   created_at: number;
   updated_at: number;
@@ -304,6 +305,10 @@ export interface ServerToClientEvents {
   'eye:pr-review:new': (payload: { review: PrReview }) => void;
   'eye:pr-review:update': (payload: { review: PrReview }) => void;
   'eye:pr-review:message': (payload: { message: PrReviewMessage }) => void;
+  'watcher:session:new': (payload: { watcher: JobWatcher }) => void;
+  'watcher:session:update': (payload: { watcher: JobWatcher }) => void;
+  'watcher:commentary:new': (payload: { commentary: WatcherCommentary }) => void;
+  'watcher:action:new': (payload: { action: WatcherAction }) => void;
 }
 
 export interface ClientToServerEvents {
@@ -868,6 +873,60 @@ export interface PrReview {
   needs_reply?: boolean;
   created_at: number;
   updated_at: number;
+}
+
+// ─── Live Watcher ────────────────────────────────────────────────────────────
+//
+// A JobWatcher is an Opus 4.7 supervisor session, 1:1 with an in-flight agent.
+// It consumes a curated event feed, posts commentary to the dashboard, and can
+// intervene (nudge / restart / escalate) when the agent gets stuck.
+
+export type WatcherStatus = 'starting' | 'running' | 'stopped' | 'error';
+export type WatcherSeverity = 'info' | 'progress' | 'concern' | 'blocker' | 'resolved';
+export type WatcherActionType = 'nudge' | 'restart' | 'escalate' | 'comment';
+export type WatcherActionOutcome = 'pending' | 'applied' | 'gated' | 'failed';
+
+export interface JobWatcher {
+  id: string;
+  agent_id: string;
+  job_id: string;
+  status: WatcherStatus;
+  model: string;
+  tick_count: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_create_tokens: number;
+  cost_usd: number;
+  last_seq: number;
+  last_tick_at: number | null;
+  next_severity: WatcherSeverity;
+  error_message: string | null;
+  started_at: number;
+  finished_at: number | null;
+}
+
+export interface WatcherCommentary {
+  id: string;
+  watcher_id: string;
+  agent_id: string;
+  severity: WatcherSeverity;
+  headline: string;
+  detail: string | null;
+  evidence: string | null;
+  created_at: number;
+}
+
+export interface WatcherAction {
+  id: string;
+  watcher_id: string;
+  agent_id: string;
+  type: WatcherActionType;
+  reason: string | null;
+  payload: string | null;
+  outcome: WatcherActionOutcome;
+  outcome_detail: string | null;
+  created_at: number;
 }
 
 // ─── Eye Daily Summary ────────────────────────────────────────────────────────

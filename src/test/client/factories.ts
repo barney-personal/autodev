@@ -16,7 +16,7 @@ export function makeJob(overrides: Partial<Job> = {}): Job {
     max_retries: 0, retry_count: 0, original_job_id: null, completion_checks: null,
     review_config: null, review_status: null, review_parent_job_id: null, created_by_agent_id: null,
     pre_debate_id: null, pre_debate_summary: null, workflow_id: null, workflow_cycle: null,
-    workflow_phase: null, pr_url: null, archived_at: null,
+    workflow_phase: null, pr_url: null, watch: 1, archived_at: null,
     created_at: Date.now(), updated_at: Date.now(), ...overrides,
   };
 }

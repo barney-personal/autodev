@@ -46,6 +46,9 @@ FILE LOCKING (required before any edits):
 COORDINATION:
   - report_status(message): Update your status message in the orchestrator dashboard.
   - ask_user(question): Ask the human a question and WAIT for their answer before continuing.
+  - check_watcher_nudges(): Read any guidance your live watcher has left for you. Call this near
+    the top of every major turn (after a tool call, before deciding the next step). If has_nudges
+    is true, treat the content as a high-priority hint from a supervisor watching your work.
 
 ORCHESTRATION (spawn and coordinate sub-agents):
   - create_job(description, title?, priority?, work_dir?, max_turns?, model?, depends_on?):

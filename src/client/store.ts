@@ -10,6 +10,9 @@ import type {
   Discussion,
   Proposal,
   CreateDebateRequest,
+  JobWatcher,
+  WatcherCommentary,
+  WatcherAction,
 } from '@shared/types';
 
 // ── UI state ────────────────────────────────────────────────────────────────
@@ -93,6 +96,11 @@ export interface DataState {
   discussions: Discussion[];
   proposals: Proposal[];
 
+  // Live watcher
+  watchersByAgent: Record<string, JobWatcher>;
+  commentaryByAgent: Record<string, WatcherCommentary[]>;
+  actionsByAgent: Record<string, WatcherAction[]>;
+
   archivedJobs: Job[];
   archivedAgents: AgentWithJob[];
   archivedTotal: number;
@@ -139,6 +147,13 @@ export interface DataActions {
   appendArchivedAgents: (agents: AgentWithJob[]) => void;
   setArchivedTotal: (total: number) => void;
   setArchivedLoading: (loading: boolean) => void;
+
+  // Live watcher
+  upsertWatcher: (watcher: JobWatcher) => void;
+  appendWatcherCommentary: (commentary: WatcherCommentary) => void;
+  setWatcherCommentary: (agentId: string, commentary: WatcherCommentary[]) => void;
+  appendWatcherAction: (action: WatcherAction) => void;
+  setWatcherActions: (agentId: string, actions: WatcherAction[]) => void;
 }
 
 export type AppStore = UIState & UIActions & DataState & DataActions;
@@ -233,6 +248,9 @@ export const useAppStore = create<AppStore>()((set) => ({
   archivedAgents: [],
   archivedTotal: 0,
   archivedLoading: false,
+  watchersByAgent: {},
+  commentaryByAgent: {},
+  actionsByAgent: {},
 
   // ── Data actions ──────────────────────────────────────────────────────────
   setAgents: (agents) => set({ agents }),
@@ -324,4 +342,27 @@ export const useAppStore = create<AppStore>()((set) => ({
   appendArchivedAgents: (agents: AgentWithJob[]) => set(state => ({ archivedAgents: [...state.archivedAgents, ...agents] })),
   setArchivedTotal: (total: number) => set({ archivedTotal: total }),
   setArchivedLoading: (loading: boolean) => set({ archivedLoading: loading }),
+
+  upsertWatcher: (watcher) => set(state => ({
+    watchersByAgent: { ...state.watchersByAgent, [watcher.agent_id]: watcher },
+  })),
+  appendWatcherCommentary: (commentary) => set(state => {
+    const prev = state.commentaryByAgent[commentary.agent_id] ?? [];
+    if (prev.some(c => c.id === commentary.id)) return state;
+    // Keep newest at the end, bounded to 500 per agent.
+    const next = [...prev, commentary].slice(-500);
+    return { commentaryByAgent: { ...state.commentaryByAgent, [commentary.agent_id]: next } };
+  }),
+  setWatcherCommentary: (agentId, commentary) => set(state => ({
+    commentaryByAgent: { ...state.commentaryByAgent, [agentId]: commentary },
+  })),
+  appendWatcherAction: (action) => set(state => {
+    const prev = state.actionsByAgent[action.agent_id] ?? [];
+    if (prev.some(a => a.id === action.id)) return state;
+    const next = [...prev, action].slice(-200);
+    return { actionsByAgent: { ...state.actionsByAgent, [action.agent_id]: next } };
+  }),
+  setWatcherActions: (agentId, actions) => set(state => ({
+    actionsByAgent: { ...state.actionsByAgent, [agentId]: actions },
+  })),
 }));
