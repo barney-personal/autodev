@@ -354,15 +354,19 @@ export const useAppStore = create<AppStore>()((set) => ({
     return { commentaryByAgent: { ...state.commentaryByAgent, [commentary.agent_id]: next } };
   }),
   setWatcherCommentary: (agentId, commentary) => set(state => ({
-    commentaryByAgent: { ...state.commentaryByAgent, [agentId]: commentary },
+    commentaryByAgent: { ...state.commentaryByAgent, [agentId]: commentary.slice(-500) },
   })),
   appendWatcherAction: (action) => set(state => {
     const prev = state.actionsByAgent[action.agent_id] ?? [];
     if (prev.some(a => a.id === action.id)) return state;
-    const next = [...prev, action].slice(-200);
+    // Bounded to 500 per agent — matches the server's WATCHER_HYDRATE_LIMIT
+    // so first-load and post-live-update counts stay consistent.
+    const next = [...prev, action].slice(-500);
     return { actionsByAgent: { ...state.actionsByAgent, [action.agent_id]: next } };
   }),
   setWatcherActions: (agentId, actions) => set(state => ({
-    actionsByAgent: { ...state.actionsByAgent, [agentId]: actions },
+    // Same 500 cap as the live-update path so a hydrate response can't
+    // overflow the bounded window.
+    actionsByAgent: { ...state.actionsByAgent, [agentId]: actions.slice(-500) },
   })),
 }));
