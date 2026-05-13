@@ -8,32 +8,8 @@
  *
  * Pure functions — easy to unit-test.
  */
-import { execFile } from 'child_process';
-import { promisify } from 'util';
+import { execFileAsync } from '../lib/execFileAsync.js';
 import * as queries from '../db/queries.js';
-
-/**
- * Lazy-promisified execFile — same pattern as AgentRunner. Some test files
- * mock `child_process` without exposing `execFile`, so `promisify(undefined)`
- * at module init would crash the import. Deferring to first call keeps those
- * tests' mocks valid until the function is actually exercised.
- */
-type ExecFileAsyncOpts = { cwd?: string; timeout?: number; maxBuffer?: number; encoding?: BufferEncoding };
-let _execFileAsync: ((file: string, args: string[], opts?: ExecFileAsyncOpts) => Promise<{ stdout: string; stderr: string }>) | null = null;
-function execFileAsync(
-  file: string,
-  args: string[],
-  opts: ExecFileAsyncOpts = {},
-): Promise<{ stdout: string; stderr: string }> {
-  if (!_execFileAsync) {
-    _execFileAsync = promisify(execFile) as unknown as (
-      file: string,
-      args: string[],
-      opts?: ExecFileAsyncOpts,
-    ) => Promise<{ stdout: string; stderr: string }>;
-  }
-  return _execFileAsync(file, args, opts);
-}
 import type {
   Agent,
   AgentOutput,

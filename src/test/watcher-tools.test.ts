@@ -399,9 +399,9 @@ describe('watcherTools.execRestartJob — diagnosis safety', () => {
     // Wrapped with an explicit "untrusted" label so the next agent doesn't
     // treat the diagnosis as instructions.
     expect(job.description).toContain('untrusted');
-    // The watcher's text is rendered as a blockquote so prompt-injection text
-    // inside it is visibly contained.
-    expect(job.description).toContain('> ');
+    // The watcher's text is rendered as a 4-space-indented Markdown code
+    // block so prompt-injection text inside it is structurally contained.
+    expect(job.description).toMatch(/\n {4}/);
   });
 
   it('completes the DB transition even when agent.pid is null (nothing to kill)', async () => {
