@@ -20,7 +20,7 @@ import { captureWithContext } from '../instrument.js';
 import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
 import { WatcherSession, DEFAULT_WATCHER_MODEL } from './WatcherSession.js';
-import type { WatcherTrigger } from './watcherFeed.js';
+import { highestTrigger, type WatcherTrigger } from './watcherFeed.js';
 import type { ClaudeStreamEvent, CodexStreamEvent, AgentWarning } from '../../shared/types.js';
 
 const log = workflowLogger('watcher-manager');
@@ -223,7 +223,7 @@ function ensureSession(agentId: string, trigger: WatcherTrigger): void {
 function scheduleTick(agentId: string, trigger: WatcherTrigger): void {
   const entry = _sessions.get(agentId);
   if (!entry) return;
-  // Coalesce: keep the highest-rank trigger in the debounce window.
+  // Coalesce: keep the highest-rank trigger in the debounce window (TRIGGER_RANK is shared with WatcherSession).
   entry.pendingTrigger = highestTrigger(entry.pendingTrigger, trigger);
   if (entry.debounceTimer) return;  // already scheduled
   entry.debounceTimer = setTimeout(() => {
@@ -253,6 +253,11 @@ function stopSession(agentId: string): void {
       const fresh = queries.getWatcherById(w.id);
       if (fresh) socket.emitWatcherSessionUpdate(fresh);
     }
+    // Drop any pending nudge note for this agent — the agent is gone, the
+    // notes table doesn't need to hold stale advice indefinitely.
+    const nudgeKey = `watcher/nudges/${agentId}`;
+    const nudge = queries.getNote(nudgeKey);
+    if (nudge?.value) queries.upsertNote(nudgeKey, '', null);
   } catch (err) {
     log.warn({ err, agentId }, 'stopSession DB update failed');
   }
@@ -306,24 +311,6 @@ function classifyEvent(event: ClaudeStreamEvent | CodexStreamEvent): WatcherTrig
     return null;
   }
   return null;
-}
-
-const TRIGGER_RANK: Record<WatcherTrigger, number> = {
-  heartbeat: 0,
-  tool_use: 1,
-  turn_complete: 2,
-  initial: 3,
-  user_request: 4,
-  warning: 5,
-  turn_failed: 6,
-  agent_done: 7,
-  agent_failed: 8,
-  agent_cancelled: 8,
-};
-
-function highestTrigger(a: WatcherTrigger | null, b: WatcherTrigger): WatcherTrigger {
-  if (a == null) return b;
-  return TRIGGER_RANK[b] >= TRIGGER_RANK[a] ? b : a;
 }
 
 /** Internal hook: check if the manager has finished bootstrapping. */

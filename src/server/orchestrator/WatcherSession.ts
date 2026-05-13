@@ -25,7 +25,7 @@ import { agentLogger } from '../lib/logger.js';
 import { captureWithContext } from '../instrument.js';
 import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
-import { buildWatcherTick, renderWatcherTick, type WatcherTrigger } from './watcherFeed.js';
+import { buildWatcherTick, renderWatcherTick, highestTrigger, type WatcherTrigger } from './watcherFeed.js';
 import {
   execPostCommentary,
   execReadRecentOutput,
@@ -40,7 +40,11 @@ import type { JobWatcher } from '../../shared/types.js';
 
 export const DEFAULT_WATCHER_MODEL = process.env.WATCHER_MODEL ?? 'claude-opus-4-7';
 const MAX_TOOL_ROUNDS = 4;
-const MAX_HISTORY_TURNS = 12;  // user+assistant pairs to keep before trimming
+// Total individual messages (user + assistant + tool-result) to keep before
+// trimming. Anthropic requires strictly alternating user/assistant roles
+// (tool_result messages are 'user'-role under the hood), so this cap is in
+// raw messages — see trimHistory for the alternation guarantee.
+const MAX_HISTORY_TURNS = 12;
 const MAX_OUTPUT_TOKENS = 1500;
 
 const SYSTEM_PROMPT = `You are the LIVE WATCHER for a single autonomous coding agent in an orchestration system.
@@ -175,7 +179,7 @@ export class WatcherSession {
    */
   async requestTick(trigger: WatcherTrigger): Promise<void> {
     if (this._stopped) return;
-    this._pendingTrigger = highest(this._pendingTrigger, trigger);
+    this._pendingTrigger = highestTrigger(this._pendingTrigger, trigger);
     if (this._ticking) return;
     this._ticking = true;
     try {
@@ -209,6 +213,13 @@ export class WatcherSession {
     }
 
     const userText = renderWatcherTick(tick);
+    // Snapshot history length BEFORE pushing the tick prompt so we can
+    // atomically roll back this entire turn on any API/tool failure.
+    // Popping only the tail is insufficient: a partial tool-use round leaves
+    // an assistant(tool_use) with no matching user(tool_result) and the next
+    // call fails with a 422 (or roles stop alternating). Truncating to the
+    // pre-push length is the only state that is guaranteed to be valid.
+    const rollbackLen = this.history.length;
     this.history.push({ role: 'user', content: [{ type: 'text', text: userText, cache_control: { type: 'ephemeral' } }] });
 
     let rounds = 0;
@@ -274,12 +285,10 @@ export class WatcherSession {
       queries.updateWatcher(this.watcherId, { status: 'error', error_message: errMsg.slice(0, 500) });
       const updated = queries.getWatcherById(this.watcherId);
       if (updated) socket.emitWatcherSessionUpdate(updated);
-      // Drop the last user turn so the next retry doesn't carry malformed history.
-      const tail = this.history.pop();
-      if (tail && tail.role === 'assistant') {
-        // We may have pushed both user + assistant; clean both
-        this.history.pop();
-      }
+      // Atomic rollback — restore the history to its pre-tick length so the
+      // next retry starts from a known-valid prefix (no half-finished
+      // tool-use turns, no consecutive same-role messages).
+      this.history.length = rollbackLen;
     }
   }
 
@@ -310,41 +319,32 @@ export class WatcherSession {
   }
 }
 
-const TRIGGER_RANK: Record<WatcherTrigger, number> = {
-  heartbeat: 0,
-  tool_use: 1,
-  turn_complete: 2,
-  initial: 3,
-  user_request: 4,
-  warning: 5,
-  turn_failed: 6,
-  agent_done: 7,
-  agent_failed: 8,
-  agent_cancelled: 8,
-};
-
-function highest(a: WatcherTrigger | null, b: WatcherTrigger): WatcherTrigger {
-  if (a == null) return b;
-  return TRIGGER_RANK[b] >= TRIGGER_RANK[a] ? b : a;
-}
-
 /**
- * Trim the message history while preserving cache hits.
+ * Trim the message history while preserving cache hits and the
+ * user/assistant alternation Anthropic requires.
  *
- * Anthropic's prompt cache keys on the longest matching prefix, so we always
- * keep the first user turn (which contains the job briefing) and trim from
- * the middle. We also drop tool_use/tool_result pairs first since they're
- * the bulkiest.
+ * Strategy: keep the very first message (always user — the first tick prompt,
+ * which anchors the prompt cache) and the most recent N-1 messages, stripping
+ * leading entries from the tail until it begins with an assistant turn
+ * (alternating with head's user). We also strip leading `user`-role messages
+ * whose content is tool_results so we never emit an orphan tool_result with
+ * no preceding tool_use.
+ *
+ * We deliberately do NOT splice an elision placeholder — adding a synthetic
+ * user message between head and tail breaks alternation when tail itself
+ * starts with user, and the original placeholder text wasn't load-bearing.
+ *
+ * Exported for unit testing this invariant directly.
  */
-function trimHistory(history: Anthropic.Messages.MessageParam[]): Anthropic.Messages.MessageParam[] {
+export function trimHistory(history: Anthropic.Messages.MessageParam[]): Anthropic.Messages.MessageParam[] {
   if (history.length <= MAX_HISTORY_TURNS) return history;
-  // Always keep the first message (briefing) and the most recent MAX_HISTORY_TURNS-1.
-  const head = history.slice(0, 1);
-  const tail = history.slice(-(MAX_HISTORY_TURNS - 1));
-  // Splice a placeholder so the model knows context was elided.
-  const placeholder: Anthropic.Messages.MessageParam = {
-    role: 'user',
-    content: [{ type: 'text', text: '… [earlier tick history elided] …' }],
-  };
-  return [...head, placeholder, ...tail];
+  const head = history.slice(0, 1);  // always [user]
+  let tail = history.slice(-(MAX_HISTORY_TURNS - 1));
+  // Strip the tail until it starts with an assistant turn, which alternates
+  // correctly with head's user. This naturally drops any user(tool_result)
+  // that would otherwise dangle without its preceding assistant(tool_use).
+  while (tail.length > 0 && tail[0].role !== 'assistant') {
+    tail = tail.slice(1);
+  }
+  return [...head, ...tail];
 }

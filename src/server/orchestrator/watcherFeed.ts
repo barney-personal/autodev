@@ -54,6 +54,33 @@ export type WatcherTrigger =
   | 'agent_cancelled'
   | 'user_request';
 
+/**
+ * Rank ordering for trigger types — used by the manager's debounce coalescer
+ * and the session's pending-trigger merge logic. Higher rank wins when
+ * multiple triggers arrive within the same debounce window so a turn_failed
+ * mid-burst takes precedence over a stream of tool_use ticks.
+ *
+ * Defined here so both `JobWatcherManager` and `WatcherSession` agree on
+ * priority — keeping the source of truth single avoids silent drift.
+ */
+export const TRIGGER_RANK: Record<WatcherTrigger, number> = {
+  heartbeat: 0,
+  tool_use: 1,
+  turn_complete: 2,
+  initial: 3,
+  user_request: 4,
+  warning: 5,
+  turn_failed: 6,
+  agent_done: 7,
+  agent_failed: 8,
+  agent_cancelled: 8,
+};
+
+export function highestTrigger(a: WatcherTrigger | null, b: WatcherTrigger): WatcherTrigger {
+  if (a == null) return b;
+  return TRIGGER_RANK[b] >= TRIGGER_RANK[a] ? b : a;
+}
+
 export interface WatcherJobView {
   id: string;
   title: string;

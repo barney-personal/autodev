@@ -196,10 +196,16 @@ export function countActionsForAgent(agentId: string, type: WatcherActionType): 
   return row?.c ?? 0;
 }
 
+/**
+ * Last *applied* action timestamp for an agent+type. Gated (cooldown-rejected)
+ * actions are excluded so a rapid second attempt during cooldown does not
+ * itself reset the cooldown window — that would permanently lock out future
+ * nudges of the same type for the agent.
+ */
 export function lastActionAtForAgent(agentId: string, type: WatcherActionType): number | null {
   const db = getDb();
   const row = db.prepare(
-    'SELECT MAX(created_at) as t FROM watcher_actions WHERE agent_id = ? AND type = ?'
+    "SELECT MAX(created_at) as t FROM watcher_actions WHERE agent_id = ? AND type = ? AND outcome = 'applied'"
   ).get(agentId, type) as { t: number | null } | undefined;
   return row?.t ?? null;
 }
