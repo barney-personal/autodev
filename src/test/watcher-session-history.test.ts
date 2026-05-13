@@ -270,6 +270,70 @@ describe('WatcherSession — error rollback', () => {
     expect(w.last_seq).toBe(4);
   });
 
+  it('halts the session and posts a final commentary when WATCHER_MAX_COST_USD is reached', async () => {
+    // Operator safety: a per-session cost cap can stop a runaway watcher
+    // session before it burns more than expected on Opus 4.7. When the
+    // running cost_usd meets the cap, runTick must skip the API call,
+    // mark the row stopped with a clear error_message, and post a
+    // blocker-severity commentary so the dashboard surfaces why the
+    // stream went quiet.
+    const queries = await import('../server/db/queries.js');
+    const job = await insertTestJob({ status: 'running' });
+    const agentId = randomUUID();
+    queries.insertAgent({ id: agentId, job_id: job.id, status: 'running', started_at: Date.now() });
+    const watcher = queries.insertWatcher({ id: randomUUID(), agent_id: agentId, job_id: job.id, model: 'claude-opus-4-7' });
+    // Seed cost_usd above the cap so the very first runTick trips the guard.
+    queries.updateWatcher(watcher.id, { cost_usd: 5.0 } as never);
+
+    const prevCap = process.env.WATCHER_MAX_COST_USD;
+    process.env.WATCHER_MAX_COST_USD = '1.0';
+    try {
+      mockCreate.mockReset();  // no API call should reach the SDK
+      const { WatcherSession } = await import('../server/orchestrator/WatcherSession.js');
+      const session = new WatcherSession(watcher.id, agentId);
+      await session.requestTick('initial');
+
+      // The SDK was not invoked — the cap intercepted before any spend.
+      expect(mockCreate).not.toHaveBeenCalled();
+
+      // Watcher row is now stopped with a clear error_message.
+      const updated = queries.getWatcherById(watcher.id)!;
+      expect(updated.status).toBe('stopped');
+      expect(updated.finished_at).toBeGreaterThan(0);
+      expect(updated.error_message ?? '').toContain('Cost cap reached');
+
+      // A blocker-severity commentary explains why the stream went quiet.
+      const commentary = queries.listCommentaryForAgent(agentId);
+      const halt = commentary.find(c => c.severity === 'blocker' && c.headline.includes('cost cap'));
+      expect(halt).toBeTruthy();
+    } finally {
+      if (prevCap === undefined) delete process.env.WATCHER_MAX_COST_USD;
+      else process.env.WATCHER_MAX_COST_USD = prevCap;
+    }
+  });
+
+  it('envMaxCostUsd ignores unparseable / non-positive env values', async () => {
+    const { envMaxCostUsd } = await import('../server/orchestrator/WatcherSession.js');
+    const prev = process.env.WATCHER_MAX_COST_USD;
+    try {
+      process.env.WATCHER_MAX_COST_USD = '';
+      expect(envMaxCostUsd()).toBeNull();
+      process.env.WATCHER_MAX_COST_USD = 'banana';
+      expect(envMaxCostUsd()).toBeNull();
+      process.env.WATCHER_MAX_COST_USD = '0';
+      expect(envMaxCostUsd()).toBeNull();
+      process.env.WATCHER_MAX_COST_USD = '-1';
+      expect(envMaxCostUsd()).toBeNull();
+      process.env.WATCHER_MAX_COST_USD = '2.5';
+      expect(envMaxCostUsd()).toBe(2.5);
+      delete process.env.WATCHER_MAX_COST_USD;
+      expect(envMaxCostUsd()).toBeNull();
+    } finally {
+      if (prev === undefined) delete process.env.WATCHER_MAX_COST_USD;
+      else process.env.WATCHER_MAX_COST_USD = prev;
+    }
+  });
+
   it('does not flip a stopped watcher back to running after a slow in-flight tick', async () => {
     // The race: onAgentFinished marks the row 'stopped' while this tick is
     // still awaiting messages.create. Without the guard, the success path

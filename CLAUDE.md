@@ -155,7 +155,7 @@ Background agent that monitors the codebase on a configurable cycle. Communicate
 
 ### Live Watcher (per-agent supervisor)
 
-Opus 4.7 session bound 1:1 with every running non-interactive agent. Consumes a curated event feed and can intervene via `post_commentary`, `nudge_job`, `restart_job`, or `escalate_to_user`. Disabled by `WATCHER_ENABLED=0` or per-job `jobs.watch=0`. Manual control through `POST /api/agents/:id/watcher/{start,stop,tick}`.
+Opus 4.7 session bound 1:1 with every running non-interactive agent. Consumes a curated event feed and can intervene via `post_commentary`, `nudge_job`, `restart_job`, or `escalate_to_user`. Disabled by `WATCHER_ENABLED=0` or per-job `jobs.watch=0`. Manual control through `POST /api/agents/:id/watcher/{start,stop,tick}`. Optional `WATCHER_MAX_COST_USD` sets a per-session lifetime spend ceiling (off by default) — when `watcher.cost_usd` meets the cap, the session self-stops with a blocker-severity commentary and the operator must raise/unset the cap and restart the orchestrator to resume supervision.
 
 **Threat model** — the watcher is an LLM supervising another LLM. Two paths matter:
 

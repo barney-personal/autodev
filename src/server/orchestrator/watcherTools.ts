@@ -124,6 +124,17 @@ export function execPostCommentary(watcher: JobWatcher, input: PostCommentaryInp
 
 // ─── read_recent_output ──────────────────────────────────────────────────────
 
+/**
+ * Synchronous on purpose — every read here is a single bounded SQLite
+ * query (`getAgentOutput` with a tail limit) and an in-memory JSON parse
+ * loop. No I/O, no shell-out, no event-loop block of meaningful duration.
+ *
+ * `execReadDiff` is `async` because it shells out to `git diff`, which
+ * the sync version held the event loop on for up to 8s. The asymmetry
+ * is intentional, not a refactor candidate. `dispatchTool` awaits both;
+ * awaiting a non-Promise return is a JS no-op so the call site stays
+ * uniform.
+ */
 export function execReadRecentOutput(watcher: JobWatcher, input: ReadRecentOutputInput): ToolExecResult {
   const limit = Math.min(Math.max(input.limit ?? 40, 1), 200);
   const rows = queries.getAgentOutput(watcher.agent_id, limit);

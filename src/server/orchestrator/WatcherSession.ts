@@ -72,6 +72,23 @@ export function validateWatcherModel(model: string, logger: { warn: (obj: unknow
   return false;
 }
 
+/**
+ * Per-session cost ceiling. Returns null when the env var is unset or
+ * unparseable so the default (no cap) path is unambiguous. A positive
+ * number is the inclusive USD cap — once the running watcher.cost_usd
+ * meets or exceeds it, runTick refuses further API calls, posts a final
+ * "cost cap reached" commentary, and self-stops.
+ *
+ * Off by default. Read on every call (env-helper pattern) so tests can
+ * patch it without ESM hoisting.
+ */
+export function envMaxCostUsd(): number | null {
+  const raw = process.env.WATCHER_MAX_COST_USD;
+  if (raw === undefined || raw === '') return null;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 const MAX_TOOL_ROUNDS = 4;
 // Total individual messages (user + assistant + tool-result) to keep before
 // trimming. Anthropic requires strictly alternating user/assistant roles
@@ -236,6 +253,20 @@ export class WatcherSession {
     if (!watcher) { this._stopped = true; return; }
     if (watcher.status === 'stopped') { this._stopped = true; return; }
 
+    // Per-session cost ceiling. Off by default; operators who want a
+    // safety cap on Opus 4.7 spend can set WATCHER_MAX_COST_USD to a
+    // positive number. When the running watcher.cost_usd exceeds that
+    // value we self-stop with a final commentary so the dashboard shows
+    // why the session went quiet. Useful for very long-running implement
+    // phases where many tool_use events would otherwise compound.
+    const maxCost = envMaxCostUsd();
+    if (maxCost != null && watcher.cost_usd >= maxCost) {
+      this.log.warn({ costUsd: watcher.cost_usd, cap: maxCost }, 'watcher cost cap reached — stopping session');
+      this.haltOnCostCap(watcher.cost_usd, maxCost);
+      this._stopped = true;
+      return;
+    }
+
     const tick = await buildWatcherTick({ agentId: this.agentId, trigger, sinceSeq: watcher.last_seq });
     if (!tick) {
       this.log.debug('agent gone — stopping watcher');
@@ -371,6 +402,35 @@ export class WatcherSession {
       // next retry starts from a known-valid prefix (no half-finished
       // tool-use turns, no consecutive same-role messages).
       this.history.length = rollbackLen;
+    }
+  }
+
+  /**
+   * Mark the watcher row as stopped because the cost cap was reached, post
+   * a final commentary so the dashboard surfaces the reason, and skip
+   * making any API call. Best-effort — wrapped in try/catch so a DB or
+   * socket failure here doesn't propagate (the agent is unaffected).
+   */
+  private haltOnCostCap(costUsd: number, capUsd: number): void {
+    try {
+      queries.updateWatcher(this.watcherId, {
+        status: 'stopped',
+        finished_at: Date.now(),
+        error_message: `Cost cap reached ($${costUsd.toFixed(4)} ≥ $${capUsd.toFixed(2)})`,
+      });
+      const w = queries.getWatcherById(this.watcherId);
+      if (w) {
+        socket.emitWatcherSessionUpdate(w);
+        // Post a blocker-severity commentary so the dashboard shows why
+        // the stream went quiet.
+        execPostCommentary(w, {
+          severity: 'blocker',
+          headline: `Watcher cost cap reached ($${costUsd.toFixed(4)} ≥ $${capUsd.toFixed(2)})`,
+          detail: 'Set WATCHER_MAX_COST_USD to a higher value (or unset to disable the cap) and restart the orchestrator to resume supervision.',
+        });
+      }
+    } catch (err) {
+      this.log.error({ err }, 'failed to record cost-cap halt');
     }
   }
 
