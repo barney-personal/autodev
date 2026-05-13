@@ -327,8 +327,12 @@ describe('JobWatcherManager', () => {
       const agentId = await makeRunningAgent();
 
       // First start succeeds (cold cooldown) and creates a session.
+      // The response carries the cooldown duration so the UI can show
+      // the user how long they need to wait before /watcher/tick will
+      // succeed (the start fires the initial tick itself).
       const r1 = mod.requestStartNow(agentId);
-      expect(r1).toEqual({ ok: true });
+      expect(r1.ok).toBe(true);
+      if (r1.ok) expect(r1.cooldownMs).toBe(500);
       expect(mod._activeSessionCount()).toBe(1);
 
       // Stop and immediately re-attempt — the cooldown should still be active.

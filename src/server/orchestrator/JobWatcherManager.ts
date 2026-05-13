@@ -176,7 +176,7 @@ export type ManualTickResult =
   | { ok: false; reason: 'manager_stopped' | 'no_session' | 'cooldown'; retryAfterMs?: number };
 
 export type ManualStartResult =
-  | { ok: true }
+  | { ok: true; cooldownMs: number }
   | { ok: false; reason: 'manager_stopped' | 'agent_unavailable' | 'cooldown'; retryAfterMs?: number };
 
 /**
@@ -240,8 +240,12 @@ export function requestStartNow(agentId: string): ManualStartResult {
   // Only mark the cooldown AFTER ensureSession succeeded — otherwise a
   // start that bailed inside ensureSession (e.g. session-creation throw)
   // would still consume the cooldown and lock the user out of retry.
+  const cooldownMs = envManualTickCooldownMs();
   _lastManualTickAt.set(agentId, Date.now());
-  return { ok: true };
+  // Surface the cooldown duration so the UI can present "initial tick
+  // scheduled — re-tick in Xs" instead of letting the user discover the
+  // shared cooldown by clicking Re-tick and getting a 429.
+  return { ok: true, cooldownMs };
 }
 
 /**

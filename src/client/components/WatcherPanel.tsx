@@ -138,7 +138,20 @@ export function WatcherPanel({ agentId, agentStatus }: WatcherPanelProps) {
     setBusy(true);
     try {
       const r = await fetch(`/api/agents/${agentId}/watcher/start`, { method: 'POST' });
-      if (!r.ok) {
+      if (r.status === 429) {
+        // /watcher/start and /watcher/tick share the same per-agent
+        // cooldown — a rapid start-stop-start cycle hits 429 just
+        // like a rapid Re-tick would. Same banner shape as the tick
+        // 429 so the UX is consistent across both buttons.
+        let retryMs = 0;
+        try { const body = await r.json(); retryMs = Number(body.retry_after_ms ?? 0); } catch { /* body may be empty */ }
+        if (!retryMs) {
+          const hdr = r.headers.get('Retry-After');
+          retryMs = hdr ? Number(hdr) * 1000 : 5000;
+        }
+        const secs = Math.max(1, Math.ceil(retryMs / 1000));
+        setTickCooldown({ until: Date.now() + retryMs, message: `Start rate-limited — retry in ${secs}s` });
+      } else if (!r.ok) {
         // The route returns 400 with a clear `error` field for the
         // common cases (agent not running, ANTHROPIC_API_KEY missing).
         // Surface that to the user instead of silently re-enabling the
@@ -147,7 +160,20 @@ export function WatcherPanel({ agentId, agentStatus }: WatcherPanelProps) {
         try { const body = await r.json(); if (body?.error) msg = `Start failed: ${body.error}`; } catch { /* body may be empty */ }
         setTickCooldown({ until: Date.now() + 5000, message: msg });
       } else {
-        setTickCooldown(null);
+        // Start succeeded. The server fires an initial tick, which
+        // consumes the shared start/tick cooldown — so the user can't
+        // immediately Re-tick. Show that explicitly using the cooldown
+        // duration returned by the server. Without this banner the
+        // first Re-tick click after Start would silently 429 and look
+        // like a bug.
+        let cooldownMs = 0;
+        try { const body = await r.json(); cooldownMs = Number(body.cooldown_ms ?? 0); } catch { /* body may be empty */ }
+        if (cooldownMs > 0) {
+          const secs = Math.max(1, Math.ceil(cooldownMs / 1000));
+          setTickCooldown({ until: Date.now() + cooldownMs, message: `Initial tick scheduled — re-tick available in ${secs}s` });
+        } else {
+          setTickCooldown(null);
+        }
       }
     } catch (err) {
       setTickCooldown({ until: Date.now() + 5000, message: `Start failed: ${(err as Error).message}` });

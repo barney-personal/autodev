@@ -310,6 +310,35 @@ describe('watcherFeed.buildWatcherTick', () => {
     expect(text).toContain('&lt;script&gt;');
   });
 
+  it('getAgentOutputSinceSeq clamps a negative limit to a safe row cap', async () => {
+    // SQLite treats LIMIT -1 as "no limit", so a caller forwarding user
+    // input could in principle paginate the entire table in one call.
+    // The function clamps to [1, 500] internally. The /commentary route
+    // had the same bug — clamping inside the query helper keeps every
+    // future caller defensive by default.
+    const queries = await import('../server/db/queries.js');
+    const job = await insertTestJob({ status: 'running' });
+    const agentId = await insertAgent(job.id);
+    // Insert a few rows so we can compare result-set sizes.
+    for (let i = 0; i < 5; i++) {
+      await insertOutput(agentId, i, { type: 'text', text: `event-${i}` });
+    }
+
+    // LIMIT -1 would return all 5 rows if it bypassed the clamp.
+    // The clamp coerces to 1, so we get exactly the most recent row.
+    const negResult = queries.getAgentOutputSinceSeq(agentId, -1, -1);
+    expect(negResult.length).toBe(1);
+
+    // NaN (e.g. `parseInt('not a number', 10)`) gets clamped to 1 too.
+    const nanResult = queries.getAgentOutputSinceSeq(agentId, -1, Number.NaN);
+    expect(nanResult.length).toBe(1);
+
+    // Huge values get clamped to the 500 cap (well above our 5-row
+    // fixture, so we just get the full set).
+    const hugeResult = queries.getAgentOutputSinceSeq(agentId, -1, 10_000_000);
+    expect(hugeResult.length).toBe(5);
+  });
+
   it('renders a deterministic, byte-bounded text view', async () => {
     const { buildWatcherTick, renderWatcherTick } = await import('../server/orchestrator/watcherFeed.js');
     const job = await insertTestJob({ status: 'running', title: 'My task' });

@@ -375,6 +375,37 @@ describe('watcherTools.execRestartJob', () => {
     expect(job.description).toContain('looping on same edit');
   });
 
+  it('sanitises input.diagnosis at the entry point so watcher_actions.payload stores clean data', async () => {
+    // Regression: previously input.diagnosis was passed raw into
+    // recordAction, so the watcher_actions.payload column stored
+    // control chars + uncapped strings. Downstream renderers re-sanitised,
+    // but any admin tooling that read `payload` directly got the raw
+    // value. Sanitising at the entry point makes the column consistent
+    // with the other tool entries (nudge / commentary / escalate).
+    const { execRestartJob } = await import('../server/orchestrator/watcherTools.js');
+    const queries = await import('../server/db/queries.js');
+    const { watcher } = await makeWatcher();
+
+    const NUL = String.fromCharCode(0x00);
+    const ESC = String.fromCharCode(0x1B);
+    const huge = 'x'.repeat(20_000);
+    const dirty = `clean prefix${NUL}with-nul${ESC}[31mansi${huge}`;
+
+    const r = execRestartJob(watcher, { reason: 'looping', diagnosis: dirty });
+    expect(r.ok).toBe(true);
+    expect(r.action_id).toBeTruthy();
+
+    const stored = queries.getActionById(r.action_id!)!;
+    // Stored payload must be free of control characters.
+    expect(stored.payload ?? '').not.toMatch(/[\x00-\x08\x0E-\x1F\x7F-\x9F]/);
+    // And must be capped (WATCHER_DIAGNOSIS_BODY_CAP = 4000 + ellipsis,
+    // not 20000+).
+    expect((stored.payload ?? '').length).toBeLessThanOrEqual(4001);
+    // Visible content survives.
+    expect(stored.payload).toContain('clean prefix');
+    expect(stored.payload).toContain('with-nul');
+  });
+
   it('gates after MAX_RESTARTS_PER_AGENT applied restarts', async () => {
     const { execRestartJob, MAX_RESTARTS_PER_AGENT } = await import('../server/orchestrator/watcherTools.js');
     const queries = await import('../server/db/queries.js');

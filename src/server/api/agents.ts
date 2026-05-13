@@ -349,7 +349,11 @@ router.post('/:id/watcher/start', (req, res) => {
   const result = requestStartNow(req.params.id);
   if (result.ok) {
     const watcher = queries.getWatcherByAgentId(req.params.id);
-    res.json({ ok: true, watcher });
+    // cooldown_ms tells the UI that an initial tick is scheduled and a
+    // subsequent /watcher/tick within this window will 429. Lets the
+    // panel show "initial tick scheduled — re-tick in Xs" instead of
+    // the user having to click Re-tick and discover the 429.
+    res.json({ ok: true, watcher, cooldown_ms: result.cooldownMs });
     return;
   }
   if (result.reason === 'cooldown') {

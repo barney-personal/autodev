@@ -86,7 +86,12 @@ export function updateWatcher(
   const vals: unknown[] = [];
   for (const [k, v] of Object.entries(fields)) {
     if (!WATCHER_UPDATE_ALLOWED.has(k)) throw new Error(`Field '${k}' not allowed for updateWatcher`);
-    sets.push(`${k} = ?`);
+    // Double-quote the identifier as defence-in-depth. The allowlist
+    // already rules out runtime injection, but quoting the identifier
+    // means a future column named after a SQL keyword (`order`, `group`,
+    // `select`, …) can't trip the parser and silently fall through to
+    // a misleading error path.
+    sets.push(`"${k}" = ?`);
     vals.push(v);
   }
   if (sets.length === 0) return;
