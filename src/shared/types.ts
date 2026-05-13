@@ -883,7 +883,7 @@ export interface PrReview {
 
 export type WatcherStatus = 'starting' | 'running' | 'stopped' | 'error';
 export type WatcherSeverity = 'info' | 'progress' | 'concern' | 'blocker' | 'resolved';
-export type WatcherActionType = 'nudge' | 'restart' | 'escalate' | 'comment';
+export type WatcherActionType = 'nudge' | 'restart' | 'escalate';
 export type WatcherActionOutcome = 'pending' | 'applied' | 'gated' | 'failed';
 
 export interface JobWatcher {

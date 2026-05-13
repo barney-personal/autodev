@@ -226,7 +226,7 @@ export class WatcherSession {
     if (!watcher) { this._stopped = true; return; }
     if (watcher.status === 'stopped') { this._stopped = true; return; }
 
-    const tick = buildWatcherTick({ agentId: this.agentId, trigger, sinceSeq: watcher.last_seq });
+    const tick = await buildWatcherTick({ agentId: this.agentId, trigger, sinceSeq: watcher.last_seq });
     if (!tick) {
       this.log.debug('agent gone — stopping watcher');
       this._stopped = true;

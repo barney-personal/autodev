@@ -27,7 +27,6 @@ const ACTION_COLOR: Record<string, string> = {
   nudge: '#3b82f6',
   restart: '#f59e0b',
   escalate: '#ef4444',
-  comment: '#64748b',
 };
 
 function relTime(ts: number, now: number): string {
@@ -224,7 +223,7 @@ function CommentaryItem({ item, now }: { item: WatcherCommentary; now: number })
 
 function ActionItem({ item, now }: { item: WatcherAction; now: number }) {
   const color = ACTION_COLOR[item.type] ?? '#64748b';
-  const verb = item.type === 'nudge' ? 'Nudged' : item.type === 'restart' ? 'Restarted' : item.type === 'escalate' ? 'Escalated' : 'Comment';
+  const verb = item.type === 'nudge' ? 'Nudged' : item.type === 'restart' ? 'Restarted' : 'Escalated';
   const outcome = item.outcome;
   const outcomeColor = outcome === 'applied' ? '#22c55e' : outcome === 'gated' ? '#f59e0b' : outcome === 'failed' ? '#ef4444' : '#64748b';
   return (
@@ -247,14 +246,12 @@ type MergedItem =
   | { kind: 'action'; entry: WatcherAction; at: number };
 
 function mergeTimeline(commentary: WatcherCommentary[], actions: WatcherAction[]): MergedItem[] {
-  // 'comment' actions duplicate commentary; we keep commentary as the canonical timeline source
-  // and only inject explicit interventions (nudge/restart/escalate).
+  // Interleave commentary (info / progress / concern / blocker / resolved)
+  // with intervention actions (nudge / restart / escalate) in chronological
+  // order. Both streams come from server-side timestamps.
   const out: MergedItem[] = [];
   for (const c of commentary) out.push({ kind: 'commentary', entry: c, at: c.created_at });
-  for (const a of actions) {
-    if (a.type === 'comment') continue;
-    out.push({ kind: 'action', entry: a, at: a.created_at });
-  }
+  for (const a of actions) out.push({ kind: 'action', entry: a, at: a.created_at });
   out.sort((x, y) => x.at - y.at);
   return out;
 }

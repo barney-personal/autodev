@@ -117,6 +117,32 @@ describe('watcherTools.execNudgeJob', () => {
   beforeEach(async () => { await setupTestDb(); vi.clearAllMocks(); });
   afterEach(async () => { await cleanupTestDb(); });
 
+  it('strips control characters from the nudge message + reason before storage', async () => {
+    const { execNudgeJob } = await import('../server/orchestrator/watcherTools.js');
+    const queries = await import('../server/db/queries.js');
+    const { watcher } = await makeWatcher();
+
+    const dirtyMessage = `try${String.fromCharCode(0)}NUL${String.fromCharCode(0x1B)}[31mESC the smaller test suite first`;
+    const dirtyReason = `looping${String.fromCharCode(0x07)}BELL on the same file`;
+    const r = execNudgeJob(watcher, { message: dirtyMessage, reason: dirtyReason });
+    expect(r.ok).toBe(true);
+
+    // Stored note must not carry control chars back to the watched agent.
+    const note = queries.getNote(`watcher/nudges/${watcher.agent_id}`);
+    expect(note?.value).not.toMatch(/[\x00-\x08\x0E-\x1F\x7F-\x9F]/);
+    expect(note?.value).toContain('try');
+    expect(note?.value).toContain('smaller test suite');
+
+    // The action's payload (the nudge message) must also be clean.
+    const action = queries.listActionsForAgent(watcher.agent_id)[0];
+    expect(action.payload).not.toMatch(/[\x00-\x08\x0E-\x1F\x7F-\x9F]/);
+    expect(action.reason).not.toMatch(/[\x00-\x08\x0E-\x1F\x7F-\x9F]/);
+
+    // And the auto-commentary detail.
+    const commentary = queries.listCommentaryForAgent(watcher.agent_id)[0];
+    expect(commentary.detail ?? '').not.toMatch(/[\x00-\x08\x0E-\x1F\x7F-\x9F]/);
+  });
+
   it('applies first nudge and gates rapid second nudge', async () => {
     const { execNudgeJob, NUDGE_COOLDOWN_MS } = await import('../server/orchestrator/watcherTools.js');
     const queries = await import('../server/db/queries.js');

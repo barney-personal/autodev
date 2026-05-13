@@ -168,16 +168,21 @@ export function execReadDiff(watcher: JobWatcher): ToolExecResult {
  * Subject to NUDGE_COOLDOWN_MS to prevent flooding.
  */
 export function execNudgeJob(watcher: JobWatcher, input: NudgeJobInput): ToolExecResult {
-  const message = (input.message ?? '').trim();
+  // The nudge chain is `agent output → watcher LLM → nudge note → back to
+  // agent via check_watcher_nudges`. Strip control characters at the watcher
+  // boundary so adversarial content from the watched agent's stream can't
+  // smuggle null bytes / ANSI escapes into the next agent's context.
+  const message = capUntrustedText((input.message ?? '').trim(), WATCHER_NUDGE_MESSAGE_CAP);
   if (!message) return { ok: false, message: 'nudge message is required' };
+  const reason = input.reason ? capUntrustedText(input.reason, WATCHER_NUDGE_REASON_CAP) : null;
 
   const lastAt = queries.lastActionAtForAgent(watcher.agent_id, 'nudge');
   if (lastAt != null && Date.now() - lastAt < NUDGE_COOLDOWN_MS) {
-    const action = recordAction(watcher, 'nudge', input.reason ?? null, message, 'gated', `cooldown ${Math.ceil((NUDGE_COOLDOWN_MS - (Date.now() - lastAt)) / 1000)}s remaining`);
+    const action = recordAction(watcher, 'nudge', reason, message, 'gated', `cooldown ${Math.ceil((NUDGE_COOLDOWN_MS - (Date.now() - lastAt)) / 1000)}s remaining`);
     return { ok: false, message: 'nudge gated by cooldown', action_id: action.id, outcome: 'gated' };
   }
 
-  const action = recordAction(watcher, 'nudge', input.reason ?? null, message, 'pending', null);
+  const action = recordAction(watcher, 'nudge', reason, message, 'pending', null);
 
   // Persist nudge so the agent can pick it up via the MCP check_watcher_nudges tool
   // (delivered as a "user" turn on its next MCP call). Multiple pending nudges
@@ -202,7 +207,7 @@ export function execNudgeJob(watcher: JobWatcher, input: NudgeJobInput): ToolExe
   execPostCommentary(watcher, {
     severity: 'info',
     headline: `Nudged agent: ${truncate(message, 80)}`,
-    detail: input.reason ?? message,
+    detail: reason ?? message,
   });
 
   return { ok: true, message: 'nudge delivered', action_id: action.id, outcome: 'applied' };
@@ -324,6 +329,10 @@ export function execRestartJob(watcher: JobWatcher, input: RestartJobInput): Too
 //      treats the content as observed data, not as instructions.
 const WATCHER_DIAGNOSIS_REASON_CAP = 1000;
 const WATCHER_DIAGNOSIS_BODY_CAP = 4000;
+// Same defence-in-depth for nudge content: caps + control-char strip before
+// the note is round-tripped back to the watched agent via check_watcher_nudges.
+const WATCHER_NUDGE_MESSAGE_CAP = 2000;
+const WATCHER_NUDGE_REASON_CAP = 500;
 
 // HTML-comment sentinel embedded in the marker so we can detect a prior
 // restart-notes block without false positives. The user's job description
@@ -427,7 +436,7 @@ export function execEscalateToUser(watcher: JobWatcher, input: EscalateToUserInp
 
 function recordAction(
   watcher: JobWatcher,
-  type: 'nudge' | 'restart' | 'escalate' | 'comment',
+  type: 'nudge' | 'restart' | 'escalate',
   reason: string | null,
   payload: string | null,
   outcome: WatcherActionOutcome,

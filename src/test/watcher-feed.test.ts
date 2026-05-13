@@ -38,7 +38,7 @@ describe('watcherFeed.buildWatcherTick', () => {
 
   it('returns null when the agent is gone', async () => {
     const { buildWatcherTick } = await import('../server/orchestrator/watcherFeed.js');
-    const tick = buildWatcherTick({ agentId: 'nope', trigger: 'initial', sinceSeq: -1 });
+    const tick = (await buildWatcherTick({ agentId: 'nope', trigger: 'initial', sinceSeq: -1 }));
     expect(tick).toBeNull();
   });
 
@@ -62,7 +62,7 @@ describe('watcherFeed.buildWatcherTick', () => {
       num_turns: 4,
     });
 
-    const tick = buildWatcherTick({ agentId, trigger: 'tool_use', sinceSeq: -1 })!;
+    const tick = (await buildWatcherTick({ agentId, trigger: 'tool_use', sinceSeq: -1 }))!;
     expect(tick).not.toBeNull();
     expect(tick.events).toHaveLength(3);
     expect(tick.events[0].kind).toBe('tool');
@@ -81,7 +81,7 @@ describe('watcherFeed.buildWatcherTick', () => {
     for (let i = 0; i < 5; i++) {
       await insertOutput(agentId, i, { type: 'assistant', message: { content: [{ type: 'tool_use', name: `T${i}`, input: {} }] } });
     }
-    const tick = buildWatcherTick({ agentId, trigger: 'tool_use', sinceSeq: 2 })!;
+    const tick = (await buildWatcherTick({ agentId, trigger: 'tool_use', sinceSeq: 2 }))!;
     expect(tick.events.map(e => e.seq)).toEqual([3, 4]);
     expect(tick.high_water_seq).toBe(4);
   });
@@ -95,7 +95,7 @@ describe('watcherFeed.buildWatcherTick', () => {
       type: 'assistant',
       message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: huge } }] },
     });
-    const tick = buildWatcherTick({ agentId, trigger: 'tool_use', sinceSeq: -1 })!;
+    const tick = (await buildWatcherTick({ agentId, trigger: 'tool_use', sinceSeq: -1 }))!;
     expect(tick.events[0].detail.length).toBeLessThan(500);
     expect(tick.events[0].detail).toContain('…');
   });
@@ -116,7 +116,7 @@ describe('watcherFeed.buildWatcherTick', () => {
       severity: 'concern', headline: 'Looping on the same file',
     });
 
-    const tick = buildWatcherTick({ agentId, trigger: 'warning', sinceSeq: -1 })!;
+    const tick = (await buildWatcherTick({ agentId, trigger: 'warning', sinceSeq: -1 }))!;
     expect(tick.warnings.map(w => w.type)).toContain('stalled');
     expect(tick.recent_commentary).toHaveLength(1);
     expect(tick.recent_commentary[0].severity).toBe('concern');
@@ -144,7 +144,7 @@ describe('watcherFeed.buildWatcherTick', () => {
       });
     }
 
-    const tick = buildWatcherTick({ agentId, trigger: 'tool_use', sinceSeq: -1 })!;
+    const tick = (await buildWatcherTick({ agentId, trigger: 'tool_use', sinceSeq: -1 }))!;
 
     // No full-history scan.
     expect(fullSpy).not.toHaveBeenCalled();
@@ -160,6 +160,20 @@ describe('watcherFeed.buildWatcherTick', () => {
     sinceSpy.mockRestore();
   });
 
+  it('is async (returns a Promise) so the event loop is not blocked on diff stat', async () => {
+    // Regression: safeDiffStat used to call execFileSync which blocks Node's
+    // main thread for up to 4s on slow/remote filesystems. buildWatcherTick
+    // is now async — assert that explicitly so a future "simplification" back
+    // to sync would fail this test.
+    const { buildWatcherTick } = await import('../server/orchestrator/watcherFeed.js');
+    const job = await insertTestJob({ status: 'running' });
+    const agentId = await insertAgent(job.id);
+    const result = buildWatcherTick({ agentId, trigger: 'initial', sinceSeq: -1 });
+    expect(typeof (result as { then?: unknown })?.then).toBe('function');
+    const tick = await result;
+    expect(tick).not.toBeNull();
+  });
+
   it('renders a deterministic, byte-bounded text view', async () => {
     const { buildWatcherTick, renderWatcherTick } = await import('../server/orchestrator/watcherFeed.js');
     const job = await insertTestJob({ status: 'running', title: 'My task' });
@@ -169,7 +183,7 @@ describe('watcherFeed.buildWatcherTick', () => {
       message: { content: [{ type: 'tool_use', name: 'Read', input: { file_path: 'src/foo.ts' } }] },
     });
 
-    const tick = buildWatcherTick({ agentId, trigger: 'heartbeat', sinceSeq: -1 })!;
+    const tick = (await buildWatcherTick({ agentId, trigger: 'heartbeat', sinceSeq: -1 }))!;
     const text = renderWatcherTick(tick);
     expect(text.length).toBeLessThan(15_000);
     expect(text).toContain('[trigger=heartbeat]');

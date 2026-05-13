@@ -8,8 +8,32 @@
  *
  * Pure functions — easy to unit-test.
  */
-import { execFileSync } from 'child_process';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import * as queries from '../db/queries.js';
+
+/**
+ * Lazy-promisified execFile — same pattern as AgentRunner. Some test files
+ * mock `child_process` without exposing `execFile`, so `promisify(undefined)`
+ * at module init would crash the import. Deferring to first call keeps those
+ * tests' mocks valid until the function is actually exercised.
+ */
+type ExecFileAsyncOpts = { cwd?: string; timeout?: number; maxBuffer?: number; encoding?: BufferEncoding };
+let _execFileAsync: ((file: string, args: string[], opts?: ExecFileAsyncOpts) => Promise<{ stdout: string; stderr: string }>) | null = null;
+function execFileAsync(
+  file: string,
+  args: string[],
+  opts: ExecFileAsyncOpts = {},
+): Promise<{ stdout: string; stderr: string }> {
+  if (!_execFileAsync) {
+    _execFileAsync = promisify(execFile) as unknown as (
+      file: string,
+      args: string[],
+      opts?: ExecFileAsyncOpts,
+    ) => Promise<{ stdout: string; stderr: string }>;
+  }
+  return _execFileAsync(file, args, opts);
+}
 import type {
   Agent,
   AgentOutput,
@@ -145,7 +169,7 @@ export interface BuildTickInput {
  * Build a tick payload by reading the current DB state for an agent.
  * Returns null if the agent no longer exists.
  */
-export function buildWatcherTick(input: BuildTickInput): WatcherTick | null {
+export async function buildWatcherTick(input: BuildTickInput): Promise<WatcherTick | null> {
   const { agentId, trigger, sinceSeq } = input;
   const agent = queries.getAgentById(agentId);
   if (!agent) return null;
@@ -199,7 +223,7 @@ export function buildWatcherTick(input: BuildTickInput): WatcherTick | null {
   const elapsed_ms = Date.now() - agent.started_at;
 
   const diff_stat = job.work_dir && agent.base_sha
-    ? safeDiffStat(job.work_dir, agent.base_sha)
+    ? await safeDiffStat(job.work_dir, agent.base_sha)
     : null;
 
   const recent: WatcherCommentaryView[] = queries.getRecentCommentaryForAgent(agentId, 6).map((c: WatcherCommentary) => ({
@@ -421,13 +445,19 @@ function extractAssistantText(row: AgentOutput): string | null {
   return null;
 }
 
-function safeDiffStat(workDir: string, baseSha: string): string | null {
+/**
+ * Async — runs `git diff --stat` without blocking the event loop. Bounded by
+ * a 4s timeout AND a 64KB maxBuffer so an unexpectedly huge diff can't
+ * stall the runtime or run the process out of memory.
+ */
+async function safeDiffStat(workDir: string, baseSha: string): Promise<string | null> {
   try {
-    const out = execFileSync(
+    const { stdout } = await execFileAsync(
       'git',
       ['diff', '--stat', '--no-color', baseSha],
-      { cwd: workDir, encoding: 'utf8', timeout: 4000, stdio: ['ignore', 'pipe', 'pipe'] },
-    ).trim();
+      { cwd: workDir, encoding: 'utf8', timeout: 4000, maxBuffer: 64 * 1024 },
+    );
+    const out = stdout.trim();
     if (!out) return null;
     const lines = out.split('\n');
     if (lines.length > MAX_DIFF_STAT_LINES) {
