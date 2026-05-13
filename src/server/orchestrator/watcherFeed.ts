@@ -306,7 +306,16 @@ export function renderWatcherTick(tick: WatcherTick): string {
   if (tick.recent_commentary.length > 0) {
     lines.push('YOUR RECENT COMMENTARY:');
     for (const c of tick.recent_commentary) {
-      lines.push(`  [${c.severity}] ${c.headline}${c.detail ? ' — ' + c.detail.slice(0, 160) : ''}`);
+      // Defence in depth: this section sits outside the agent-content
+      // fences and is watcher-authored. Normally the watcher won't write
+      // `<agent-events>` into its own headlines — but if it ever DOES
+      // (e.g. steered by adversarial agent output), an un-escaped
+      // headline would visually blur the sentinel boundary on the *next*
+      // tick that reads this commentary back into context. escapeXml
+      // here closes that self-injection loop at zero runtime cost.
+      const headline = escapeXml(c.headline);
+      const detail = c.detail ? escapeXml(c.detail.slice(0, 160)) : '';
+      lines.push(`  [${c.severity}] ${headline}${detail ? ' — ' + detail : ''}`);
     }
     lines.push('');
   }
