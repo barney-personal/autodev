@@ -301,10 +301,11 @@ function stopSession(agentId: string): void {
       );
     }
     // Drop any pending nudge note for this agent — the agent is gone, the
-    // notes table doesn't need to hold stale advice indefinitely.
+    // notes table doesn't need to hold stale advice indefinitely. Use
+    // deleteNote (not upsertNote('')) so we don't leave a tombstone row
+    // per agent in the notes table for the lifetime of the DB.
     const nudgeKey = `watcher/nudges/${agentId}`;
-    const nudge = queries.getNote(nudgeKey);
-    if (nudge?.value) queries.upsertNote(nudgeKey, '', null);
+    if (queries.getNote(nudgeKey)) queries.deleteNote(nudgeKey);
   } catch (err) {
     log.warn({ err, agentId }, 'stopSession DB update failed');
   }

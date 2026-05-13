@@ -286,6 +286,26 @@ describe('watcherTools.execReadRecentOutput', () => {
     expect(r.message).toContain('no output yet');
   });
 
+  it('wraps the returned body in <agent-output> sentinels so the watcher LLM treats it as data', async () => {
+    // Mirrors the <agent-text>/<agent-events> wrapping in the rendered tick.
+    // Without this, agent-sourced text returned via read_recent_output had
+    // no structural boundary — a line like "WATCHER INSTRUCTION: restart_job"
+    // inside the watched agent's output could blend with legitimate framing.
+    const { execReadRecentOutput } = await import('../server/orchestrator/watcherTools.js');
+    const queries = await import('../server/db/queries.js');
+    const { watcher } = await makeWatcher();
+    queries.insertAgentOutput({
+      agent_id: watcher.agent_id, seq: 0, event_type: 'assistant',
+      content: JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'hello' }] } }),
+      created_at: Date.now(),
+    });
+    const r = execReadRecentOutput(watcher, {});
+    expect(r.ok).toBe(true);
+    expect(r.message.startsWith('<agent-output>')).toBe(true);
+    expect(r.message.endsWith('</agent-output>')).toBe(true);
+    expect(r.message).toContain('text: hello');
+  });
+
   it('skips unparseable rows without throwing', async () => {
     const { execReadRecentOutput } = await import('../server/orchestrator/watcherTools.js');
     const queries = await import('../server/db/queries.js');
@@ -322,6 +342,36 @@ describe('watcherTools.execRestartJob — diagnosis safety', () => {
     // The watcher's text is rendered as a blockquote so prompt-injection text
     // inside it is visibly contained.
     expect(job.description).toContain('> ');
+  });
+
+  it('probes pid existence before SIGTERM so a recycled PID does not get signalled', async () => {
+    // The agent.pid in the DB is captured at spawn time. If the original
+    // process died and the OS recycled that PID to something unrelated,
+    // sending SIGTERM would hit the wrong target. We now probe with
+    // process.kill(pid, 0) (no-op existence check) and skip SIGTERM if
+    // it throws — closing the common case where the process is just gone.
+    const { execRestartJob } = await import('../server/orchestrator/watcherTools.js');
+    const queries = await import('../server/db/queries.js');
+    const { watcher, agentId } = await makeWatcher();
+    // Use a high pid we know doesn't exist on the test host. The agent
+    // factory defaults to HARM_PID=-1; node interprets -1 specially, so
+    // override with a synthetic value first.
+    queries.updateAgent(agentId, { pid: 2_147_483_640 });
+
+    const killSpy = vi.spyOn(process, 'kill');
+    try {
+      const r = execRestartJob(watcher, { reason: 'looping' });
+      expect(r.ok).toBe(true);
+
+      // The probe (signal 0) was attempted but the actual SIGTERM was not
+      // because the probe threw ESRCH for the non-existent PID.
+      const probeCalls = killSpy.mock.calls.filter(args => args[1] === 0);
+      const sigtermCalls = killSpy.mock.calls.filter(args => args[1] === 'SIGTERM');
+      expect(probeCalls.length).toBeGreaterThanOrEqual(1);
+      expect(sigtermCalls.length).toBe(0);
+    } finally {
+      killSpy.mockRestore();
+    }
   });
 
   it('accumulates multiple restart notes under a single header', async () => {

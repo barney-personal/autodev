@@ -172,7 +172,13 @@ export function execReadRecentOutput(watcher: JobWatcher, input: ReadRecentOutpu
       lines.push(`#${row.seq} (unparseable)`);
     }
   }
-  return { ok: true, message: lines.join('\n') || '(no output yet)' };
+  // Wrap the body in the same <agent-output> sentinel the tick feed uses,
+  // so when this tool-result block flows back into the watcher's context
+  // the agent-sourced content is structurally fenced — the model cannot
+  // mistake an injected "WATCHER INSTRUCTION:" line inside the output for
+  // a directive from this prompt.
+  const body = lines.join('\n') || '(no output yet)';
+  return { ok: true, message: wrapAgentOutput(body) };
 }
 
 // ─── read_diff ───────────────────────────────────────────────────────────────
@@ -199,11 +205,24 @@ export async function execReadDiff(watcher: JobWatcher): Promise<ToolExecResult>
       timeout: 8000,
       maxBuffer: 64 * 1024,
     });
-    if (!stdout.trim()) return { ok: true, message: '(no diff vs base)' };
-    return { ok: true, message: stdout.length > 60_000 ? stdout.slice(0, 60_000) + '\n… (truncated)' : stdout };
+    if (!stdout.trim()) return { ok: true, message: wrapAgentOutput('(no diff vs base)') };
+    const truncated = stdout.length > 60_000 ? stdout.slice(0, 60_000) + '\n… (truncated)' : stdout;
+    // Sentinel-wrap as for read_recent_output — diff content is fully
+    // agent-controlled, an attacker-modified file could contain text that
+    // mimics watcher framing.
+    return { ok: true, message: wrapAgentOutput(truncated) };
   } catch (err) {
     return { ok: false, message: `git diff failed: ${(err as Error).message}` };
   }
+}
+
+/**
+ * Fence agent-sourced tool-result content in the same `<agent-output>` tags
+ * the rendered tick uses, so the watcher LLM treats it as observed data even
+ * if its attention drifts from the system prompt across many tool rounds.
+ */
+function wrapAgentOutput(body: string): string {
+  return `<agent-output>\n${body}\n</agent-output>`;
 }
 
 // ─── nudge_job ───────────────────────────────────────────────────────────────
@@ -318,10 +337,23 @@ export function execRestartJob(watcher: JobWatcher, input: RestartJobInput): Too
     // Best-effort kill — the watcher's role is to mark cancelled + requeue.
     // If the OS rejects the signal (process gone, permission, race) we still
     // proceed with the DB transition so the agent isn't stuck "running".
+    //
+    // We probe with `process.kill(pid, 0)` first (no-op signal that just
+    // tests existence). If that throws ESRCH the original process is gone
+    // and we skip SIGTERM entirely — small but useful defence against
+    // signalling a recycled PID that happens to belong to an unrelated
+    // process group. A microsecond race still exists between probe and
+    // SIGTERM, so this is reducing the risk window, not eliminating it.
+    // (See AgentRunner — the cancel endpoint has the same residual risk.)
     if (agent.pid) {
-      try { process.kill(-agent.pid, 'SIGTERM'); }
-      catch (err) {
-        agentLogger(agent.id).debug({ err }, 'watcher kill failed — proceeding with requeue');
+      let stillAlive = false;
+      try { process.kill(agent.pid, 0); stillAlive = true; }
+      catch { /* ESRCH or EPERM — treat as gone for our purposes */ }
+      if (stillAlive) {
+        try { process.kill(-agent.pid, 'SIGTERM'); }
+        catch (err) {
+          agentLogger(agent.id).debug({ err }, 'watcher kill failed — proceeding with requeue');
+        }
       }
     }
     // Best-effort kill the tmux session too — fire-and-forget so we don't

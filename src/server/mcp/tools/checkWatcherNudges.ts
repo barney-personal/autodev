@@ -30,7 +30,10 @@ export async function checkWatcherNudgesHandler(
   }
   const content = note.value;
   if (consume) {
-    queries.upsertNote(key, '', null);
+    // deleteNote (vs upsertNote('')) avoids leaving an empty-value tombstone
+    // per agent in the notes table forever. The next nudge re-creates the
+    // row on demand via upsertNote inside appendNudgeToNote.
+    queries.deleteNote(key);
   }
   return JSON.stringify({ has_nudges: true, content });
 }
