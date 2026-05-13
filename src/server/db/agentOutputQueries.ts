@@ -152,6 +152,32 @@ export function getLatestAgentOutput(agentId: string): AgentOutput | null {
   return row ? cast<AgentOutput>(row) : null;
 }
 
+/**
+ * Fetch up to `limit` events newer than `sinceSeq`, returned chronologically
+ * (oldest → newest). Backed by the (agent_id, seq) unique index so reads are
+ * O(log N + result) — used by the live watcher's tick builder, which fires
+ * frequently and shouldn't degrade as the log grows.
+ *
+ * When more than `limit` new events exist the OLDEST are dropped, so callers
+ * always receive the most recent slice of new activity.
+ */
+export function getAgentOutputSinceSeq(agentId: string, sinceSeq: number, limit: number): AgentOutput[] {
+  const db = getDb();
+  // Defensive clamp on `limit`: today every caller passes a module constant
+  // (WATCHER_TICK_EVENT_LIMIT, etc.) so an out-of-range value can't slip
+  // in. But this is the same shape as the `/commentary?limit=` bug the
+  // PR already fixed — a future route handler that forwards user input
+  // could regress it. SQLite treats `LIMIT -1` as "no limit" and any
+  // huge integer as a memory ceiling, so [1, 500] is the safe window.
+  const safeLimit = Math.max(1, Math.min(Number.isFinite(limit) ? limit : 1, 500));
+  // Newest-first internally so the DB only walks `safeLimit` rows when there are
+  // many new events, then reverse for chronological order.
+  const rows = db.prepare(
+    'SELECT * FROM (SELECT * FROM agent_output WHERE agent_id = ? AND seq > ? ORDER BY seq DESC LIMIT ?) ORDER BY seq ASC'
+  ).all(agentId, sinceSeq, safeLimit);
+  return rows.map((r: unknown) => cast<AgentOutput>(r));
+}
+
 export function getAgentFullOutput(agentId: string, tailLines?: number): AgentOutputSegment[] {
   const db = getDb();
   // Walk the parent chain to build oldest-first list of agents

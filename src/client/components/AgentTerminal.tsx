@@ -4,7 +4,9 @@ import socket from '../socket';
 import { QuestionBubble } from './QuestionBubble';
 import { DiffViewer } from './DiffViewer';
 import { RetryButton, CancelButton, ContinueInput } from './AgentActions';
+import { WatcherPanel } from './WatcherPanel';
 import { useTerminal } from '../hooks/useTerminal';
+import { useAppStore } from '../store';
 import type { AgentWithJob, ChildAgentSummary } from '@shared/types';
 
 interface AgentTerminalProps {
@@ -17,7 +19,7 @@ interface AgentTerminalProps {
 export function AgentTerminal({ agent, onClose, onContinued, onRenameJob }: AgentTerminalProps) {
   const viewStartRef = useRef<number>(Date.now());
   const [childAgents, setChildAgents] = useState<ChildAgentSummary[]>(agent.child_agents ?? []);
-  const [activeTab, setActiveTab] = useState<'output' | 'changes'>('output');
+  const [activeTab, setActiveTab] = useState<'output' | 'changes' | 'watcher'>('output');
   const [diff, setDiff] = useState<string | null>(agent.diff ?? null);
   const [baseSha, setBaseSha] = useState<string | null>(agent.base_sha ?? null);
   const [diffFetched, setDiffFetched] = useState(false);
@@ -287,6 +289,7 @@ export function AgentTerminal({ agent, onClose, onContinued, onRenameJob }: Agen
             Changes{diff ? ` (${diff.split('\n').filter(l => l.startsWith('+')).length - diff.split('\n').filter(l => l.startsWith('--- ')).length}+)` : ''}
           </button>
         )}
+        <WatcherTabButton agentId={agent.id} active={activeTab === 'watcher'} onClick={() => setActiveTab('watcher')} />
       </div>
 
       {isTruncated && activeTab === 'output' && (
@@ -314,6 +317,10 @@ export function AgentTerminal({ agent, onClose, onContinued, onRenameJob }: Agen
         </div>
       )}
 
+      {activeTab === 'watcher' && (
+        <WatcherPanel agentId={agent.id} agentStatus={agent.status} />
+      )}
+
       {agent.status === 'failed' && agent.error_message && (
         <div className="agent-error-banner">
           <div className="agent-error-label">Error output</div>
@@ -329,5 +336,39 @@ export function AgentTerminal({ agent, onClose, onContinued, onRenameJob }: Agen
         <ContinueInput agentId={agent.id} onContinued={onContinued} />
       )}
     </div>
+  );
+}
+
+function WatcherTabButton({ agentId, active, onClick }: { agentId: string; active: boolean; onClick: () => void }) {
+  const watcher = useAppStore(s => s.watchersByAgent[agentId]);
+  const commentary = useAppStore(s => s.commentaryByAgent[agentId]);
+  const count = commentary?.length ?? 0;
+  const sev = watcher?.next_severity;
+  const dot =
+    sev === 'blocker' ? '#ef4444' :
+    sev === 'concern' ? '#f59e0b' :
+    sev === 'progress' ? '#22c55e' :
+    sev === 'resolved' ? '#22c55e' :
+    watcher?.status === 'running' ? '#3b82f6' :
+    'transparent';
+  return (
+    <button
+      className={`terminal-tab${active ? ' terminal-tab-active' : ''}`}
+      onClick={onClick}
+      title="Live watcher commentary"
+    >
+      <span
+        style={{
+          display: 'inline-block',
+          width: 8,
+          height: 8,
+          borderRadius: '50%',
+          background: dot,
+          marginRight: 6,
+          verticalAlign: 'middle',
+        }}
+      />
+      Watcher{count > 0 ? ` (${count})` : ''}
+    </button>
   );
 }

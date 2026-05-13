@@ -21,6 +21,7 @@ import { runRecovery, startWorkflowGapDetector, stopWorkflowGapDetector } from '
 import { rehydrateCooldownState } from './orchestrator/ModelClassifier.js';
 import { startResourceMonitor, stopResourceMonitor, setQueueControls } from './orchestrator/ResourceMonitor.js';
 import { startDbBackup, stopDbBackup, runBackupNow } from './orchestrator/DbBackup.js';
+import { startJobWatcherManager, stopJobWatcherManager } from './orchestrator/JobWatcherManager.js';
 import { runStartupMaintenance } from './orchestrator/StartupMaintenance.js';
 import { writeInput, resizePty, resizeAndSnapshot, saveSnapshot, isTmuxSessionAlive, cleanupStaleTmuxSessions } from './orchestrator/PtyManager.js';
 import * as queries from './db/queries.js';
@@ -176,6 +177,7 @@ async function main() {
   startGitHubPoller();
   startResourceMonitor();
   startDbBackup(DB_PATH);
+  startJobWatcherManager();
   setQueueControls(stopWorkQueue, startWorkQueue);
 
   // Restore persisted settings
@@ -237,6 +239,7 @@ async function main() {
     stopGitHubPoller();
     stopResourceMonitor();
     stopDbBackup();
+    stopJobWatcherManager();
 
     // Run a final backup before closing the database
     runBackupNow();

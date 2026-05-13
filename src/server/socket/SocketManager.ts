@@ -1,6 +1,6 @@
 import { Server as HttpServer } from 'http';
 import { Server as SocketIoServer } from 'socket.io';
-import type { ServerToClientEvents, ClientToServerEvents, AgentWithJob, Job, Question, FileLock, AgentOutput, QueueSnapshot, Debate, AgentWarning, Discussion, DiscussionMessage, Proposal, ProposalMessage, Workflow, Pr, PrReview, PrReviewMessage } from '../../shared/types.js';
+import type { ServerToClientEvents, ClientToServerEvents, AgentWithJob, Job, Question, FileLock, AgentOutput, QueueSnapshot, Debate, AgentWarning, Discussion, DiscussionMessage, Proposal, ProposalMessage, Workflow, Pr, PrReview, PrReviewMessage, JobWatcher, WatcherCommentary, WatcherAction } from '../../shared/types.js';
 import { pushEvent } from '../orchestrator/EventQueue.js';
 
 let _io: SocketIoServer<ClientToServerEvents, ServerToClientEvents> | null = null;
@@ -286,4 +286,44 @@ export function emitPrReviewMessage(message: PrReviewMessage): void {
   } catch (err) {
     console.warn('[socket] emitPrReviewMessage error:', err);
   }
+}
+
+export function emitWatcherSessionNew(watcher: JobWatcher): void {
+  const payload = { watcher };
+  try {
+    getIo().emit('watcher:session:new', payload);
+  } catch (err) {
+    console.warn('[socket] emitWatcherSessionNew error:', err);
+  }
+  pushEvent('watcher:session:new', payload);
+}
+
+export function emitWatcherSessionUpdate(watcher: JobWatcher): void {
+  const payload = { watcher };
+  try {
+    getIo().emit('watcher:session:update', payload);
+  } catch (err) {
+    console.warn('[socket] emitWatcherSessionUpdate error:', err);
+  }
+  pushEvent('watcher:session:update', payload);
+}
+
+export function emitWatcherCommentaryNew(commentary: WatcherCommentary): void {
+  const payload = { commentary };
+  try {
+    getIo().emit('watcher:commentary:new', payload);
+  } catch (err) {
+    console.warn('[socket] emitWatcherCommentaryNew error:', err);
+  }
+  pushEvent('watcher:commentary:new', payload);
+}
+
+export function emitWatcherActionNew(action: WatcherAction): void {
+  const payload = { action };
+  try {
+    getIo().emit('watcher:action:new', payload);
+  } catch (err) {
+    console.warn('[socket] emitWatcherActionNew error:', err);
+  }
+  pushEvent('watcher:action:new', payload);
 }

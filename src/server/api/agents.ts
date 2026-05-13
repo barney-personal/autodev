@@ -8,6 +8,7 @@ import { markJobRunning } from '../orchestrator/JobLifecycle.js';
 import { disconnectAgent, disconnectAll, getPtyBuffer, getSnapshot, attachPty, isTmuxSessionAlive, saveSnapshot } from '../orchestrator/PtyManager.js';
 import { getFileLockRegistry } from '../orchestrator/FileLockRegistry.js';
 import { nudgeQueue } from '../orchestrator/WorkQueueManager.js';
+import { requestTickNow, requestStartNow, stopWatcherForAgent } from '../orchestrator/JobWatcherManager.js';
 import { agentReadAllSchema, agentRetrySchema, agentContinueSchema, validateBody } from './validation.js';
 
 const router = Router();
@@ -307,6 +308,101 @@ router.post('/:id/requeue', (req, res) => {
   nudgeQueue();
 
   res.json(updated);
+});
+
+// ─── Live Watcher ─────────────────────────────────────────────────────────
+// Matches WatcherPanel's store cap so a fresh hydrate after server restart
+// returns the same number of entries the live stream would have accumulated.
+const WATCHER_HYDRATE_LIMIT = 500;
+
+router.get('/:id/watcher', (req, res) => {
+  const agent = queries.getAgentById(req.params.id);
+  if (!agent) { res.status(404).json({ error: 'not found' }); return; }
+  const watcher = queries.getWatcherByAgentId(req.params.id);
+  const commentary = queries.listCommentaryForAgent(req.params.id, WATCHER_HYDRATE_LIMIT);
+  const actions = queries.listActionsForAgent(req.params.id, WATCHER_HYDRATE_LIMIT);
+  res.json({ watcher: watcher ?? null, commentary, actions });
+});
+
+router.get('/:id/commentary', (req, res) => {
+  const agent = queries.getAgentById(req.params.id);
+  if (!agent) { res.status(404).json({ error: 'not found' }); return; }
+  // Clamp the limit to [1, 1000]. Previously `parseInt('-1') || DEFAULT`
+  // returned -1 (truthy, not NaN) and `Math.min(-1, 1000) === -1` got
+  // passed to SQLite, which treats `LIMIT -1` as "no limit" — bypassing
+  // the row cap and letting a caller paginate the entire table in one
+  // request. NaN values still fall through to the default.
+  const raw = req.query.limit;
+  let limit = WATCHER_HYDRATE_LIMIT;
+  if (raw !== undefined) {
+    const parsed = parseInt(raw as string, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      limit = Math.min(parsed, 1000);
+    }
+  }
+  res.json(queries.listCommentaryForAgent(req.params.id, limit));
+});
+
+router.post('/:id/watcher/start', (req, res) => {
+  const agent = queries.getAgentById(req.params.id);
+  if (!agent) { res.status(404).json({ error: 'not found' }); return; }
+  const result = requestStartNow(req.params.id);
+  if (result.ok) {
+    const watcher = queries.getWatcherByAgentId(req.params.id);
+    // cooldown_ms tells the UI that an initial tick is scheduled and a
+    // subsequent /watcher/tick within this window will 429. Lets the
+    // panel show "initial tick scheduled — re-tick in Xs" instead of
+    // the user having to click Re-tick and discover the 429.
+    res.json({ ok: true, watcher, cooldown_ms: result.cooldownMs });
+    return;
+  }
+  if (result.reason === 'cooldown') {
+    // Same shared per-agent cooldown as /watcher/tick — a successful
+    // start fires an initial tick (Opus 4.7 call), so the rate limit
+    // must cover both endpoints together. See JobWatcherManager.
+    res.setHeader('Retry-After', Math.ceil((result.retryAfterMs ?? 1000) / 1000));
+    res.status(429).json({
+      ok: false,
+      error: 'start cooldown active',
+      retry_after_ms: result.retryAfterMs,
+      note: 'cooldown is in-memory only; resets on server restart',
+    });
+    return;
+  }
+  res.status(400).json({ error: 'unable to start watcher (manager disabled, agent not running, or API key missing)' });
+});
+
+router.post('/:id/watcher/stop', (req, res) => {
+  const agent = queries.getAgentById(req.params.id);
+  if (!agent) { res.status(404).json({ error: 'not found' }); return; }
+  const ok = stopWatcherForAgent(req.params.id);
+  res.json({ ok });
+});
+
+router.post('/:id/watcher/tick', (req, res) => {
+  const agent = queries.getAgentById(req.params.id);
+  if (!agent) { res.status(404).json({ error: 'not found' }); return; }
+  const result = requestTickNow(req.params.id);
+  if (result.ok) {
+    res.json({ ok: true });
+    return;
+  }
+  if (result.reason === 'cooldown') {
+    // Each tick is an Opus 4.7 call; the cooldown prevents accidental spam.
+    res.setHeader('Retry-After', Math.ceil((result.retryAfterMs ?? 1000) / 1000));
+    // The cooldown is tracked in-memory only (_lastManualTickAt) and
+    // therefore resets when the orchestrator process restarts. Acceptable
+    // for the local-only model documented in CLAUDE.md; flag it in the
+    // response so operators don't assume the cooldown is persistent.
+    res.status(429).json({
+      ok: false,
+      error: 'tick cooldown active',
+      retry_after_ms: result.retryAfterMs,
+      note: 'cooldown is in-memory only; resets on server restart',
+    });
+    return;
+  }
+  res.status(400).json({ ok: false, error: result.reason });
 });
 
 router.post('/:id/dismiss-warnings', (req, res) => {

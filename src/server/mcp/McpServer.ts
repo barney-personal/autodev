@@ -20,6 +20,7 @@ import { reportLearningsHandler, reportLearningsSchema } from './tools/reportLea
 import { finishJobHandler, finishJobSchema } from './tools/finishJob.js';
 import { startDiscussionHandler, startDiscussionSchema, checkDiscussionsHandler, checkDiscussionsSchema, replyDiscussionHandler, replyDiscussionSchema, createProposalHandler, createProposalSchema, checkProposalsHandler, checkProposalsSchema, replyProposalHandler, replyProposalSchema, updateProposalHandler, updateProposalSchema, reportPrHandler, reportPrSchema, reportPrReviewHandler, reportPrReviewSchema, checkPrReviewsHandler, checkPrReviewsSchema, replyPrReviewHandler, replyPrReviewSchema, updateDailySummaryHandler, updateDailySummarySchema } from './tools/eye.js';
 import { queryLinearHandler, queryLinearSchema, queryLogsHandler, queryLogsSchema, queryDbHandler, queryDbSchema, queryCiLogsHandler, queryCiLogsSchema } from './tools/integrations.js';
+import { checkWatcherNudgesHandler, checkWatcherNudgesSchema } from './tools/checkWatcherNudges.js';
 import { z } from 'zod';
 import * as queries from '../db/queries.js';
 
@@ -67,6 +68,25 @@ export async function closeAllMcpSessions(): Promise<void> {
   await Promise.all(promises);
   agentTransports.clear();
   disconnectedAgents.clear();
+}
+
+/**
+ * Close every MCP transport bound to a single agent. Used when the
+ * orchestrator force-kills an agent (e.g. watcher restart): a zombie
+ * subprocess that survives SIGTERM could otherwise keep firing tool calls
+ * into a now-requeued job and write spurious DB state. Best-effort —
+ * already-closed transports are silently ignored.
+ */
+export async function closeMcpSessionsForAgent(agentId: string): Promise<void> {
+  const transportMap = agentTransports.get(agentId);
+  if (!transportMap) return;
+  const promises: Promise<void>[] = [];
+  for (const [, transport] of transportMap) {
+    promises.push(transport.close().catch(() => {}));
+  }
+  await Promise.all(promises);
+  agentTransports.delete(agentId);
+  disconnectedAgents.delete(agentId);
 }
 
 function makeOnClose(agentId: string, transportMap: Map<string, StreamableHTTPServerTransport>, transport: { sessionId?: string }) {
@@ -603,6 +623,17 @@ function buildMcpServer(agentId: string): MCP {
   server.tool('query_ci_logs', 'Fetch GitHub Actions CI logs for a PR, branch, or specific run. Returns run status, failed jobs, and failure log output. Useful for diagnosing CI failures.',
     { pr_number: queryCiLogsSchema.shape.pr_number, run_id: queryCiLogsSchema.shape.run_id, branch: queryCiLogsSchema.shape.branch, workflow: queryCiLogsSchema.shape.workflow, failed_only: queryCiLogsSchema.shape.failed_only, include_logs: queryCiLogsSchema.shape.include_logs, repo_path: queryCiLogsSchema.shape.repo_path, limit: queryCiLogsSchema.shape.limit },
     async (input) => ({ content: [{ type: 'text', text: await queryCiLogsHandler(agentId, input as z.infer<typeof queryCiLogsSchema>) }] }));
+
+  // ─── Watcher Bridge ───────────────────────────────────────────────────────
+  server.tool(
+    'check_watcher_nudges',
+    'Check for guidance from your live watcher. Returns { has_nudges, content }. Call this near the top of each major turn — the watcher posts nudges here when it thinks you are stuck, looping, or off-track. By default the nudges are consumed after reading (set consume=false to peek without clearing).',
+    { consume: checkWatcherNudgesSchema.shape.consume },
+    safeTool('check_watcher_nudges', agentId, async (input) => {
+      const result = await checkWatcherNudgesHandler(agentId, input as z.infer<typeof checkWatcherNudgesSchema>);
+      return { content: [{ type: 'text' as const, text: result }] };
+    })
+  );
 
   return server;
 }

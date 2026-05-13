@@ -4,3 +4,4 @@ export * from './agentOutputQueries.js';
 export * from './noteQueries.js';
 export * from './workflowQueries.js';
 export * from './eyeQueries.js';
+export * from './watcherQueries.js';

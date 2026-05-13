@@ -30,6 +30,12 @@ function getPricing(model: string | null): ModelPricing {
   return PRICING[model] ?? DEFAULT_PRICING;
 }
 
+/** List of Claude model names this server knows pricing for. Used as a
+ * sanity-check at startup for env-configured model names. */
+export function getKnownClaudeModels(): string[] {
+  return Object.keys(PRICING);
+}
+
 /**
  * Estimate cost in USD given a model and accumulated token counts.
  */
@@ -40,5 +46,35 @@ export function estimateCostUsd(
 ): number {
   const p = getPricing(model);
   return (inputTokens / 1_000_000) * p.inputPerMillion
+       + (outputTokens / 1_000_000) * p.outputPerMillion;
+}
+
+// Anthropic prompt-caching pricing multipliers (relative to base input rate).
+// 5-minute ephemeral cache (the kind we use on the watcher's system prompt):
+//   - cache writes cost 1.25× the base input rate
+//   - cache reads  cost 0.10× the base input rate
+// See: https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching
+const CACHE_WRITE_MULTIPLIER = 1.25;
+const CACHE_READ_MULTIPLIER = 0.10;
+
+/**
+ * Estimate cost in USD with disaggregated cache-tier token counts.
+ *
+ * Critical for components that anchor a cache_control breakpoint and pay
+ * mostly cache-read input (e.g. the live watcher's repeated system prompt).
+ * `estimateCostUsd` lumps cache reads in with regular input, which overstates
+ * cache-heavy workloads by ~10× on the cache-read portion.
+ */
+export function estimateCostUsdDetailed(
+  model: string | null,
+  inputTokens: number,
+  cacheReadTokens: number,
+  cacheCreateTokens: number,
+  outputTokens: number,
+): number {
+  const p = getPricing(model);
+  return (inputTokens / 1_000_000) * p.inputPerMillion
+       + (cacheReadTokens / 1_000_000) * p.inputPerMillion * CACHE_READ_MULTIPLIER
+       + (cacheCreateTokens / 1_000_000) * p.inputPerMillion * CACHE_WRITE_MULTIPLIER
        + (outputTokens / 1_000_000) * p.outputPerMillion;
 }
