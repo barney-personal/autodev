@@ -90,6 +90,39 @@ describe('watcherTools.execPostCommentary', () => {
     expect(stored.evidence).toContain('evidence');
   });
 
+  it('falls back to "info" when the watcher passes an out-of-range severity', async () => {
+    // The watcher LLM controls the severity field via tool input. An
+    // out-of-range string would persist to the DB, ship over the socket,
+    // and feed into deriveNextSeverity / SEVERITY_RANK as undefined —
+    // quietly breaking the badge derivation. The boundary check coerces
+    // unknown values to 'info'.
+    const { execPostCommentary } = await import('../server/orchestrator/watcherTools.js');
+    const queries = await import('../server/db/queries.js');
+    const { watcher } = await makeWatcher();
+
+    // Cast through unknown so TS doesn't reject the deliberately-invalid input.
+    const r = execPostCommentary(watcher, { severity: 'unknown-severity' as unknown as never, headline: 'check' });
+    expect(r.ok).toBe(true);
+
+    const stored = queries.listCommentaryForAgent(watcher.agent_id)[0];
+    expect(stored.severity).toBe('info');
+    // The watcher row's next_severity should also reflect the coerced value.
+    const w = queries.getWatcherById(watcher.id)!;
+    expect(['info', 'progress', 'concern', 'blocker', 'resolved']).toContain(w.next_severity);
+  });
+
+  it('accepts every valid WatcherSeverity unchanged', async () => {
+    const { execPostCommentary } = await import('../server/orchestrator/watcherTools.js');
+    const queries = await import('../server/db/queries.js');
+    const valid: Array<'info' | 'progress' | 'concern' | 'blocker' | 'resolved'> = ['info', 'progress', 'concern', 'blocker', 'resolved'];
+    for (const sev of valid) {
+      const { watcher } = await makeWatcher();
+      execPostCommentary(watcher, { severity: sev, headline: `t-${sev}` });
+      const stored = queries.listCommentaryForAgent(watcher.agent_id)[0];
+      expect(stored.severity).toBe(sev);
+    }
+  });
+
   it('decays next_severity once a concern rolls off the sliding window', async () => {
     const { execPostCommentary } = await import('../server/orchestrator/watcherTools.js');
     const queries = await import('../server/db/queries.js');

@@ -428,5 +428,20 @@ export function trimHistory(history: Anthropic.Messages.MessageParam[]): Anthrop
   while (tail.length > 0 && tail[0].role !== 'assistant') {
     tail = tail.slice(1);
   }
+  // Empty-tail fallback: the recent window was entirely user-role
+  // (pathological — a long tool_result-only stretch). Rather than returning
+  // just [head] and losing all recent context, scan the FULL history for
+  // the most recent assistant turn and keep that alongside head. Result is
+  // a valid [user, assistant] sequence — the watcher loses intermediate
+  // context but at least has its last response to anchor on.
+  if (tail.length === 0) {
+    for (let i = history.length - 1; i >= 1; i--) {
+      if (history[i].role === 'assistant') {
+        return [...head, history[i]];
+      }
+    }
+    // No assistant turn anywhere — the head alone is still API-valid.
+    return head;
+  }
   return [...head, ...tail];
 }

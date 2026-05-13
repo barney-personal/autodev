@@ -149,6 +149,18 @@ export function onAgentFinished(agentId: string, status: 'done' | 'failed' | 'ca
   // Run one final tick so the watcher posts a postmortem, then stop.
   const trigger: WatcherTrigger = status === 'done' ? 'agent_done' : status === 'failed' ? 'agent_failed' : 'agent_cancelled';
   scheduleTick(agentId, trigger);
+  // Intentional overlap: the final tick fires after `debounce` ms but the
+  // API call inside it can take several seconds. The stop timer fires
+  // ~debounce+200ms, which usually races AHEAD of the in-flight tick. That
+  // is OK — three guards keep us safe:
+  //   1. stopSession removes the entry from `_sessions` immediately, so no
+  //      new triggers can schedule on top of the dying session.
+  //   2. WatcherSession's stop-race guard (isStoppedWatcherStatus check)
+  //      prevents the in-flight tick from resurrecting the watcher row
+  //      back to 'running' when it completes.
+  //   3. Tool dispatches the in-flight tick already started (e.g.
+  //      post_commentary for the postmortem) continue to run — they're
+  //      bounded sync side effects on a stopped row, which is fine.
   setTimeout(() => stopSession(agentId), envDebounceMs() + 200);
 }
 

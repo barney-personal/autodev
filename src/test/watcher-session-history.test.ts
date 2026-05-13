@@ -64,26 +64,45 @@ describe('trimHistory — alternation invariant', () => {
     }
   });
 
-  it('falls back to head-only when the tail window is entirely user-role', async () => {
-    // Pathological case: every message in the tail window is a user-role
-    // tool_result. The while-loop strips them all and returns just [head].
-    // That's a valid (single-user) API call and the worst-case loss is "the
-    // watcher has only its first tick prompt as context" — preferable to a
-    // 422 from consecutive same-role messages.
+  it('falls back to head + last assistant when the tail window is entirely user-role', async () => {
+    // Pathological case: the recent MAX_HISTORY_TURNS-1 window is all
+    // user-role tool_results. Naive "return head only" would give the
+    // watcher zero recent context. Improved fallback: scan the FULL
+    // history for the most recent assistant turn and keep it alongside
+    // head — the watcher loses intermediate turns but at least has its
+    // last response to anchor on. Result stays API-valid (user, assistant).
     const { trimHistory } = await import('../server/orchestrator/WatcherSession.js');
     const hist: Array<{ role: 'user' | 'assistant'; content: unknown }> = [
       { role: 'user', content: 'u0_brief' },  // head
     ];
-    // Pad with assistant turns then 14 user-only entries so the tail of 11
-    // ends up entirely user-role.
+    // Pad with assistant turns then enough user-only entries that the
+    // last (MAX_HISTORY_TURNS-1) tail window is entirely user-role.
     for (let i = 0; i < 5; i++) hist.push({ role: 'assistant', content: `a${i}` });
     for (let i = 0; i < 14; i++) {
       hist.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: `t${i}`, content: 'r' }] });
     }
     const trimmed = trimHistory(hist as never);
-    expect(trimmed).toHaveLength(1);
+    expect(trimmed).toHaveLength(2);
     expect(trimmed[0].role).toBe('user');
     expect(trimmed[0].content).toBe('u0_brief');
+    // Most recent assistant in the input is a4 — that's what we should keep.
+    expect(trimmed[1].role).toBe('assistant');
+    expect(trimmed[1].content).toBe('a4');
+  });
+
+  it('returns head only when the history contains no assistant turn at all', async () => {
+    // True degenerate case: only user messages exist anywhere in history.
+    // No assistant to fall back to → return just [head]. Still a valid
+    // single-user history; alternation is trivially satisfied.
+    const { trimHistory } = await import('../server/orchestrator/WatcherSession.js');
+    const hist: Array<{ role: 'user' | 'assistant'; content: unknown }> = [];
+    for (let i = 0; i < 15; i++) {
+      hist.push({ role: 'user', content: `u${i}` });
+    }
+    const trimmed = trimHistory(hist as never);
+    expect(trimmed).toHaveLength(1);
+    expect(trimmed[0].role).toBe('user');
+    expect(trimmed[0].content).toBe('u0');
   });
 
   it('drops leading tool_result users from the tail to avoid orphans', async () => {

@@ -20,7 +20,7 @@ import { execFileAsync } from '../lib/execFileAsync.js';
 import * as socket from '../socket/SocketManager.js';
 import { agentLogger } from '../lib/logger.js';
 import { cancelledAgents } from './AgentConfig.js';
-import { isValidGitSha } from './watcherFeed.js';
+import { isValidGitSha, escapeXml } from './watcherFeed.js';
 import { getFileLockRegistry } from './FileLockRegistry.js';
 import { nudgeQueue } from './WorkQueueManager.js';
 // Note: closeMcpSessionsForAgent is loaded via dynamic import inside
@@ -93,11 +93,18 @@ export function execPostCommentary(watcher: JobWatcher, input: PostCommentaryInp
   const detail = input.detail ? capUntrustedText(input.detail, WATCHER_COMMENTARY_BODY_CAP) : null;
   const evidence = input.evidence ? capUntrustedText(input.evidence, WATCHER_COMMENTARY_BODY_CAP) : null;
 
+  // Boundary check: the severity comes from the watcher LLM (tool input) and
+  // must land in the WatcherSeverity union. Without this an out-of-range
+  // string would persist to the DB, ship over the socket, and feed into
+  // deriveNextSeverity / SEVERITY_RANK as `undefined` — quietly breaking the
+  // badge derivation. safeSeverity falls back to 'info' on unknown values.
+  const severity = safeSeverity(input.severity);
+
   const commentary: WatcherCommentary = queries.insertCommentary({
     id: randomUUID(),
     watcher_id: watcher.id,
     agent_id: watcher.agent_id,
-    severity: input.severity ?? 'info',
+    severity,
     headline,
     detail,
     evidence,
@@ -176,7 +183,7 @@ export async function execReadDiff(watcher: JobWatcher): Promise<ToolExecResult>
     // Node's event loop for up to 8s on slow filesystems — every other
     // socket emission and API response stalled while git walked the index.
     // --end-of-options pins the SHA as a non-option arg — defence in depth
-     // with isValidGitSha. `--` would not work here (git diff treats post-`--`
+    // with isValidGitSha. `--` would not work here (git diff treats post-`--`
     // args as pathspecs, not refs).
     const { stdout } = await execFileAsync('git', ['diff', '--no-color', '--end-of-options', agent.base_sha], {
       cwd: job.work_dir,
@@ -199,9 +206,14 @@ export async function execReadDiff(watcher: JobWatcher): Promise<ToolExecResult>
  * Fence agent-sourced tool-result content in the same `<agent-output>` tags
  * the rendered tick uses, so the watcher LLM treats it as observed data even
  * if its attention drifts from the system prompt across many tool rounds.
+ *
+ * The body is XML-escaped so an adversarial agent that emits the literal
+ * string `</agent-output>` (or `<agent-output>`) in its stdout / diff /
+ * tool output can't close the fence early and have following text appear
+ * outside the labeled zone.
  */
 function wrapAgentOutput(body: string): string {
-  return `<agent-output>\n${body}\n</agent-output>`;
+  return `<agent-output>\n${escapeXml(body)}\n</agent-output>`;
 }
 
 // ─── nudge_job ───────────────────────────────────────────────────────────────
@@ -618,6 +630,17 @@ function emitWatcherUpdate(watcherId: string): void {
 const SEVERITY_RANK: Record<WatcherSeverity, number> = {
   info: 0, resolved: 0, progress: 1, concern: 2, blocker: 3,
 };
+
+/** Allowlist derived from SEVERITY_RANK keys — the single source of truth
+ *  for valid severities. Used by the post_commentary boundary check so an
+ *  out-of-range value from the watcher LLM (or a future schema mismatch)
+ *  can't reach the DB / socket / deriveNextSeverity logic. */
+const VALID_SEVERITIES: ReadonlySet<WatcherSeverity> = new Set(Object.keys(SEVERITY_RANK) as WatcherSeverity[]);
+
+function safeSeverity(s: WatcherSeverity | string | undefined): WatcherSeverity {
+  if (typeof s === 'string' && VALID_SEVERITIES.has(s as WatcherSeverity)) return s as WatcherSeverity;
+  return 'info';
+}
 
 /** How many recent commentary entries the dashboard badge averages over. */
 export const SEVERITY_WINDOW_SIZE = 3;
