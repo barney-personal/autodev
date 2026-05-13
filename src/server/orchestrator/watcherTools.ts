@@ -86,8 +86,12 @@ export function execPostCommentary(watcher: JobWatcher, input: PostCommentaryInp
     evidence: input.evidence?.slice(0, 4000) ?? null,
   });
 
-  // Bump watcher's next_severity hint so the dashboard badge reflects worst recent state.
-  queries.updateWatcher(watcher.id, { next_severity: bumpSeverity(watcher.next_severity, commentary.severity) });
+  // Compute next_severity from a sliding window of the most recent
+  // SEVERITY_WINDOW_SIZE commentary entries (inclusive of the one we just
+  // inserted). This decays the dashboard badge naturally — after enough
+  // follow-up 'info'/'progress' posts a transient 'concern' rolls off.
+  const window = queries.getRecentCommentaryForAgent(watcher.agent_id, SEVERITY_WINDOW_SIZE);
+  queries.updateWatcher(watcher.id, { next_severity: deriveNextSeverity(window.map(c => c.severity)) });
   emitWatcherUpdate(watcher.id);
 
   socket.emitWatcherCommentaryNew(commentary);
@@ -405,10 +409,35 @@ const SEVERITY_RANK: Record<WatcherSeverity, number> = {
   info: 0, resolved: 0, progress: 1, concern: 2, blocker: 3,
 };
 
-function bumpSeverity(current: WatcherSeverity, incoming: WatcherSeverity): WatcherSeverity {
-  // 'resolved' clears bad state regardless of current.
-  if (incoming === 'resolved') return 'resolved';
-  return SEVERITY_RANK[incoming] >= SEVERITY_RANK[current] ? incoming : current;
+/** How many recent commentary entries the dashboard badge averages over. */
+export const SEVERITY_WINDOW_SIZE = 3;
+
+/**
+ * Derive next_severity from a chronological list of recent commentary
+ * severities. The most recent `resolved` clears all prior bad state — only
+ * entries posted AFTER it count toward the badge. Otherwise we take the max
+ * severity in the window, so a transient concern decays as it rolls off the
+ * end (e.g. `[concern, info, info, info]` → window picks the last 3 = `info`).
+ *
+ * Exported for unit testing.
+ */
+export function deriveNextSeverity(severities: WatcherSeverity[]): WatcherSeverity {
+  if (severities.length === 0) return 'info';
+  // Walk backwards: a `resolved` entry resets the window, then we take the
+  // max severity among up-to-window-size entries that came after it.
+  const slice: WatcherSeverity[] = [];
+  for (let i = severities.length - 1; i >= 0; i--) {
+    const s = severities[i];
+    if (s === 'resolved') break;
+    slice.unshift(s);
+    if (slice.length >= SEVERITY_WINDOW_SIZE) break;
+  }
+  if (slice.length === 0) return 'resolved';
+  let best: WatcherSeverity = slice[0];
+  for (const s of slice) {
+    if (SEVERITY_RANK[s] > SEVERITY_RANK[best]) best = s;
+  }
+  return best;
 }
 
 function sanitiseHeadline(s: string | undefined): string {

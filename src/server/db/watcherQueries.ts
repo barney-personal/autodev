@@ -53,6 +53,10 @@ export function listActiveWatchers(): JobWatcher[] {
   return rows.map((r: unknown) => cast<JobWatcher>(r));
 }
 
+// IMPORTANT: must mirror the `Partial<Pick<JobWatcher, …>>` type below — when
+// adding a column to updateWatcher, add it here too (otherwise the call will
+// throw at runtime rather than fail to compile). The set guards against
+// SQL identifier injection from the dynamic `${k} = ?` interpolation.
 const WATCHER_UPDATE_ALLOWED = new Set([
   'status', 'tick_count', 'input_tokens', 'output_tokens', 'cache_read_tokens',
   'cache_create_tokens', 'cost_usd', 'last_seq', 'last_tick_at', 'next_severity',

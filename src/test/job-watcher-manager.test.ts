@@ -184,6 +184,44 @@ describe('JobWatcherManager', () => {
     expect(ticks[0]).toEqual({ agentId, trigger: 'initial' });
   });
 
+  it('WATCHER_ENABLED=0 disables all hooks — no sessions, no DB rows, no socket emissions', async () => {
+    const mod = await import('../server/orchestrator/JobWatcherManager.js');
+    const queries = await import('../server/db/queries.js');
+    const socket = await import('../server/socket/SocketManager.js');
+
+    // Tear down the auto-started (enabled) manager from beforeEach
+    mod.stopJobWatcherManager();
+    mod._resetForTest();
+    ticks.length = 0;
+    vi.clearAllMocks();
+
+    process.env.WATCHER_ENABLED = '0';
+    try {
+      mod.startJobWatcherManager();
+      // No heartbeat scheduled, no session map populated.
+      const agentId = await makeRunningAgent();
+      mod.onAgentStarted(agentId);
+      mod.onAgentEvent(agentId, {
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', name: 'Edit', input: {} }] },
+      } as never);
+      mod.onAgentFinished(agentId, 'done');
+      // Manual start also refuses
+      expect(mod.startWatcherForAgent(agentId)).toBe(false);
+
+      // Give any stray microtasks a chance to settle
+      await new Promise(r => setTimeout(r, 30));
+
+      expect(mod._activeSessionCount()).toBe(0);
+      expect(queries.getWatcherByAgentId(agentId)).toBeNull();
+      expect(ticks).toHaveLength(0);
+      expect(vi.mocked(socket.emitWatcherSessionNew)).not.toHaveBeenCalled();
+      expect(vi.mocked(socket.emitWatcherCommentaryNew)).not.toHaveBeenCalled();
+    } finally {
+      process.env.WATCHER_ENABLED = '1';
+    }
+  });
+
   it('rate-limits manual ticks per agent', async () => {
     process.env.WATCHER_MANUAL_TICK_COOLDOWN_MS = '500';
     const mod = await import('../server/orchestrator/JobWatcherManager.js');

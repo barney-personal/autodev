@@ -64,6 +64,28 @@ describe('trimHistory — alternation invariant', () => {
     }
   });
 
+  it('falls back to head-only when the tail window is entirely user-role', async () => {
+    // Pathological case: every message in the tail window is a user-role
+    // tool_result. The while-loop strips them all and returns just [head].
+    // That's a valid (single-user) API call and the worst-case loss is "the
+    // watcher has only its first tick prompt as context" — preferable to a
+    // 422 from consecutive same-role messages.
+    const { trimHistory } = await import('../server/orchestrator/WatcherSession.js');
+    const hist: Array<{ role: 'user' | 'assistant'; content: unknown }> = [
+      { role: 'user', content: 'u0_brief' },  // head
+    ];
+    // Pad with assistant turns then 14 user-only entries so the tail of 11
+    // ends up entirely user-role.
+    for (let i = 0; i < 5; i++) hist.push({ role: 'assistant', content: `a${i}` });
+    for (let i = 0; i < 14; i++) {
+      hist.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: `t${i}`, content: 'r' }] });
+    }
+    const trimmed = trimHistory(hist as never);
+    expect(trimmed).toHaveLength(1);
+    expect(trimmed[0].role).toBe('user');
+    expect(trimmed[0].content).toBe('u0_brief');
+  });
+
   it('drops leading tool_result users from the tail to avoid orphans', async () => {
     const { trimHistory } = await import('../server/orchestrator/WatcherSession.js');
     // Mix in tool_use/tool_result rounds so tail might start mid-round.

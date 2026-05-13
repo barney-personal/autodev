@@ -311,19 +311,23 @@ router.post('/:id/requeue', (req, res) => {
 });
 
 // ─── Live Watcher ─────────────────────────────────────────────────────────
+// Matches WatcherPanel's store cap so a fresh hydrate after server restart
+// returns the same number of entries the live stream would have accumulated.
+const WATCHER_HYDRATE_LIMIT = 500;
+
 router.get('/:id/watcher', (req, res) => {
   const agent = queries.getAgentById(req.params.id);
   if (!agent) { res.status(404).json({ error: 'not found' }); return; }
   const watcher = queries.getWatcherByAgentId(req.params.id);
-  const commentary = queries.listCommentaryForAgent(req.params.id, 200);
-  const actions = queries.listActionsForAgent(req.params.id, 200);
+  const commentary = queries.listCommentaryForAgent(req.params.id, WATCHER_HYDRATE_LIMIT);
+  const actions = queries.listActionsForAgent(req.params.id, WATCHER_HYDRATE_LIMIT);
   res.json({ watcher: watcher ?? null, commentary, actions });
 });
 
 router.get('/:id/commentary', (req, res) => {
   const agent = queries.getAgentById(req.params.id);
   if (!agent) { res.status(404).json({ error: 'not found' }); return; }
-  const limit = req.query.limit ? Math.min(parseInt(req.query.limit as string, 10) || 200, 1000) : 200;
+  const limit = req.query.limit ? Math.min(parseInt(req.query.limit as string, 10) || WATCHER_HYDRATE_LIMIT, 1000) : WATCHER_HYDRATE_LIMIT;
   res.json(queries.listCommentaryForAgent(req.params.id, limit));
 });
 

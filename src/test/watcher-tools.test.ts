@@ -63,24 +63,53 @@ describe('watcherTools.execPostCommentary', () => {
     expect(queries.listCommentaryForAgent(watcher.agent_id)).toHaveLength(1);
   });
 
-  it('bumps next_severity on the watcher row', async () => {
+  it('decays next_severity once a concern rolls off the sliding window', async () => {
     const { execPostCommentary } = await import('../server/orchestrator/watcherTools.js');
     const queries = await import('../server/db/queries.js');
     const { watcher } = await makeWatcher();
 
+    // Post 'concern' — badge lights up.
     execPostCommentary(watcher, { severity: 'concern', headline: 'A' });
-    const w2 = queries.getWatcherById(watcher.id)!;
-    expect(w2.next_severity).toBe('concern');
+    let w = queries.getWatcherById(watcher.id)!;
+    expect(w.next_severity).toBe('concern');
 
-    // 'info' must not lower it below 'concern' ...
-    execPostCommentary(w2, { severity: 'info', headline: 'B' });
-    const w3 = queries.getWatcherById(watcher.id)!;
-    expect(w3.next_severity).toBe('concern');
+    // Within the SEVERITY_WINDOW_SIZE (=3) window 'info' alongside the still-
+    // present concern keeps the badge at 'concern' (max severity in window).
+    execPostCommentary(w, { severity: 'info', headline: 'B' });
+    w = queries.getWatcherById(watcher.id)!;
+    expect(w.next_severity).toBe('concern');
 
-    // ... but 'resolved' clears it.
-    execPostCommentary(w3, { severity: 'resolved', headline: 'C' });
-    const w4 = queries.getWatcherById(watcher.id)!;
-    expect(w4.next_severity).toBe('resolved');
+    // Two more 'info' posts push the concern OUT of the 3-entry window — now
+    // window = [B, C, D] all 'info' → badge decays.
+    execPostCommentary(w, { severity: 'info', headline: 'C' });
+    execPostCommentary(w, { severity: 'info', headline: 'D' });
+    w = queries.getWatcherById(watcher.id)!;
+    expect(w.next_severity).toBe('info');
+  });
+
+  it('resolved clears the badge immediately regardless of prior severity', async () => {
+    const { execPostCommentary } = await import('../server/orchestrator/watcherTools.js');
+    const queries = await import('../server/db/queries.js');
+    const { watcher } = await makeWatcher();
+
+    execPostCommentary(watcher, { severity: 'blocker', headline: 'A' });
+    let w = queries.getWatcherById(watcher.id)!;
+    expect(w.next_severity).toBe('blocker');
+
+    execPostCommentary(w, { severity: 'resolved', headline: 'B' });
+    w = queries.getWatcherById(watcher.id)!;
+    expect(w.next_severity).toBe('resolved');
+  });
+
+  it('deriveNextSeverity (pure) — picks max in window, resets after resolved', async () => {
+    const { deriveNextSeverity, SEVERITY_WINDOW_SIZE } = await import('../server/orchestrator/watcherTools.js');
+    expect(deriveNextSeverity([])).toBe('info');
+    expect(deriveNextSeverity(['info', 'info'])).toBe('info');
+    expect(deriveNextSeverity(['concern', 'info', 'info', 'info'])).toBe('info');
+    expect(deriveNextSeverity(['concern', 'info', 'info'])).toBe('concern');
+    expect(deriveNextSeverity(['blocker', 'resolved', 'concern'])).toBe('concern');
+    expect(deriveNextSeverity(['blocker', 'resolved'])).toBe('resolved');
+    expect(SEVERITY_WINDOW_SIZE).toBe(3);
   });
 });
 
