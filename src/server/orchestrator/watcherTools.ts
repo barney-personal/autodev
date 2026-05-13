@@ -14,14 +14,41 @@
  *   • escalate_to_user → max MAX_ESCALATIONS_PER_AGENT applied
  */
 import { randomUUID } from 'crypto';
-import { execFileSync } from 'child_process';
+import { execFile, execFileSync } from 'child_process';
+import { promisify } from 'util';
 import * as queries from '../db/queries.js';
 import { withTransaction } from '../db/database.js';
+
+// Lazy-promisified execFile — same pattern as AgentRunner / watcherFeed.
+// `promisify(execFile)` at module-init crashes any test that partially mocks
+// child_process without exposing execFile (the codebase has several).
+type ExecFileAsyncOpts = { cwd?: string; timeout?: number; maxBuffer?: number; encoding?: BufferEncoding };
+let _execFileAsync: ((file: string, args: string[], opts?: ExecFileAsyncOpts) => Promise<{ stdout: string; stderr: string }>) | null = null;
+function execFileAsync(
+  file: string,
+  args: string[],
+  opts: ExecFileAsyncOpts = {},
+): Promise<{ stdout: string; stderr: string }> {
+  if (!_execFileAsync) {
+    _execFileAsync = promisify(execFile) as unknown as (
+      file: string,
+      args: string[],
+      opts?: ExecFileAsyncOpts,
+    ) => Promise<{ stdout: string; stderr: string }>;
+  }
+  return _execFileAsync(file, args, opts);
+}
 import * as socket from '../socket/SocketManager.js';
 import { agentLogger } from '../lib/logger.js';
 import { cancelledAgents } from './AgentConfig.js';
 import { getFileLockRegistry } from './FileLockRegistry.js';
 import { nudgeQueue } from './WorkQueueManager.js';
+// Note: closeMcpSessionsForAgent is loaded via dynamic import inside
+// execRestartJob below. A static import would pull McpServer (and its
+// transitive integrations.ts, which does promisify(execFile) at init) into
+// every test that imports anything in this file's module graph — and many
+// of those tests partially mock child_process, which trips on the eager
+// promisify. The lazy load keeps the new dependency scope-limited.
 import type {
   JobWatcher,
   WatcherAction,
@@ -140,22 +167,23 @@ export function execReadRecentOutput(watcher: JobWatcher, input: ReadRecentOutpu
 
 // ─── read_diff ───────────────────────────────────────────────────────────────
 
-export function execReadDiff(watcher: JobWatcher): ToolExecResult {
+export async function execReadDiff(watcher: JobWatcher): Promise<ToolExecResult> {
   const agent = queries.getAgentById(watcher.agent_id);
   if (!agent || !agent.base_sha) return { ok: false, message: 'no base_sha recorded for this agent' };
   const job = queries.getJobById(agent.job_id);
   if (!job?.work_dir) return { ok: false, message: 'job has no work_dir' };
   try {
-    // Capped at 64KB for cost — watcher rarely needs the full diff.
-    const out = execFileSync('git', ['diff', '--no-color', agent.base_sha], {
+    // Async + bounded (64KB maxBuffer, 8s timeout). The sync version held
+    // Node's event loop for up to 8s on slow filesystems — every other
+    // socket emission and API response stalled while git walked the index.
+    const { stdout } = await execFileAsync('git', ['diff', '--no-color', agent.base_sha], {
       cwd: job.work_dir,
       encoding: 'utf8',
       timeout: 8000,
       maxBuffer: 64 * 1024,
-      stdio: ['ignore', 'pipe', 'pipe'],
     });
-    if (!out.trim()) return { ok: true, message: '(no diff vs base)' };
-    return { ok: true, message: out.length > 60_000 ? out.slice(0, 60_000) + '\n… (truncated)' : out };
+    if (!stdout.trim()) return { ok: true, message: '(no diff vs base)' };
+    return { ok: true, message: stdout.length > 60_000 ? stdout.slice(0, 60_000) + '\n… (truncated)' : stdout };
   } catch (err) {
     return { ok: false, message: `git diff failed: ${(err as Error).message}` };
   }
@@ -270,6 +298,19 @@ export function execRestartJob(watcher: JobWatcher, input: RestartJobInput): Too
     }
     // Best-effort kill the tmux session too
     try { execFileSync('tmux', ['kill-session', '-t', `orchestrator-${agent.id}`], { stdio: 'pipe' }); } catch { /* gone */ }
+
+    // Close any MCP transport bound to the killed agent so a slow-to-die
+    // zombie subprocess that survives SIGTERM can't keep firing tool calls
+    // into the now-requeued job. Fire-and-forget (and dynamically loaded
+    // to keep this file's module graph small — see import block above).
+    void (async () => {
+      try {
+        const { closeMcpSessionsForAgent } = await import('../mcp/McpServer.js');
+        await closeMcpSessionsForAgent(agent.id);
+      } catch (err) {
+        agentLogger(agent.id).debug({ err }, 'watcher: closeMcpSessionsForAgent failed');
+      }
+    })();
 
     // Atomic restart transition: the agent goes 'cancelled', the job's
     // description picks up the watcher's diagnosis, and the job status flips

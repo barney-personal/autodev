@@ -368,7 +368,7 @@ describe('watcherTools.execReadDiff', () => {
   it('returns ok=false when the agent has no base_sha recorded', async () => {
     const { execReadDiff } = await import('../server/orchestrator/watcherTools.js');
     const { watcher } = await makeWatcher();
-    const r = execReadDiff(watcher);
+    const r = await execReadDiff(watcher);
     expect(r.ok).toBe(false);
     expect(r.message).toContain('base_sha');
   });
@@ -379,9 +379,46 @@ describe('watcherTools.execReadDiff', () => {
     const { watcher } = await makeWatcher();
     // Add a base_sha, but the test job has work_dir=null by default.
     queries.updateAgent(watcher.agent_id, { base_sha: 'abc123' });
-    const r = execReadDiff(watcher);
+    const r = await execReadDiff(watcher);
     expect(r.ok).toBe(false);
     expect(r.message).toContain('work_dir');
+  });
+
+  it('returns the diff between base_sha and worktree HEAD on the happy path', async () => {
+    // Build a real, temporary git repo: one initial commit (becomes base_sha),
+    // then a working-tree edit that should surface in the diff.
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const os = await import('node:os');
+    const { execFileSync } = await vi.importActual<typeof import('child_process')>('child_process');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'watcher-diff-'));
+    try {
+      const gitOpts = { cwd: dir, stdio: 'pipe' as const, timeout: 10_000 };
+      execFileSync('git', ['init', '-q', '-b', 'main'], gitOpts);
+      execFileSync('git', ['config', 'user.email', 'test@example.com'], gitOpts);
+      execFileSync('git', ['config', 'user.name', 'Test'], gitOpts);
+      execFileSync('git', ['config', 'commit.gpgsign', 'false'], gitOpts);
+      fs.writeFileSync(path.join(dir, 'README.md'), 'initial content\n');
+      execFileSync('git', ['add', '.'], gitOpts);
+      execFileSync('git', ['commit', '-q', '-m', 'initial'], gitOpts);
+      const baseSha = execFileSync('git', ['rev-parse', 'HEAD'], { ...gitOpts, stdio: ['pipe', 'pipe', 'pipe'] }).toString().trim();
+      // Modify the working tree so there's something to diff.
+      fs.writeFileSync(path.join(dir, 'README.md'), 'initial content\nchanged line\n');
+
+      const queries = await import('../server/db/queries.js');
+      const { watcher, jobId } = await makeWatcher();
+      queries.updateAgent(watcher.agent_id, { base_sha: baseSha });
+      queries.updateJobWorkDir(jobId, dir);
+
+      const { execReadDiff } = await import('../server/orchestrator/watcherTools.js');
+      const r = await execReadDiff(watcher);
+      expect(r.ok).toBe(true);
+      // The diff must mention the modified file and show the added line.
+      expect(r.message).toContain('README.md');
+      expect(r.message).toContain('+changed line');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

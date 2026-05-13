@@ -224,22 +224,30 @@ describe('JobWatcherManager', () => {
   });
 
   it('rate-limits manual ticks per agent', async () => {
+    // try/finally ensures the env var is cleaned up even if an assertion
+    // throws — otherwise the cooldown leaks into subsequent tests in the
+    // same vitest worker and makes them flaky.
+    const prev = process.env.WATCHER_MANUAL_TICK_COOLDOWN_MS;
     process.env.WATCHER_MANUAL_TICK_COOLDOWN_MS = '500';
-    const mod = await import('../server/orchestrator/JobWatcherManager.js');
-    const agentId = await makeRunningAgent();
-    mod.onAgentStarted(agentId);
-    await new Promise(r => setTimeout(r, 30));
+    try {
+      const mod = await import('../server/orchestrator/JobWatcherManager.js');
+      const agentId = await makeRunningAgent();
+      mod.onAgentStarted(agentId);
+      await new Promise(r => setTimeout(r, 30));
 
-    const first = mod.requestTickNow(agentId);
-    expect(first).toEqual({ ok: true });
+      const first = mod.requestTickNow(agentId);
+      expect(first).toEqual({ ok: true });
 
-    const second = mod.requestTickNow(agentId);
-    expect(second.ok).toBe(false);
-    if (!second.ok) {
-      expect(second.reason).toBe('cooldown');
-      expect(second.retryAfterMs).toBeGreaterThan(0);
+      const second = mod.requestTickNow(agentId);
+      expect(second.ok).toBe(false);
+      if (!second.ok) {
+        expect(second.reason).toBe('cooldown');
+        expect(second.retryAfterMs).toBeGreaterThan(0);
+      }
+    } finally {
+      if (prev === undefined) delete process.env.WATCHER_MANUAL_TICK_COOLDOWN_MS;
+      else process.env.WATCHER_MANUAL_TICK_COOLDOWN_MS = prev;
     }
-    delete process.env.WATCHER_MANUAL_TICK_COOLDOWN_MS;
   });
 
   it('startWatcherForAgent refuses to create a session without ANTHROPIC_API_KEY', async () => {

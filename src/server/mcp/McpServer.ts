@@ -70,6 +70,25 @@ export async function closeAllMcpSessions(): Promise<void> {
   disconnectedAgents.clear();
 }
 
+/**
+ * Close every MCP transport bound to a single agent. Used when the
+ * orchestrator force-kills an agent (e.g. watcher restart): a zombie
+ * subprocess that survives SIGTERM could otherwise keep firing tool calls
+ * into a now-requeued job and write spurious DB state. Best-effort —
+ * already-closed transports are silently ignored.
+ */
+export async function closeMcpSessionsForAgent(agentId: string): Promise<void> {
+  const transportMap = agentTransports.get(agentId);
+  if (!transportMap) return;
+  const promises: Promise<void>[] = [];
+  for (const [, transport] of transportMap) {
+    promises.push(transport.close().catch(() => {}));
+  }
+  await Promise.all(promises);
+  agentTransports.delete(agentId);
+  disconnectedAgents.delete(agentId);
+}
+
 function makeOnClose(agentId: string, transportMap: Map<string, StreamableHTTPServerTransport>, transport: { sessionId?: string }) {
   return () => {
     const sid = transport.sessionId;
