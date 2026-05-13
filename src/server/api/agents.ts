@@ -370,7 +370,16 @@ router.post('/:id/watcher/tick', (req, res) => {
   if (result.reason === 'cooldown') {
     // Each tick is an Opus 4.7 call; the cooldown prevents accidental spam.
     res.setHeader('Retry-After', Math.ceil((result.retryAfterMs ?? 1000) / 1000));
-    res.status(429).json({ ok: false, error: 'tick cooldown active', retry_after_ms: result.retryAfterMs });
+    // The cooldown is tracked in-memory only (_lastManualTickAt) and
+    // therefore resets when the orchestrator process restarts. Acceptable
+    // for the local-only model documented in CLAUDE.md; flag it in the
+    // response so operators don't assume the cooldown is persistent.
+    res.status(429).json({
+      ok: false,
+      error: 'tick cooldown active',
+      retry_after_ms: result.retryAfterMs,
+      note: 'cooldown is in-memory only; resets on server restart',
+    });
     return;
   }
   res.status(400).json({ ok: false, error: result.reason });

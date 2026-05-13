@@ -174,9 +174,24 @@ export function execReadRecentOutput(watcher: JobWatcher, input: ReadRecentOutpu
   // the agent-sourced content is structurally fenced — the model cannot
   // mistake an injected "WATCHER INSTRUCTION:" line inside the output for
   // a directive from this prompt.
-  const body = lines.join('\n') || '(no output yet)';
+  //
+  // Per-row truncation (text/inp/result/aggregated_output capped to 200–600
+  // chars above) bounds individual lines, but with `limit=200` the aggregate
+  // could still reach hundreds of KB and waste a chunk of the next API
+  // call's token budget on a tool-result the watcher rarely needs in full.
+  // Cap the joined body at WATCHER_READ_RECENT_OUTPUT_CAP chars overall.
+  let body = lines.join('\n') || '(no output yet)';
+  if (body.length > WATCHER_READ_RECENT_OUTPUT_CAP) {
+    body = body.slice(0, WATCHER_READ_RECENT_OUTPUT_CAP - 1) + '\n… (truncated; raise `limit` only if you actually need older rows)';
+  }
   return { ok: true, message: wrapAgentOutput(body) };
 }
+
+/** Aggregate cap on the joined output of read_recent_output. Per-row
+ *  truncation already happens above; this is the safety ceiling for the
+ *  combined response, so a `limit=200` call can't generate hundreds of KB
+ *  that the next API request would have to pay tokens to ingest. */
+const WATCHER_READ_RECENT_OUTPUT_CAP = 32_000;
 
 // ─── read_diff ───────────────────────────────────────────────────────────────
 
@@ -347,9 +362,36 @@ export function execRestartJob(watcher: JobWatcher, input: RestartJobInput): Too
   let txCommitted = false;
 
   try {
-    // Best-effort kill — the watcher's role is to mark cancelled + requeue.
-    // If the OS rejects the signal (process gone, permission, race) we still
-    // proceed with the DB transition so the agent isn't stuck "running".
+    // Atomic restart transition FIRST, then the (best-effort) kill. The
+    // previous order (kill, then transact) had a real failure mode: if the
+    // transaction throws after the process is already dead, the job stays
+    // in 'running' but no agent is alive — the StuckJobWatchdog eventually
+    // recovers it, but the window is wide and confusing.
+    //
+    // The new order means a transaction failure leaves DB AND process
+    // state untouched, so the next watcher trigger can retry cleanly. A
+    // post-commit kill failure leaves the DB correctly transitioned
+    // (agent cancelled, job queued) with a possibly-still-alive process
+    // — but the kill is already best-effort everywhere (cancel endpoint,
+    // graceful kill) and the tmux session teardown + MCP transport close
+    // typically dispatch the process anyway. Worst case: an orphan that
+    // gets reaped on next cleanupStaleTmuxSessions / process exit.
+    const job = queries.getJobById(agent.job_id);
+    const annotated = job ? appendWatcherDiagnosis(job.description, reason, input.diagnosis) : null;
+    withTransaction(() => {
+      queries.updateAgent(agent.id, { status: 'cancelled', finished_at: Date.now() });
+      if (job && annotated && annotated !== job.description) {
+        queries.updateJobDescription(job.id, annotated);
+      }
+      if (job) {
+        queries.updateJobStatus(job.id, 'queued');
+      }
+    });
+    txCommitted = true;
+
+    // Best-effort kill — the DB now says the agent is cancelled, so even
+    // if the kill fails the job will be re-dispatched and any zombie
+    // subprocess is functionally orphaned.
     //
     // We probe with `process.kill(pid, 0)` first (no-op signal that just
     // tests existence). If that throws ESRCH the original process is gone
@@ -357,7 +399,6 @@ export function execRestartJob(watcher: JobWatcher, input: RestartJobInput): Too
     // signalling a recycled PID that happens to belong to an unrelated
     // process group. A microsecond race still exists between probe and
     // SIGTERM, so this is reducing the risk window, not eliminating it.
-    // (See AgentRunner — the cancel endpoint has the same residual risk.)
     //
     // Hard guard: agent.pid must be a positive integer. The DB column is
     // INTEGER, AgentRunner only writes child.pid (always > 0 for spawned
@@ -394,24 +435,6 @@ export function execRestartJob(watcher: JobWatcher, input: RestartJobInput): Too
         agentLogger(agent.id).debug({ err }, 'watcher: closeMcpSessionsForAgent failed');
       }
     })();
-
-    // Atomic restart transition: the agent goes 'cancelled', the job's
-    // description picks up the watcher's diagnosis, and the job status flips
-    // back to 'queued' for re-dispatch. Wrapped in withTransaction so a
-    // mid-sequence failure can't leave us with the agent cancelled but the
-    // job still 'running' (the agent would never be re-dispatched).
-    const job = queries.getJobById(agent.job_id);
-    const annotated = job ? appendWatcherDiagnosis(job.description, reason, input.diagnosis) : null;
-    withTransaction(() => {
-      queries.updateAgent(agent.id, { status: 'cancelled', finished_at: Date.now() });
-      if (job && annotated && annotated !== job.description) {
-        queries.updateJobDescription(job.id, annotated);
-      }
-      if (job) {
-        queries.updateJobStatus(job.id, 'queued');
-      }
-    });
-    txCommitted = true;
 
     // Post-transaction side-effects. Each is wrapped individually so an
     // emit failure doesn't poison the lock release, etc. The restart is
@@ -529,9 +552,16 @@ function capUntrustedText(s: string, max: number): string {
 //
 //   - C0 (\x00–\x1F) except common whitespace (\x09 tab, \x0A LF, \x0D CR)
 //   - C1 (\x7F DEL, \x80–\x9F)
+//   - Bidi-mark singletons:
+//       U+061C Arabic Letter Mark (ALM)
+//       U+200E Left-to-Right Mark (LRM)
+//       U+200F Right-to-Left Mark (RLM)
+//     These influence rendering direction without changing visible content
+//     and complete the bidi family alongside the override range below.
 //   - Unicode bidirectional overrides (U+202A–U+202E, U+2066–U+2069) —
 //     these reorder text in terminals/editors that honour bidi, letting an
-//     attacker make pasted strings render very differently from their bytes.
+//     attacker make pasted strings render very differently from their bytes
+//     (CVE-2021-42574 family).
 //   - Unicode line / paragraph separators (U+2028, U+2029) — these slip
 //     past most ASCII-newline-aware truncation/escaping and can split a
 //     "single-line" headline into multiple visual lines in renderers that
@@ -547,6 +577,8 @@ const CONTROL_CHAR_REGEX = (() => {
       cc(0x0B) + cc(0x0C) +
       cc(0x0E) + '-' + cc(0x1F) +
       cc(0x7F) + '-' + cc(0x9F) +
+      cc(0x061C) +
+      cc(0x200E) + cc(0x200F) +
       cc(0x2028) + cc(0x2029) +
       cc(0x202A) + '-' + cc(0x202E) +
       cc(0x2066) + '-' + cc(0x2069) +

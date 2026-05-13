@@ -599,6 +599,67 @@ describe('watcherTools.execRestartJob — diagnosis safety', () => {
     expect(job.description).toContain('clean text');
     expect(job.description).toContain('BELL');
   });
+
+  it('rolls back cleanly when withTransaction throws (txCommitted=false path)', async () => {
+    // Regression for the kill-before-transaction ordering bug: the kill +
+    // tmux teardown + MCP transport close now happen AFTER withTransaction
+    // commits, so a transaction failure must leave DB AND process state
+    // untouched and let the next watcher trigger retry cleanly.
+    //
+    // We simulate a DB layer failure by mocking withTransaction to throw.
+    // Expected post-conditions:
+    //   - action.outcome === 'failed' (the catch path executed)
+    //   - cancelledAgents no longer contains the agent (catch path deleted it)
+    //   - agent.status remains 'running' (transaction never committed)
+    //   - job.status remains 'running' (transaction never committed)
+    //   - process.kill was NOT called with SIGTERM (kill is after the commit)
+    const { execRestartJob } = await import('../server/orchestrator/watcherTools.js');
+    const { cancelledAgents } = await import('../server/orchestrator/AgentConfig.js');
+    const queries = await import('../server/db/queries.js');
+    const database = await import('../server/db/database.js');
+    const { watcher, agentId, jobId } = await makeWatcher();
+
+    // Sanity-check pre-conditions.
+    expect(queries.getAgentById(agentId)?.status).toBe('running');
+    expect(queries.getJobById(jobId)?.status).toBe('running');
+
+    const txSpy = vi.spyOn(database, 'withTransaction').mockImplementation(() => {
+      throw new Error('simulated DB failure');
+    });
+    const killSpy = vi.spyOn(process, 'kill');
+
+    try {
+      const r = execRestartJob(watcher, { reason: 'looping', diagnosis: 'should not commit' });
+
+      // Tool result reports failure.
+      expect(r.ok).toBe(false);
+      expect(r.outcome).toBe('failed');
+      expect(r.message).toContain('simulated DB failure');
+
+      // DB state is untouched — agent still running, job still running.
+      expect(queries.getAgentById(agentId)?.status).toBe('running');
+      expect(queries.getJobById(jobId)?.status).toBe('running');
+
+      // cancelledAgents was added pre-try, but the catch path (txCommitted=false)
+      // must have removed it — otherwise handleAgentExit on the (still-alive)
+      // process would misroute when it eventually finishes.
+      expect(cancelledAgents.has(agentId)).toBe(false);
+
+      // The action row records the failure with the simulated error.
+      const action = queries.listActionsForAgent(agentId).find(a => a.type === 'restart')!;
+      expect(action).toBeTruthy();
+      expect(action.outcome).toBe('failed');
+      expect(action.outcome_detail ?? '').toContain('simulated DB failure');
+
+      // The kill / SIGTERM is supposed to run AFTER the commit succeeds, so
+      // a transaction-throw path must never have signalled the process.
+      const sigtermCalls = killSpy.mock.calls.filter(args => args[1] === 'SIGTERM');
+      expect(sigtermCalls.length).toBe(0);
+    } finally {
+      txSpy.mockRestore();
+      killSpy.mockRestore();
+    }
+  });
 });
 
 describe('watcherTools.sanitiseHeadline — control chars', () => {
