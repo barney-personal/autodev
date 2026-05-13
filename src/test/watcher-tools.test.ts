@@ -344,6 +344,51 @@ describe('watcherTools.execRestartJob — diagnosis safety', () => {
     expect(job.description).toContain('> ');
   });
 
+  it('completes the DB transition even when agent.pid is null (nothing to kill)', async () => {
+    // Edge case: pid wasn't recorded (e.g. crash mid-spawn). The kill block
+    // must be skipped cleanly and the requeue still happen. Previously the
+    // guard was `if (agent.pid)` which is correct for null, but worth
+    // pinning down with a test so a future refactor can't regress it.
+    const { execRestartJob } = await import('../server/orchestrator/watcherTools.js');
+    const queries = await import('../server/db/queries.js');
+    const { watcher, agentId, jobId } = await makeWatcher();
+    queries.updateAgent(agentId, { pid: null });
+
+    const killSpy = vi.spyOn(process, 'kill');
+    try {
+      const r = execRestartJob(watcher, { reason: 'pid missing, requeue anyway' });
+      expect(r.ok).toBe(true);
+      expect(r.outcome).toBe('applied');
+      // No kill attempts at all — neither the existence probe nor SIGTERM.
+      expect(killSpy).not.toHaveBeenCalled();
+      // The DB transition still happened.
+      expect(queries.getAgentById(agentId)?.status).toBe('cancelled');
+      expect(queries.getJobById(jobId)?.status).toBe('queued');
+    } finally {
+      killSpy.mockRestore();
+    }
+  });
+
+  it('refuses to invoke process.kill on a zero or negative recorded pid', async () => {
+    // Defensive: agent.pid is INTEGER in the DB. AgentRunner only writes
+    // child.pid (always > 0 for spawned processes), but `process.kill(-0, …)`
+    // would broadcast to every process in our own group. The `pid > 0`
+    // guard makes that impossible regardless of how the value got there.
+    const { execRestartJob } = await import('../server/orchestrator/watcherTools.js');
+    const queries = await import('../server/db/queries.js');
+    const { watcher, agentId } = await makeWatcher();
+    queries.updateAgent(agentId, { pid: 0 });
+
+    const killSpy = vi.spyOn(process, 'kill');
+    try {
+      const r = execRestartJob(watcher, { reason: 'anomalous pid' });
+      expect(r.ok).toBe(true);
+      expect(killSpy).not.toHaveBeenCalled();
+    } finally {
+      killSpy.mockRestore();
+    }
+  });
+
   it('probes pid existence before SIGTERM so a recycled PID does not get signalled', async () => {
     // The agent.pid in the DB is captured at spawn time. If the original
     // process died and the OS recycled that PID to something unrelated,

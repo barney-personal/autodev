@@ -54,6 +54,22 @@ describe('stripControlChars', () => {
     expect(stripControlChars('héllo — 🚀 — café')).toBe('héllo — 🚀 — café');
   });
 
+  it('strips Unicode line / paragraph separators (U+2028, U+2029)', () => {
+    // These are valid Unicode but invisible to most ASCII-only tooling.
+    // They can split a "single-line" headline into multiple visual lines
+    // in renderers that honour them (browsers, some terminals) and they
+    // historically broke JSON.stringify in pre-ES2019 consumers.
+    const LS = String.fromCharCode(0x2028);
+    const PS = String.fromCharCode(0x2029);
+    const dirty = `headline${LS}second line${PS}third line`;
+    const clean = stripControlChars(dirty);
+    expect(clean).not.toContain(LS);
+    expect(clean).not.toContain(PS);
+    expect(clean).toContain('headline');
+    expect(clean).toContain('second line');
+    expect(clean).toContain('third line');
+  });
+
   it('strips Unicode bidirectional override characters', () => {
     // These reorder text in terminals that honour bidi — a known display
     // spoofing vector (CVE-2021-42574 family). Strip them out of any

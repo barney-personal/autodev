@@ -345,7 +345,14 @@ export function execRestartJob(watcher: JobWatcher, input: RestartJobInput): Too
     // process group. A microsecond race still exists between probe and
     // SIGTERM, so this is reducing the risk window, not eliminating it.
     // (See AgentRunner — the cancel endpoint has the same residual risk.)
-    if (agent.pid) {
+    //
+    // Hard guard: agent.pid must be a positive integer. The DB column is
+    // INTEGER, AgentRunner only writes child.pid (always > 0 for spawned
+    // processes), but if a data anomaly ever stored 0 or a negative value,
+    // `process.kill(-0, …)` would broadcast to every process in our own
+    // process group. `> 0` makes that impossible regardless of how the
+    // value got there.
+    if (agent.pid != null && agent.pid > 0) {
       let stillAlive = false;
       try { process.kill(agent.pid, 0); stillAlive = true; }
       catch { /* ESRCH or EPERM — treat as gone for our purposes */ }
@@ -502,6 +509,10 @@ function capUntrustedText(s: string, max: number): string {
 //   - Unicode bidirectional overrides (U+202A–U+202E, U+2066–U+2069) —
 //     these reorder text in terminals/editors that honour bidi, letting an
 //     attacker make pasted strings render very differently from their bytes.
+//   - Unicode line / paragraph separators (U+2028, U+2029) — these slip
+//     past most ASCII-newline-aware truncation/escaping and can split a
+//     "single-line" headline into multiple visual lines in renderers that
+//     honour them (or break JSON.stringify in pre-ES2019 consumers).
 //
 // Built via String.fromCharCode so the source stays free of literal control
 // bytes (which Edit tooling tends to mangle).
@@ -513,6 +524,7 @@ const CONTROL_CHAR_REGEX = (() => {
       cc(0x0B) + cc(0x0C) +
       cc(0x0E) + '-' + cc(0x1F) +
       cc(0x7F) + '-' + cc(0x9F) +
+      cc(0x2028) + cc(0x2029) +
       cc(0x202A) + '-' + cc(0x202E) +
       cc(0x2066) + '-' + cc(0x2069) +
     ']',

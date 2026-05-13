@@ -158,6 +158,25 @@ describe('JobWatcherManager', () => {
     expect(w?.status).toBe('stopped');
   });
 
+  it('onWarning for an agent with no active session is a no-op (no throw, no tick)', async () => {
+    // The HealthMonitor emits warnings for any running agent — including
+    // ones the watcher isn't attached to (interactive, watch=0, etc.).
+    // The early `if (!entry) return` must hold so a stray warning can't
+    // crash the manager or queue a tick for a session that doesn't exist.
+    const mod = await import('../server/orchestrator/JobWatcherManager.js');
+    ticks.length = 0;
+    expect(() => mod.onWarning({
+      id: 'w1',
+      agent_id: 'no-such-agent',
+      type: 'stalled',
+      message: 'spurious',
+      dismissed: 0,
+      created_at: Date.now(),
+    })).not.toThrow();
+    await new Promise(r => setTimeout(r, 30));
+    expect(ticks).toHaveLength(0);
+  });
+
   it('requestTickNow returns no_session for an unknown agent', async () => {
     const mod = await import('../server/orchestrator/JobWatcherManager.js');
     const result = mod.requestTickNow('unknown-agent');
