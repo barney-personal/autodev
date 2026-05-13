@@ -300,6 +300,25 @@ export class WatcherSession {
         this.history.push({ role: 'user', content: toolResults });
       }
 
+      // Post-loop invariant: history must end on an assistant turn so the
+      // next tick's user(tick_prompt) doesn't sit next to another user turn
+      // and trip Anthropic's "roles must alternate" guard with a 422.
+      //
+      // The natural exit (no tool_use / end_turn) leaves history ending in
+      // assistant — fine. But hitting MAX_TOOL_ROUNDS while the model still
+      // wants to call tools leaves history ending in user(tool_results),
+      // with the implied "final answer" assistant turn never produced. We
+      // synthesize one here so alternation holds for the next tick, and
+      // tell the watcher (via the synthetic content) why the loop stopped
+      // so it doesn't keep trying the same approach.
+      const lastTurn = this.history[this.history.length - 1];
+      if (lastTurn && lastTurn.role === 'user' && this.history.length > rollbackLen + 1) {
+        this.history.push({
+          role: 'assistant',
+          content: [{ type: 'text', text: `[Tool-round cap (${MAX_TOOL_ROUNDS}) reached this tick. Stopping tool calls; will re-evaluate on the next trigger.]` }],
+        });
+      }
+
       // Cost: cache reads are ~10% and cache writes ~125% of base input rate.
       // Lumping them into a single "input" tally overstates cache-heavy ticks
       // (the watcher's system prompt is cache_control: ephemeral, so most

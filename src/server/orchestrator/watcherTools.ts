@@ -262,13 +262,17 @@ export function execNudgeJob(watcher: JobWatcher, input: NudgeJobInput): ToolExe
   }
 
   queries.updateActionOutcome(action.id, 'applied', 'queued for delivery');
-  emitWatcherUpdate(watcher.id);
 
   // Add a synthetic commentary entry so the dashboard records the nudge in
   // the stream. Default severity is 'info' — a routine course-correction
   // shouldn't drive the watcher badge into 'concern' (yellow). The watcher
   // can post a separate post_commentary at a stronger severity if it
   // genuinely thinks the agent is in trouble.
+  //
+  // Note: execPostCommentary already emits a watcher-session update at the
+  // end (via emitWatcherUpdate), so we don't fire one here too — two emits
+  // per nudge with no state change between them was a wasted DB read + socket
+  // round-trip.
   execPostCommentary(watcher, {
     severity: 'info',
     headline: `Nudged agent: ${truncate(message, 80)}`,

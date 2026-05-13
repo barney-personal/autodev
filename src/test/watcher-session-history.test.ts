@@ -165,6 +165,59 @@ describe('WatcherSession — error rollback', () => {
     expect((sessionWithInternals.history[1] as { role: string }).role).toBe('assistant');
   });
 
+  it('leaves history ending in assistant when MAX_TOOL_ROUNDS is exhausted', async () => {
+    // Regression: previously hitting MAX_TOOL_ROUNDS while the model still
+    // wanted to call tools left history ending in user(tool_results). The
+    // next tick would push user(tick_prompt) onto that, producing two
+    // consecutive user-role messages — Anthropic rejects with 422.
+    //
+    // The fix synthesises a final assistant text turn after the loop so
+    // alternation is preserved across ticks.
+    //
+    // We force the path by mocking every tool round to return tool_use
+    // blocks (no end_turn), so the loop runs the full MAX_TOOL_ROUNDS
+    // iterations and exits via the round cap rather than via end_turn.
+    for (let i = 0; i < 6; i++) {
+      mockCreate.mockResolvedValueOnce({
+        content: [{ type: 'tool_use', id: `tu${i}`, name: 'post_commentary', input: { severity: 'info', headline: `round ${i}` } }],
+        usage: { input_tokens: 4, output_tokens: 2, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+        stop_reason: 'tool_use',
+      });
+    }
+
+    const { WatcherSession } = await import('../server/orchestrator/WatcherSession.js');
+    const queries = await import('../server/db/queries.js');
+    const job = await insertTestJob({ status: 'running' });
+    const agentId = randomUUID();
+    queries.insertAgent({ id: agentId, job_id: job.id, status: 'running', started_at: Date.now() });
+    const watcher = queries.insertWatcher({ id: randomUUID(), agent_id: agentId, job_id: job.id, model: 'claude-opus-4-7' });
+
+    const session = new WatcherSession(watcher.id, agentId);
+    const internals = session as unknown as { history: Array<{ role: 'user' | 'assistant'; content: unknown }> };
+    await session.requestTick('initial');
+
+    // History must end on an assistant turn so a subsequent user(tick_prompt)
+    // is alternation-valid.
+    expect(internals.history.length).toBeGreaterThan(0);
+    const last = internals.history[internals.history.length - 1];
+    expect(last.role).toBe('assistant');
+
+    // The synthetic note about the round cap should be present in that final
+    // assistant turn so the model knows why the loop stopped.
+    const lastContent = Array.isArray(last.content) ? last.content : [{ type: 'text', text: String(last.content) }];
+    const text = lastContent
+      .filter((b: Record<string, unknown>) => b.type === 'text')
+      .map((b: { text?: string }) => b.text ?? '')
+      .join('');
+    expect(text).toContain('Tool-round cap');
+
+    // Strict alternation check across the whole history — no two adjacent
+    // entries share a role.
+    for (let i = 1; i < internals.history.length; i++) {
+      expect(internals.history[i].role).not.toBe(internals.history[i - 1].role);
+    }
+  });
+
   it('advances last_seq even when the tick errors out, so retries do not replay events', async () => {
     // Regression: previously last_seq stayed at its old value on the error
     // path, causing every retry to re-summarise the events that errored out.
