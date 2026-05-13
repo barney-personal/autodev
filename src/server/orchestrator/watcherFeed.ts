@@ -22,7 +22,7 @@ const MAX_TOOL_INPUT_PREVIEW = 200;
 const MAX_TEXT_PREVIEW = 320;
 const MAX_DIFF_STAT_LINES = 40;
 const MAX_RECENT_TEXT_BLOCKS = 6;
-const MAX_FEED_TEXT_BYTES = 12_000;
+const MAX_FEED_TEXT_CHARS = 12_000;
 
 export interface WatcherTick {
   /** Why this tick fired — surfaced to the watcher so it can prioritise. */
@@ -216,7 +216,7 @@ export function buildWatcherTick(input: BuildTickInput): WatcherTick | null {
     job: viewJob(job),
     agent: viewAgent(agent, pendingQ?.question ?? null, activeLocks, elapsed_ms),
     events,
-    assistant_text: capBytes(textPieces.join('\n\n'), Math.floor(MAX_FEED_TEXT_BYTES / 2)),
+    assistant_text: capChars(textPieces.join('\n\n'), Math.floor(MAX_FEED_TEXT_CHARS / 2)),
     warnings,
     diff_stat,
     recent_commentary: recent,
@@ -228,7 +228,7 @@ export function buildWatcherTick(input: BuildTickInput): WatcherTick | null {
 
 /**
  * Render a tick as a compact human-readable string that the watcher receives
- * as the user message of its tick. Bounded by MAX_FEED_TEXT_BYTES.
+ * as the user message of its tick. Bounded by MAX_FEED_TEXT_CHARS.
  */
 export function renderWatcherTick(tick: WatcherTick): string {
   const lines: string[] = [];
@@ -288,7 +288,7 @@ export function renderWatcherTick(tick: WatcherTick): string {
     lines.push('');
   }
 
-  return capBytes(lines.join('\n'), MAX_FEED_TEXT_BYTES);
+  return capChars(lines.join('\n'), MAX_FEED_TEXT_CHARS);
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -297,7 +297,7 @@ function viewJob(job: Job): WatcherJobView {
   return {
     id: job.id,
     title: job.title,
-    description: capBytes(job.description ?? '', 1500),
+    description: capChars(job.description ?? '', 1500),
     work_dir: job.work_dir,
     model: job.model,
     is_interactive: !!job.is_interactive,
@@ -376,20 +376,20 @@ function summarizeEvent(row: AgentOutput): WatcherEventSummary | null {
 
   if (type === 'error') {
     const err = ev.error as { message?: string } | undefined;
-    return { seq: row.seq, kind: 'error', detail: capBytes(String(err?.message ?? ev.message ?? 'error'), 300), at: row.created_at };
+    return { seq: row.seq, kind: 'error', detail: capChars(String(err?.message ?? ev.message ?? 'error'), 300), at: row.created_at };
   }
 
   if (type === 'turn.completed') return { seq: row.seq, kind: 'result', detail: 'codex turn complete', at: row.created_at };
   if (type === 'turn.failed') {
     const err = ev.error as { message?: string } | undefined;
-    return { seq: row.seq, kind: 'error', detail: capBytes(String(err?.message ?? 'codex turn failed'), 300), at: row.created_at };
+    return { seq: row.seq, kind: 'error', detail: capChars(String(err?.message ?? 'codex turn failed'), 300), at: row.created_at };
   }
 
   if (type === 'item.completed') {
     const item = ev.item as { type?: string; command?: string; text?: string; exit_code?: number } | undefined;
     if (!item) return null;
     if (item.type === 'command_execution') {
-      const cmd = capBytes(String(item.command ?? ''), MAX_TOOL_INPUT_PREVIEW);
+      const cmd = capChars(String(item.command ?? ''), MAX_TOOL_INPUT_PREVIEW);
       const exit = item.exit_code != null ? ` exit=${item.exit_code}` : '';
       return { seq: row.seq, kind: 'tool', detail: `Bash(${cmd})${exit}`, at: row.created_at };
     }
@@ -409,13 +409,13 @@ function extractAssistantText(row: AgentOutput): string | null {
         .filter((b: Record<string, unknown>) => b.type === 'text' && typeof b.text === 'string')
         .map((b: { text: string }) => b.text)
         .join('\n');
-      if (text.trim()) return capBytes(text, MAX_TEXT_PREVIEW);
+      if (text.trim()) return capChars(text, MAX_TEXT_PREVIEW);
     }
     if (ev.type === 'item.completed' && ev.item?.type === 'agent_message' && typeof ev.item.text === 'string') {
-      return capBytes(ev.item.text, MAX_TEXT_PREVIEW);
+      return capChars(ev.item.text, MAX_TEXT_PREVIEW);
     }
     if (ev.type === 'result' && typeof ev.result === 'string' && ev.result.trim()) {
-      return capBytes(`(result) ${ev.result}`, MAX_TEXT_PREVIEW);
+      return capChars(`(result) ${ev.result}`, MAX_TEXT_PREVIEW);
     }
   } catch { /* skip */ }
   return null;
@@ -439,7 +439,15 @@ function safeDiffStat(workDir: string, baseSha: string): string | null {
   }
 }
 
-export function capBytes(s: string, max: number): string {
+/**
+ * Truncate `s` to at most `max` UTF-16 code units (NOT bytes). For ASCII-
+ * dominant content (commit messages, file paths, command output) code units
+ * are ~1:1 with bytes, which is fine for the watcher's tick budget. For
+ * multi-byte content (CJK, emoji-heavy log lines) the actual byte size can
+ * be larger, but the API token limit is what really constrains us — this
+ * helper just keeps the rendered tick payload roughly bounded.
+ */
+export function capChars(s: string, max: number): string {
   if (s.length <= max) return s;
   return s.slice(0, max - 1) + '…';
 }

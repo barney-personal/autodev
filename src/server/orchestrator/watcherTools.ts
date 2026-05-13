@@ -485,6 +485,11 @@ function sanitiseHeadline(s: string | undefined): string {
   if (!s) return '';
   // Strip control characters first (null bytes / DEL would otherwise corrupt
   // log output and terminal renderers), then collapse whitespace and cap.
+  //
+  // The 240 hard-cap is intentionally lenient — the watcher system prompt
+  // *guides* the model to keep headlines ≤ 80 chars, but a hard limit at 80
+  // would mid-truncate the occasional informative long headline. 240 is a
+  // safety ceiling against unbounded LLM output, not the target.
   return stripControlChars(s).replace(/\s+/g, ' ').trim().slice(0, 240);
 }
 

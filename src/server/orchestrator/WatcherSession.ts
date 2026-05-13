@@ -322,10 +322,19 @@ export class WatcherSession {
       this.log.error({ err }, 'tick failed');
       captureWithContext(err, { agent_id: this.agentId, watcher_id: this.watcherId, component: 'WatcherSession' });
       // Same stop-race guard on the error path — don't flip a stopped watcher
-      // to 'error'.
+      // to 'error'. Also advance last_seq even on failure: tick.high_water_seq
+      // already reflects the absolute latest DB seq at tick-build time, and
+      // leaving it stale would cause every retry to re-summarise the same
+      // events that just errored out (an unrecoverable agent in a long-running
+      // job could otherwise produce a burst of duplicate commentary on the
+      // first successful retry). Same policy as the heartbeat-skip path above.
       const current = queries.getWatcherById(this.watcherId);
       if (!this._stopped && current && !isStoppedWatcherStatus(current.status)) {
-        queries.updateWatcher(this.watcherId, { status: 'error', error_message: errMsg.slice(0, 500) });
+        queries.updateWatcher(this.watcherId, {
+          status: 'error',
+          error_message: errMsg.slice(0, 500),
+          last_seq: tick.high_water_seq,
+        });
         const updated = queries.getWatcherById(this.watcherId);
         if (updated) socket.emitWatcherSessionUpdate(updated);
       }

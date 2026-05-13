@@ -271,6 +271,33 @@ describe('watcherTools.execRestartJob — diagnosis safety', () => {
     expect(job.description).toContain('> ');
   });
 
+  it('accumulates multiple restart notes under a single header', async () => {
+    const { execRestartJob } = await import('../server/orchestrator/watcherTools.js');
+    const queries = await import('../server/db/queries.js');
+    const { watcher, jobId } = await makeWatcher();
+
+    // First restart
+    const r1 = execRestartJob(watcher, { reason: 'first issue', diagnosis: 'first details' });
+    expect(r1.ok).toBe(true);
+
+    // Reset agent + watcher state for the second restart (in production the
+    // requeued job would spawn a new agent — for this test we just flip the
+    // existing agent back to running so the watcher's same-agent restart
+    // counter logic exercises the second branch of appendWatcherDiagnosis).
+    queries.updateAgent(watcher.agent_id, { status: 'running', pid: -1 });
+
+    const r2 = execRestartJob(watcher, { reason: 'second issue', diagnosis: 'second details' });
+    expect(r2.ok).toBe(true);
+
+    const job = queries.getJobById(jobId)!;
+    const headerOccurrences = (job.description.match(/## Watcher restart notes/g) ?? []).length;
+    expect(headerOccurrences).toBe(1);  // single header, both notes underneath
+    expect(job.description).toContain('first issue');
+    expect(job.description).toContain('second issue');
+    expect(job.description).toContain('first details');
+    expect(job.description).toContain('second details');
+  });
+
   it('strips control characters from the diagnosis to prevent log/terminal corruption', async () => {
     const { execRestartJob } = await import('../server/orchestrator/watcherTools.js');
     const queries = await import('../server/db/queries.js');

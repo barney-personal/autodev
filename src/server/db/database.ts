@@ -715,6 +715,12 @@ function createWatcherTables(db: DatabaseSync): void {
   `);
   db.exec('CREATE INDEX IF NOT EXISTS idx_watcher_actions_agent ON watcher_actions(agent_id, created_at)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_watcher_actions_type ON watcher_actions(type, created_at)');
+  // Covers the hot cooldown / cap queries: countActionsForAgent and
+  // lastActionAtForAgent filter on (agent_id, type, outcome = 'applied'),
+  // fired on every nudge / restart / escalate attempt. Tables stay small
+  // (~tens of rows per agent lifetime) but the composite makes these
+  // covering lookups instead of agent-scan + filter.
+  db.exec('CREATE INDEX IF NOT EXISTS idx_watcher_actions_cooldown ON watcher_actions(agent_id, type, outcome, created_at)');
 }
 
 export function closeDb(): void {

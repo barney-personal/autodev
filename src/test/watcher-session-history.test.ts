@@ -165,6 +165,39 @@ describe('WatcherSession — error rollback', () => {
     expect((sessionWithInternals.history[1] as { role: string }).role).toBe('assistant');
   });
 
+  it('advances last_seq even when the tick errors out, so retries do not replay events', async () => {
+    // Regression: previously last_seq stayed at its old value on the error
+    // path, causing every retry to re-summarise the events that errored out.
+    // On a long-running agent with many events between ticks, the first
+    // successful retry after a transient API failure would produce a burst
+    // of duplicate commentary.
+    mockCreate.mockRejectedValueOnce(new Error('500 Internal Server Error'));
+
+    const { WatcherSession } = await import('../server/orchestrator/WatcherSession.js');
+    const queries = await import('../server/db/queries.js');
+    const job = await insertTestJob({ status: 'running' });
+    const agentId = randomUUID();
+    queries.insertAgent({ id: agentId, job_id: job.id, status: 'running', started_at: Date.now() });
+    const watcher = queries.insertWatcher({ id: randomUUID(), agent_id: agentId, job_id: job.id, model: 'claude-opus-4-7' });
+
+    // Insert several stream events so high_water_seq > -1.
+    for (let i = 0; i < 5; i++) {
+      queries.insertAgentOutput({
+        agent_id: agentId, seq: i, event_type: 'assistant',
+        content: JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Edit', input: {} }] } }),
+        created_at: Date.now(),
+      });
+    }
+
+    const session = new WatcherSession(watcher.id, agentId);
+    await session.requestTick('initial');
+
+    const w = queries.getWatcherById(watcher.id)!;
+    expect(w.status).toBe('error');
+    // last_seq should now reflect the latest DB seq (4), not the original -1.
+    expect(w.last_seq).toBe(4);
+  });
+
   it('does not flip a stopped watcher back to running after a slow in-flight tick', async () => {
     // The race: onAgentFinished marks the row 'stopped' while this tick is
     // still awaiting messages.create. Without the guard, the success path
