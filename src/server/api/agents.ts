@@ -327,7 +327,19 @@ router.get('/:id/watcher', (req, res) => {
 router.get('/:id/commentary', (req, res) => {
   const agent = queries.getAgentById(req.params.id);
   if (!agent) { res.status(404).json({ error: 'not found' }); return; }
-  const limit = req.query.limit ? Math.min(parseInt(req.query.limit as string, 10) || WATCHER_HYDRATE_LIMIT, 1000) : WATCHER_HYDRATE_LIMIT;
+  // Clamp the limit to [1, 1000]. Previously `parseInt('-1') || DEFAULT`
+  // returned -1 (truthy, not NaN) and `Math.min(-1, 1000) === -1` got
+  // passed to SQLite, which treats `LIMIT -1` as "no limit" — bypassing
+  // the row cap and letting a caller paginate the entire table in one
+  // request. NaN values still fall through to the default.
+  const raw = req.query.limit;
+  let limit = WATCHER_HYDRATE_LIMIT;
+  if (raw !== undefined) {
+    const parsed = parseInt(raw as string, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      limit = Math.min(parsed, 1000);
+    }
+  }
   res.json(queries.listCommentaryForAgent(req.params.id, limit));
 });
 
