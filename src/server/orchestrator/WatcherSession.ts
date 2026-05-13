@@ -69,7 +69,9 @@ const MAX_TOOL_ROUNDS = 4;
 // trimming. Anthropic requires strictly alternating user/assistant roles
 // (tool_result messages are 'user'-role under the hood), so this cap is in
 // raw messages — see trimHistory for the alternation guarantee.
-const MAX_HISTORY_TURNS = 12;
+// Exported so unit tests can exercise the boundary precisely instead of
+// hard-coding the threshold.
+export const MAX_HISTORY_TURNS = 12;
 const MAX_OUTPUT_TOKENS = 1500;
 
 const SYSTEM_PROMPT = `You are the LIVE WATCHER for a single autonomous coding agent in an orchestration system.

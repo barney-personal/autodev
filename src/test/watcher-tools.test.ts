@@ -63,6 +63,33 @@ describe('watcherTools.execPostCommentary', () => {
     expect(queries.listCommentaryForAgent(watcher.agent_id)).toHaveLength(1);
   });
 
+  it('strips control + bidi-override chars from detail and evidence', async () => {
+    const { execPostCommentary } = await import('../server/orchestrator/watcherTools.js');
+    const queries = await import('../server/db/queries.js');
+    const { watcher } = await makeWatcher();
+
+    const NUL = String.fromCharCode(0);
+    const ESC = String.fromCharCode(0x1B);
+    const RLO = String.fromCharCode(0x202E);
+
+    const r = execPostCommentary(watcher, {
+      severity: 'info',
+      headline: 'check',
+      detail: `dirty${NUL}detail${RLO}spoof`,
+      evidence: `dirty${ESC}[2Jevidence`,
+    });
+    expect(r.ok).toBe(true);
+
+    const stored = queries.listCommentaryForAgent(watcher.agent_id)[0];
+    // C0/C1 + bidi overrides must be gone from both fields.
+    const FORBIDDEN = /[\x00-\x08\x0E-\x1F\x7F-\x9F‪-‮⁦-⁩]/;
+    expect(stored.detail ?? '').not.toMatch(FORBIDDEN);
+    expect(stored.evidence ?? '').not.toMatch(FORBIDDEN);
+    // Surrounding text survives.
+    expect(stored.detail).toContain('dirty');
+    expect(stored.evidence).toContain('evidence');
+  });
+
   it('decays next_severity once a concern rolls off the sliding window', async () => {
     const { execPostCommentary } = await import('../server/orchestrator/watcherTools.js');
     const queries = await import('../server/db/queries.js');
@@ -324,6 +351,50 @@ describe('watcherTools.execRestartJob — diagnosis safety', () => {
     expect(job.description).toContain('second details');
   });
 
+  it('post-commit side-effect failure does NOT roll back the DB transition or mark the action failed', async () => {
+    // Regression: previously a throw from any sync side-effect after the
+    // withTransaction block fell into the catch block, which called
+    // cancelledAgents.delete and marked the action 'failed' even though
+    // the restart had already committed. The result was an inconsistent
+    // record: agent.status='cancelled', job.status='queued', but the
+    // watcher_actions row said the restart failed.
+    //
+    // We force a post-commit failure by mocking emitWatcherCommentaryNew
+    // (called from the trailing execPostCommentary) to throw — that
+    // happens after the withTransaction block AND after the wrapped
+    // safeRun side-effects, so it lands in the unwrapped catch path.
+    const { execRestartJob } = await import('../server/orchestrator/watcherTools.js');
+    const { cancelledAgents } = await import('../server/orchestrator/AgentConfig.js');
+    const queries = await import('../server/db/queries.js');
+    const socket = await import('../server/socket/SocketManager.js');
+    const { watcher, agentId, jobId } = await makeWatcher();
+
+    vi.mocked(socket.emitWatcherCommentaryNew).mockImplementationOnce(() => {
+      throw new Error('socket gone');
+    });
+
+    const r = execRestartJob(watcher, { reason: 'looping', diagnosis: 'foo' });
+    // The action is reported as applied — the restart actually happened.
+    expect(r.ok).toBe(true);
+    expect(r.outcome).toBe('applied');
+
+    // DB state must reflect the successful transition.
+    expect(queries.getAgentById(agentId)?.status).toBe('cancelled');
+    expect(queries.getJobById(jobId)?.status).toBe('queued');
+
+    // The cancellation guard stays in place — handleAgentExit must not
+    // think the agent is still legit.
+    expect(cancelledAgents.has(agentId)).toBe(true);
+
+    // The recorded action is 'applied' (with a warning detail), not 'failed'.
+    const action = queries.listActionsForAgent(agentId).find(a => a.type === 'restart')!;
+    expect(action.outcome).toBe('applied');
+    expect(action.outcome_detail ?? '').toContain('socket gone');
+
+    // Cleanup so subsequent tests don't see the lingering entry.
+    cancelledAgents.delete(agentId);
+  });
+
   it('strips control characters from the diagnosis to prevent log/terminal corruption', async () => {
     const { execRestartJob } = await import('../server/orchestrator/watcherTools.js');
     const queries = await import('../server/db/queries.js');
@@ -451,5 +522,34 @@ describe('watcherTools.execEscalateToUser', () => {
     const msgs = queries.getDiscussionMessages(queries.listDiscussions()[0].id);
     expect(msgs).toHaveLength(1);
     expect(msgs[0].content).toContain('auth refactor');
+  });
+
+  it('strips control + bidi-override chars from question and context before they reach the discussion thread', async () => {
+    // The escalation discussion is rendered in the dashboard's user inbox.
+    // A jailbroken agent that steers the watcher toward writing bidi
+    // overrides or ANSI escapes here could visually spoof the question
+    // the user sees. Same sanitisation pipeline as nudges / commentary.
+    const { execEscalateToUser } = await import('../server/orchestrator/watcherTools.js');
+    const queries = await import('../server/db/queries.js');
+    const { watcher } = await makeWatcher();
+
+    const NUL = String.fromCharCode(0);
+    const RLO = String.fromCharCode(0x202E);
+    const ESC = String.fromCharCode(0x1B);
+
+    const r = execEscalateToUser(watcher, {
+      question: `should we${NUL}abandon${RLO}reverse the auth refactor?`,
+      context: `tests${ESC}[2J still failing`,
+    });
+    expect(r.ok).toBe(true);
+
+    const FORBIDDEN = /[\x00-\x08\x0E-\x1F\x7F-\x9F‪-‮⁦-⁩]/;
+    const disc = queries.listDiscussions()[0];
+    expect(disc.topic).not.toMatch(FORBIDDEN);
+    expect(disc.context ?? '').not.toMatch(FORBIDDEN);
+    const msg = queries.getDiscussionMessages(disc.id)[0];
+    expect(msg.content).not.toMatch(FORBIDDEN);
+    // Plain-ASCII content survives.
+    expect(msg.content).toContain('auth refactor');
   });
 });

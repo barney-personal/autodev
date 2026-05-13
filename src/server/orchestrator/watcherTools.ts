@@ -105,14 +105,23 @@ export function execPostCommentary(watcher: JobWatcher, input: PostCommentaryInp
   const headline = sanitiseHeadline(input.headline);
   if (!headline) return { ok: false, message: 'headline is required and must be non-empty' };
 
+  // Detail and evidence are watcher-LLM authored. They render in the
+  // dashboard and can also feed back into agent-visible context, so run them
+  // through the same untrusted-text pipeline as headlines / nudges /
+  // diagnoses — strip C0/C1/bidi-override chars before capping length.
+  // Without this, a watcher steered by adversarial agent output could
+  // smuggle bidi overrides or ANSI escapes into the discussion stream.
+  const detail = input.detail ? capUntrustedText(input.detail, WATCHER_COMMENTARY_BODY_CAP) : null;
+  const evidence = input.evidence ? capUntrustedText(input.evidence, WATCHER_COMMENTARY_BODY_CAP) : null;
+
   const commentary: WatcherCommentary = queries.insertCommentary({
     id: randomUUID(),
     watcher_id: watcher.id,
     agent_id: watcher.agent_id,
     severity: input.severity ?? 'info',
     headline,
-    detail: input.detail?.slice(0, 4000) ?? null,
-    evidence: input.evidence?.slice(0, 4000) ?? null,
+    detail,
+    evidence,
   });
 
   // Compute next_severity from a sliding window of the most recent
@@ -251,6 +260,10 @@ export function execNudgeJob(watcher: JobWatcher, input: NudgeJobInput): ToolExe
 }
 
 function appendNudgeToNote(agentId: string, message: string): void {
+  // Assumes agentId is a UUID — guaranteed by AgentRunner's randomUUID()
+  // dispatch path and the agents.id PK. If that ever changes (e.g. agents
+  // get human-friendly slugs), this key needs explicit escaping because
+  // notes use slash-delimited namespacing.
   const key = `watcher/nudges/${agentId}`;
   const existing = queries.getNote(key);
   const stamp = new Date().toISOString();
@@ -293,6 +306,13 @@ export function execRestartJob(watcher: JobWatcher, input: RestartJobInput): Too
 
   // Mark cancelled before killing so handleAgentExit won't overwrite the status
   cancelledAgents.add(agent.id);
+
+  // Track whether the DB transition went through. If it did, the restart is
+  // logically complete and any later side-effect failure (socket emit, queue
+  // nudge, …) must NOT roll back cancelledAgents or mark the action 'failed' —
+  // doing so would let handleAgentExit overwrite the now-correct
+  // 'cancelled' state and would lie about whether the restart happened.
+  let txCommitted = false;
 
   try {
     // Best-effort kill — the watcher's role is to mark cancelled + requeue.
@@ -339,25 +359,32 @@ export function execRestartJob(watcher: JobWatcher, input: RestartJobInput): Too
         queries.updateJobStatus(job.id, 'queued');
       }
     });
+    txCommitted = true;
 
-    // Pending question — timeout it so the MCP ask_user call doesn't hang
-    const pendingQ = queries.getPendingQuestion(agent.id);
-    if (pendingQ) {
-      queries.updateQuestion(pendingQ.id, {
-        status: 'timeout',
-        answer: '[TIMEOUT] Watcher restarted the agent.',
-        answered_at: Date.now(),
-      });
-    }
+    // Post-transaction side-effects. Each is wrapped individually so an
+    // emit failure doesn't poison the lock release, etc. The restart is
+    // already done at this point — the action row stays 'applied'.
+    safeRun('updateQuestion', agent.id, () => {
+      const pendingQ = queries.getPendingQuestion(agent.id);
+      if (pendingQ) {
+        queries.updateQuestion(pendingQ.id, {
+          status: 'timeout',
+          answer: '[TIMEOUT] Watcher restarted the agent.',
+          answered_at: Date.now(),
+        });
+      }
+    });
+    safeRun('releaseLocks', agent.id, () => getFileLockRegistry().releaseAll(agent.id));
+    safeRun('emitAgent', agent.id, () => {
+      const updated = queries.getAgentWithJob(agent.id);
+      if (updated) socket.emitAgentUpdate(updated);
+    });
+    safeRun('emitJob', agent.id, () => {
+      const updatedJob = queries.getJobById(agent.job_id);
+      if (updatedJob) socket.emitJobUpdate(updatedJob);
+    });
+    safeRun('nudgeQueue', agent.id, () => nudgeQueue());
 
-    getFileLockRegistry().releaseAll(agent.id);
-
-    const updated = queries.getAgentWithJob(agent.id);
-    if (updated) socket.emitAgentUpdate(updated);
-    const updatedJob = queries.getJobById(agent.job_id);
-    if (updatedJob) socket.emitJobUpdate(updatedJob);
-
-    nudgeQueue();
     queries.updateActionOutcome(action.id, 'applied', null);
     emitWatcherUpdate(watcher.id);
 
@@ -370,10 +397,24 @@ export function execRestartJob(watcher: JobWatcher, input: RestartJobInput): Too
 
     return { ok: true, message: 'agent killed; job requeued with diagnosis', action_id: action.id, outcome: 'applied' };
   } catch (err) {
+    if (txCommitted) {
+      // The DB transition went through; only a non-essential side effect
+      // failed. Keep the cancellation in place, log, and mark the action
+      // applied-with-warning rather than failed.
+      agentLogger(agent.id).warn({ err }, 'watcher restart: post-commit side-effect failed');
+      queries.updateActionOutcome(action.id, 'applied', `committed but post-step failed: ${(err as Error).message}`);
+      return { ok: true, message: 'agent killed; job requeued (with post-commit warning)', action_id: action.id, outcome: 'applied' };
+    }
     cancelledAgents.delete(agent.id);
     queries.updateActionOutcome(action.id, 'failed', (err as Error).message);
     return { ok: false, message: `restart failed: ${(err as Error).message}`, action_id: action.id, outcome: 'failed' };
   }
+}
+
+/** Wrap a best-effort side-effect so a single failure doesn't skip later steps. */
+function safeRun(label: string, agentId: string, fn: () => void): void {
+  try { fn(); }
+  catch (err) { agentLogger(agentId).warn({ err, step: label }, 'watcher restart: side-effect failed'); }
 }
 
 // Bounded length for reason + diagnosis appended to the requeued job's
@@ -390,6 +431,12 @@ const WATCHER_DIAGNOSIS_BODY_CAP = 4000;
 // the note is round-tripped back to the watched agent via check_watcher_nudges.
 const WATCHER_NUDGE_MESSAGE_CAP = 2000;
 const WATCHER_NUDGE_REASON_CAP = 500;
+// Commentary and escalation free-text caps. These render in the dashboard
+// and may surface to the user / watched agent via discussion threads, so
+// the same control-char strip + length cap applies as the other paths.
+const WATCHER_COMMENTARY_BODY_CAP = 4000;
+const WATCHER_ESCALATION_QUESTION_CAP = 2000;
+const WATCHER_ESCALATION_CONTEXT_CAP = 4000;
 
 // HTML-comment sentinel embedded in the marker so we can detect a prior
 // restart-notes block without false positives. The user's job description
@@ -447,16 +494,21 @@ export function stripControlChars(s: string): string {
 // ─── escalate_to_user ────────────────────────────────────────────────────────
 
 export function execEscalateToUser(watcher: JobWatcher, input: EscalateToUserInput): ToolExecResult {
-  const question = (input.question ?? '').trim();
+  // Same untrusted-text pipeline as the rest of the watcher's outbound
+  // surface — escalation question + context both render in the user-visible
+  // discussion thread, so a watcher steered by adversarial agent output
+  // can't smuggle bidi overrides or ANSI escapes into the inbox.
+  const question = capUntrustedText((input.question ?? '').trim(), WATCHER_ESCALATION_QUESTION_CAP);
   if (!question) return { ok: false, message: 'question is required' };
+  const context = input.context ? capUntrustedText(input.context, WATCHER_ESCALATION_CONTEXT_CAP) : null;
 
   const applied = queries.countActionsForAgent(watcher.agent_id, 'escalate');
   if (applied >= MAX_ESCALATIONS_PER_AGENT) {
-    const action = recordAction(watcher, 'escalate', input.context ?? null, question, 'gated', `cap of ${MAX_ESCALATIONS_PER_AGENT} escalations reached`);
+    const action = recordAction(watcher, 'escalate', context, question, 'gated', `cap of ${MAX_ESCALATIONS_PER_AGENT} escalations reached`);
     return { ok: false, message: 'escalation gated by cap', action_id: action.id, outcome: 'gated' };
   }
 
-  const action = recordAction(watcher, 'escalate', input.context ?? null, question, 'pending', null);
+  const action = recordAction(watcher, 'escalate', context, question, 'pending', null);
 
   try {
     // Open a discussion thread tagged to this agent. The dashboard already
@@ -468,7 +520,7 @@ export function execEscalateToUser(watcher: JobWatcher, input: EscalateToUserInp
       topic: `Watcher escalation: ${truncate(question, 60)}`,
       category: 'alert',
       priority: 'high',
-      context: input.context ?? null,
+      context,
     });
     queries.insertDiscussionMessage({
       id: randomUUID(),
@@ -487,7 +539,7 @@ export function execEscalateToUser(watcher: JobWatcher, input: EscalateToUserInp
       severity: 'blocker',
       headline: 'Escalated to user',
       detail: question,
-      evidence: input.context,
+      evidence: context ?? undefined,
     });
 
     return { ok: true, message: 'escalation posted', action_id: action.id, outcome: 'applied' };
