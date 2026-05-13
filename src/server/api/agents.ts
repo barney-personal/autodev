@@ -8,7 +8,7 @@ import { markJobRunning } from '../orchestrator/JobLifecycle.js';
 import { disconnectAgent, disconnectAll, getPtyBuffer, getSnapshot, attachPty, isTmuxSessionAlive, saveSnapshot } from '../orchestrator/PtyManager.js';
 import { getFileLockRegistry } from '../orchestrator/FileLockRegistry.js';
 import { nudgeQueue } from '../orchestrator/WorkQueueManager.js';
-import { requestTickNow, startWatcherForAgent, stopWatcherForAgent } from '../orchestrator/JobWatcherManager.js';
+import { requestTickNow, requestStartNow, stopWatcherForAgent } from '../orchestrator/JobWatcherManager.js';
 import { agentReadAllSchema, agentRetrySchema, agentContinueSchema, validateBody } from './validation.js';
 
 const router = Router();
@@ -346,10 +346,26 @@ router.get('/:id/commentary', (req, res) => {
 router.post('/:id/watcher/start', (req, res) => {
   const agent = queries.getAgentById(req.params.id);
   if (!agent) { res.status(404).json({ error: 'not found' }); return; }
-  const ok = startWatcherForAgent(req.params.id);
-  if (!ok) { res.status(400).json({ error: 'unable to start watcher (manager disabled, agent not running, or API key missing)' }); return; }
-  const watcher = queries.getWatcherByAgentId(req.params.id);
-  res.json({ ok: true, watcher });
+  const result = requestStartNow(req.params.id);
+  if (result.ok) {
+    const watcher = queries.getWatcherByAgentId(req.params.id);
+    res.json({ ok: true, watcher });
+    return;
+  }
+  if (result.reason === 'cooldown') {
+    // Same shared per-agent cooldown as /watcher/tick — a successful
+    // start fires an initial tick (Opus 4.7 call), so the rate limit
+    // must cover both endpoints together. See JobWatcherManager.
+    res.setHeader('Retry-After', Math.ceil((result.retryAfterMs ?? 1000) / 1000));
+    res.status(429).json({
+      ok: false,
+      error: 'start cooldown active',
+      retry_after_ms: result.retryAfterMs,
+      note: 'cooldown is in-memory only; resets on server restart',
+    });
+    return;
+  }
+  res.status(400).json({ error: 'unable to start watcher (manager disabled, agent not running, or API key missing)' });
 });
 
 router.post('/:id/watcher/stop', (req, res) => {

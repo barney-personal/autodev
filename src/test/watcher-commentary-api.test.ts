@@ -38,7 +38,7 @@ vi.mock('../server/orchestrator/FileLockRegistry.js', () => ({
 }));
 vi.mock('../server/orchestrator/JobWatcherManager.js', () => ({
   requestTickNow: vi.fn(() => ({ ok: true })),
-  startWatcherForAgent: vi.fn(() => true),
+  requestStartNow: vi.fn(() => ({ ok: true })),
   stopWatcherForAgent: vi.fn(() => true),
 }));
 vi.mock('../server/orchestrator/AgentRunner.js', () => ({

@@ -358,11 +358,21 @@ export const useAppStore = create<AppStore>()((set) => ({
   })),
   appendWatcherAction: (action) => set(state => {
     const prev = state.actionsByAgent[action.agent_id] ?? [];
-    if (prev.some(a => a.id === action.id)) return state;
+    // Replace-by-id (not skip-if-exists): the server emits this event once
+    // when the action row is first inserted with outcome='pending', and
+    // again after applyActionOutcome flips it to its final state. Skipping
+    // the second emit would leave the dashboard showing 'pending' forever.
+    const existingIdx = prev.findIndex(a => a.id === action.id);
+    let next: typeof prev;
+    if (existingIdx >= 0) {
+      next = [...prev];
+      next[existingIdx] = action;
+    } else {
+      next = [...prev, action];
+    }
     // Bounded to 500 per agent — matches the server's WATCHER_HYDRATE_LIMIT
     // so first-load and post-live-update counts stay consistent.
-    const next = [...prev, action].slice(-500);
-    return { actionsByAgent: { ...state.actionsByAgent, [action.agent_id]: next } };
+    return { actionsByAgent: { ...state.actionsByAgent, [action.agent_id]: next.slice(-500) } };
   }),
   setWatcherActions: (agentId, actions) => set(state => ({
     // Same 500 cap as the live-update path so a hydrate response can't

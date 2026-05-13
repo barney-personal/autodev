@@ -284,6 +284,67 @@ describe('watcherTools.execNudgeJob', () => {
     // cooldown is what we expect
     expect(NUDGE_COOLDOWN_MS).toBeGreaterThan(0);
   });
+
+  it('emits a second emitWatcherActionNew when the action transitions from pending to applied', async () => {
+    // Regression: the initial recordAction emit shipped outcome='pending',
+    // and the subsequent updateActionOutcome silently flipped the DB row
+    // to 'applied' without re-emitting — so the dashboard's actionsByAgent
+    // map showed 'pending' forever until the next hydrate. applyActionOutcome
+    // now re-emits the refreshed row, and the client store replaces by id.
+    const { execNudgeJob } = await import('../server/orchestrator/watcherTools.js');
+    const socket = await import('../server/socket/SocketManager.js');
+    const { watcher } = await makeWatcher();
+
+    const r = execNudgeJob(watcher, { message: 'shipping a nudge' });
+    expect(r.ok).toBe(true);
+    expect(r.outcome).toBe('applied');
+
+    // First emit: pending. Second emit: applied. (Plus more emits from the
+    // synthetic post_commentary call — we only care that there are at least
+    // two action emits for this action, both surfacing the same id.)
+    const calls = vi.mocked(socket.emitWatcherActionNew).mock.calls;
+    const myActionCalls = calls.filter(args => args[0]?.id === r.action_id);
+    expect(myActionCalls.length).toBeGreaterThanOrEqual(2);
+    expect(myActionCalls[0][0].outcome).toBe('pending');
+    expect(myActionCalls[myActionCalls.length - 1][0].outcome).toBe('applied');
+  });
+
+  it('uses encodeURIComponent on non-UUID agent ids to keep the note keyspace flat', async () => {
+    // The note backend uses slash-delimited namespacing. AgentRunner.spawn
+    // currently writes a randomUUID() for agent.id, so this is defence in
+    // depth — but if a future change ever passes a slug like "team/foo"
+    // through, the key must escape it instead of letting it collide with
+    // `watcher/nudges/team` namespace lookups.
+    const { execNudgeJob } = await import('../server/orchestrator/watcherTools.js');
+    const queries = await import('../server/db/queries.js');
+    const { watcher } = await makeWatcher();
+
+    // Patch the watcher's agent_id to a non-UUID slug for this call. The
+    // local copy doesn't need the DB row to exist for the note-write path
+    // — appendNudgeToNote only uses agent_id as a key suffix.
+    const slugWatcher = { ...watcher, agent_id: 'team/foo' };
+    execNudgeJob(slugWatcher, { message: 'slug-routed' });
+
+    // The naive key (`watcher/nudges/team/foo`) must not exist — it would
+    // mean a nested namespace and the encode guard was bypassed.
+    expect(queries.getNote('watcher/nudges/team/foo')).toBeNull();
+    // The encoded key holds the message.
+    const encoded = queries.getNote(`watcher/nudges/${encodeURIComponent('team/foo')}`);
+    expect(encoded?.value).toContain('slug-routed');
+  });
+
+  it('preserves the raw UUID in the note key when the agent id is UUID-shaped', async () => {
+    // The encode branch must NOT fire for the normal path — a percent-encoded
+    // UUID would break compatibility with any reader that expects the raw id.
+    const { execNudgeJob } = await import('../server/orchestrator/watcherTools.js');
+    const queries = await import('../server/db/queries.js');
+    const { watcher } = await makeWatcher(); // agent_id is a v4 UUID
+
+    execNudgeJob(watcher, { message: 'uuid-routed' });
+
+    const raw = queries.getNote(`watcher/nudges/${watcher.agent_id}`);
+    expect(raw?.value).toContain('uuid-routed');
+  });
 });
 
 describe('watcherTools.execRestartJob', () => {

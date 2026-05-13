@@ -175,6 +175,28 @@ export type ManualTickResult =
   | { ok: true }
   | { ok: false; reason: 'manager_stopped' | 'no_session' | 'cooldown'; retryAfterMs?: number };
 
+export type ManualStartResult =
+  | { ok: true }
+  | { ok: false; reason: 'manager_stopped' | 'agent_unavailable' | 'cooldown'; retryAfterMs?: number };
+
+/**
+ * Shared per-agent rate limit for billable watcher API endpoints (start,
+ * tick). A successful `start` schedules an initial tick via ensureSession,
+ * so it consumes the same budget as a manual tick — without this gate the
+ * `start → stop → start` cycle was an unbounded way to spin up Opus 4.7
+ * calls. Returns the result of the gate check; on `ok=true` the caller is
+ * expected to immediately perform the billable action and (for write
+ * paths) call `_markBillableActionAt` so the next call cools down.
+ */
+function checkBillableCooldown(agentId: string): { ok: true } | { ok: false; retryAfterMs: number } {
+  const cooldownMs = envManualTickCooldownMs();
+  const lastAt = _lastManualTickAt.get(agentId);
+  if (lastAt != null && Date.now() - lastAt < cooldownMs) {
+    return { ok: false, retryAfterMs: cooldownMs - (Date.now() - lastAt) };
+  }
+  return { ok: true };
+}
+
 /**
  * User-triggered tick (e.g. dashboard "Re-evaluate now" button).
  *
@@ -186,24 +208,50 @@ export function requestTickNow(agentId: string): ManualTickResult {
   if (!_started) return { ok: false, reason: 'manager_stopped' };
   const entry = _sessions.get(agentId);
   if (!entry) return { ok: false, reason: 'no_session' };
-  const cooldownMs = envManualTickCooldownMs();
-  const lastAt = _lastManualTickAt.get(agentId);
-  if (lastAt != null && Date.now() - lastAt < cooldownMs) {
-    return { ok: false, reason: 'cooldown', retryAfterMs: cooldownMs - (Date.now() - lastAt) };
-  }
+  const gate = checkBillableCooldown(agentId);
+  if (!gate.ok) return { ok: false, reason: 'cooldown', retryAfterMs: gate.retryAfterMs };
   _lastManualTickAt.set(agentId, Date.now());
   void entry.session.requestTick('user_request');
   return { ok: true };
 }
 
 /**
- * User-triggered start: spawn a watcher for an agent that previously had
- * `job.watch = 0` or was started before the manager came up.
+ * User-triggered start, with the same per-agent cooldown as requestTickNow.
+ *
+ * Without this gate a caller could rapidly POST /start → /stop → /start
+ * and fire an `initial` trigger tick on every spawn, since ensureSession
+ * schedules a tick for new sessions. The shared cooldown map closes that
+ * loop: a successful start consumes the same budget as a tick, so the
+ * next start (or tick) for the same agent waits out the window.
+ */
+export function requestStartNow(agentId: string): ManualStartResult {
+  if (!_started || !envEnabled()) return { ok: false, reason: 'manager_stopped' };
+  // Mirror the automatic-startup gate — a watcher with no API key would
+  // just 401 on its first tick, which contradicts the route's success
+  // semantics. Same with non-running agents.
+  if (!envHasKey()) return { ok: false, reason: 'agent_unavailable' };
+  const agent = queries.getAgentById(agentId);
+  if (!agent) return { ok: false, reason: 'agent_unavailable' };
+  if (!['starting', 'running', 'waiting_user'].includes(agent.status)) return { ok: false, reason: 'agent_unavailable' };
+  const gate = checkBillableCooldown(agentId);
+  if (!gate.ok) return { ok: false, reason: 'cooldown', retryAfterMs: gate.retryAfterMs };
+  ensureSession(agentId, 'user_request');
+  if (!_sessions.has(agentId)) return { ok: false, reason: 'agent_unavailable' };
+  // Only mark the cooldown AFTER ensureSession succeeded — otherwise a
+  // start that bailed inside ensureSession (e.g. session-creation throw)
+  // would still consume the cooldown and lock the user out of retry.
+  _lastManualTickAt.set(agentId, Date.now());
+  return { ok: true };
+}
+
+/**
+ * User-triggered start, **without** the cooldown gate. Kept for callers
+ * that need to programmatically start a watcher (rehydration, tests) and
+ * shouldn't be subject to the user-facing rate limit. The HTTP endpoint
+ * uses requestStartNow instead.
  */
 export function startWatcherForAgent(agentId: string): boolean {
   if (!_started || !envEnabled()) return false;
-  // Mirror the automatic-startup gate — a watcher with no API key would just
-  // 401 on its first tick, which contradicts the route's success semantics.
   if (!envHasKey()) return false;
   const agent = queries.getAgentById(agentId);
   if (!agent) return false;
@@ -296,7 +344,13 @@ function stopSession(agentId: string): void {
   if (entry.debounceTimer) clearTimeout(entry.debounceTimer);
   entry.session.stop();
   _sessions.delete(agentId);
-  _lastManualTickAt.delete(agentId);
+  // NOTE: _lastManualTickAt is intentionally NOT cleared here. The cooldown
+  // is shared between /watcher/tick and /watcher/start (each represents a
+  // billable Opus 4.7 call), so a `stop → start` cycle inside the window
+  // must still wait it out — otherwise the rate limit would be trivially
+  // bypassable by stopping first. The natural cleanup happens when the
+  // agent eventually finishes (onAgentFinished → eventually the entry
+  // becomes irrelevant) and on _resetForTest.
   try {
     const w = queries.getWatcherByAgentId(agentId);
     if (w && (w.status === 'running' || w.status === 'starting')) {

@@ -208,6 +208,15 @@ export function updateActionOutcome(id: string, outcome: WatcherActionOutcome, d
     .run(outcome, detail ?? null, id);
 }
 
+/** Single-row fetch by id, used by the tool dispatcher to re-emit a watcher
+ *  action after `updateActionOutcome` flips it from 'pending' to its final
+ *  state — keeps the dashboard's actionsByAgent map live without a hydrate. */
+export function getActionById(id: string): WatcherAction | null {
+  const db = getDb();
+  const row = db.prepare('SELECT * FROM watcher_actions WHERE id = ?').get(id);
+  return row ? cast<WatcherAction>(row) : null;
+}
+
 export function listActionsForAgent(agentId: string, limit = DEFAULT_WATCHER_LIST_LIMIT): WatcherAction[] {
   const db = getDb();
   // Same newest-first-then-reverse pattern as listCommentaryForAgent — see

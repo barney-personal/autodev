@@ -278,7 +278,7 @@ export function execNudgeJob(watcher: JobWatcher, input: NudgeJobInput): ToolExe
     agentLogger(watcher.agent_id).warn({ err }, 'watcher: insertNudge failed');
   }
 
-  queries.updateActionOutcome(action.id, 'applied', 'queued for delivery');
+  applyActionOutcome(action.id, 'applied', 'queued for delivery');
 
   // Add a synthetic commentary entry so the dashboard records the nudge in
   // the stream. Default severity is 'info' — a routine course-correction
@@ -299,12 +299,25 @@ export function execNudgeJob(watcher: JobWatcher, input: NudgeJobInput): ToolExe
   return { ok: true, message: 'nudge delivered', action_id: action.id, outcome: 'applied' };
 }
 
+/** UUID v4-ish check: the format AgentRunner.spawn() writes for agent.id.
+ *  Used as a structural guard on note-key construction so a future ID-format
+ *  change (slug, external ID, anything with a "/" or "?") falls into the
+ *  encodeURIComponent branch instead of silently colliding namespaces. */
+function isUuidLike(s: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
+}
+
 function appendNudgeToNote(agentId: string, message: string): void {
-  // Assumes agentId is a UUID — guaranteed by AgentRunner's randomUUID()
-  // dispatch path and the agents.id PK. If that ever changes (e.g. agents
-  // get human-friendly slugs), this key needs explicit escaping because
-  // notes use slash-delimited namespacing.
-  const key = `watcher/nudges/${agentId}`;
+  // Notes use slash-delimited namespacing, so a non-UUID agentId that
+  // contained a "/" or other reserved char would collide with another
+  // namespace (e.g. `watcher/nudges/foo/bar` parses as nudge "bar" under
+  // namespace `watcher/nudges/foo`). AgentRunner currently writes a
+  // randomUUID() for every agent.id, so this is belt-and-braces — but
+  // if that ever changes (human-friendly slugs, external IDs), the
+  // encodeURIComponent guard keeps the keyspace flat instead of letting
+  // the format change silently corrupt note lookups.
+  const safeAgentId = isUuidLike(agentId) ? agentId : encodeURIComponent(agentId);
+  const key = `watcher/nudges/${safeAgentId}`;
   const existing = queries.getNote(key);
   const stamp = new Date().toISOString();
   const entry = `[${stamp}] ${message}`;
@@ -406,6 +419,16 @@ export function execRestartJob(watcher: JobWatcher, input: RestartJobInput): Too
     // `process.kill(-0, …)` would broadcast to every process in our own
     // process group. `> 0` makes that impossible regardless of how the
     // value got there.
+    //
+    // Dependency note: `process.kill(-pid, 'SIGTERM')` targets the process
+    // GROUP whose PGID equals `agent.pid`. This is correct ONLY because
+    // AgentRunner.spawn currently sets the spawned process as its own
+    // process group leader (via node-pty / tmux session setup) — see
+    // `src/server/orchestrator/AgentRunner.ts` for the spawn path.
+    // If AgentRunner ever changes how it spawns (different spawn flags,
+    // no tmux, child processes inheriting parent's PGID), this signal
+    // will silently stop reaching the agent's children. Update both
+    // sites together.
     if (agent.pid != null && agent.pid > 0) {
       let stillAlive = false;
       try { process.kill(agent.pid, 0); stillAlive = true; }
@@ -460,7 +483,7 @@ export function execRestartJob(watcher: JobWatcher, input: RestartJobInput): Too
     });
     safeRun('nudgeQueue', agent.id, () => nudgeQueue());
 
-    queries.updateActionOutcome(action.id, 'applied', null);
+    applyActionOutcome(action.id, 'applied', null);
     emitWatcherUpdate(watcher.id);
 
     execPostCommentary(watcher, {
@@ -477,11 +500,11 @@ export function execRestartJob(watcher: JobWatcher, input: RestartJobInput): Too
       // failed. Keep the cancellation in place, log, and mark the action
       // applied-with-warning rather than failed.
       agentLogger(agent.id).warn({ err }, 'watcher restart: post-commit side-effect failed');
-      queries.updateActionOutcome(action.id, 'applied', `committed but post-step failed: ${(err as Error).message}`);
+      applyActionOutcome(action.id, 'applied', `committed but post-step failed: ${(err as Error).message}`);
       return { ok: true, message: 'agent killed; job requeued (with post-commit warning)', action_id: action.id, outcome: 'applied' };
     }
     cancelledAgents.delete(agent.id);
-    queries.updateActionOutcome(action.id, 'failed', (err as Error).message);
+    applyActionOutcome(action.id, 'failed', (err as Error).message);
     return { ok: false, message: `restart failed: ${(err as Error).message}`, action_id: action.id, outcome: 'failed' };
   }
 }
@@ -631,7 +654,7 @@ export function execEscalateToUser(watcher: JobWatcher, input: EscalateToUserInp
     const firstMsg = queries.getDiscussionMessages(discussion.id)[0];
     socket.emitDiscussionNew(discussion, firstMsg);
 
-    queries.updateActionOutcome(action.id, 'applied', `discussion ${discussion.id.slice(0, 8)}`);
+    applyActionOutcome(action.id, 'applied', `discussion ${discussion.id.slice(0, 8)}`);
     emitWatcherUpdate(watcher.id);
 
     execPostCommentary(watcher, {
@@ -643,7 +666,7 @@ export function execEscalateToUser(watcher: JobWatcher, input: EscalateToUserInp
 
     return { ok: true, message: 'escalation posted', action_id: action.id, outcome: 'applied' };
   } catch (err) {
-    queries.updateActionOutcome(action.id, 'failed', (err as Error).message);
+    applyActionOutcome(action.id, 'failed', (err as Error).message);
     return { ok: false, message: `escalation failed: ${(err as Error).message}`, action_id: action.id, outcome: 'failed' };
   }
 }
@@ -675,6 +698,18 @@ function recordAction(
 function emitWatcherUpdate(watcherId: string): void {
   const w = queries.getWatcherById(watcherId);
   if (w) socket.emitWatcherSessionUpdate(w);
+}
+
+/** Persist a new outcome on a watcher_action row and re-emit the refreshed
+ *  row so the dashboard updates without waiting for the next hydrate. The
+ *  initial `recordAction` emit shipped `outcome=pending`; without this
+ *  re-emit the client would show 'pending' until the watcher panel was
+ *  remounted. Client-side `appendWatcherAction` replaces by ID, so the
+ *  re-emit overwrites the pending row in place. */
+function applyActionOutcome(actionId: string, outcome: WatcherActionOutcome, detail: string | null): void {
+  queries.updateActionOutcome(actionId, outcome, detail);
+  const refreshed = queries.getActionById(actionId);
+  if (refreshed) socket.emitWatcherActionNew(refreshed);
 }
 
 const SEVERITY_RANK: Record<WatcherSeverity, number> = {

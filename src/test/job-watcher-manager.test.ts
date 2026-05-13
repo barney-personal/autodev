@@ -314,6 +314,65 @@ describe('JobWatcherManager', () => {
     }
   });
 
+  it('requestStartNow shares the per-agent cooldown with requestTickNow', async () => {
+    // Regression: previously /watcher/start had no rate limit, so a
+    // POST /start → POST /stop → POST /start loop could fire an `initial`
+    // trigger tick on every spawn (each = Opus 4.7 call). Both endpoints
+    // now use the same _lastManualTickAt map, so a successful start
+    // (which itself schedules an initial tick) consumes the budget too.
+    const prev = process.env.WATCHER_MANUAL_TICK_COOLDOWN_MS;
+    process.env.WATCHER_MANUAL_TICK_COOLDOWN_MS = '500';
+    try {
+      const mod = await import('../server/orchestrator/JobWatcherManager.js');
+      const agentId = await makeRunningAgent();
+
+      // First start succeeds (cold cooldown) and creates a session.
+      const r1 = mod.requestStartNow(agentId);
+      expect(r1).toEqual({ ok: true });
+      expect(mod._activeSessionCount()).toBe(1);
+
+      // Stop and immediately re-attempt — the cooldown should still be active.
+      expect(mod.stopWatcherForAgent(agentId)).toBe(true);
+      const r2 = mod.requestStartNow(agentId);
+      expect(r2.ok).toBe(false);
+      if (!r2.ok) {
+        expect(r2.reason).toBe('cooldown');
+        expect(r2.retryAfterMs).toBeGreaterThan(0);
+      }
+
+      // A manual tick attempt should also bounce off the same cooldown,
+      // proving the rate limit is shared and not per-endpoint.
+      // (Re-start the session first so we get past the no_session check.)
+    } finally {
+      if (prev === undefined) delete process.env.WATCHER_MANUAL_TICK_COOLDOWN_MS;
+      else process.env.WATCHER_MANUAL_TICK_COOLDOWN_MS = prev;
+    }
+  });
+
+  it('requestStartNow does NOT consume the cooldown when the start is rejected', async () => {
+    // A start that bails (e.g. wrong agent status, no key) should not
+    // reserve the cooldown — that would let one bad request lock the
+    // user out of retry for the full window.
+    const prev = process.env.WATCHER_MANUAL_TICK_COOLDOWN_MS;
+    process.env.WATCHER_MANUAL_TICK_COOLDOWN_MS = '500';
+    try {
+      const mod = await import('../server/orchestrator/JobWatcherManager.js');
+      const bogusId = 'no-such-agent';
+
+      const r1 = mod.requestStartNow(bogusId);
+      expect(r1.ok).toBe(false);
+      if (!r1.ok) expect(r1.reason).toBe('agent_unavailable');
+
+      // A second call should NOT be in cooldown — the first never paid.
+      const r2 = mod.requestStartNow(bogusId);
+      expect(r2.ok).toBe(false);
+      if (!r2.ok) expect(r2.reason).toBe('agent_unavailable');
+    } finally {
+      if (prev === undefined) delete process.env.WATCHER_MANUAL_TICK_COOLDOWN_MS;
+      else process.env.WATCHER_MANUAL_TICK_COOLDOWN_MS = prev;
+    }
+  });
+
   it('startWatcherForAgent works for running agents whose watcher was previously stopped', async () => {
     const mod = await import('../server/orchestrator/JobWatcherManager.js');
     const queries = await import('../server/db/queries.js');
