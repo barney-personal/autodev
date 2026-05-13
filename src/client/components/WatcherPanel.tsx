@@ -49,6 +49,9 @@ export function WatcherPanel({ agentId, agentStatus }: WatcherPanelProps) {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  // Banner shown when /watcher/tick comes back 429 with a Retry-After.
+  // Auto-clears once the cooldown elapses.
+  const [tickCooldown, setTickCooldown] = useState<{ until: number; message: string } | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const fetchedAgentId = useRef<string | null>(null);
 
@@ -87,6 +90,14 @@ export function WatcherPanel({ agentId, agentStatus }: WatcherPanelProps) {
     return () => clearInterval(id);
   }, []);
 
+  // Auto-clear a cooldown banner once its retry window expires.
+  useEffect(() => {
+    if (!tickCooldown) return;
+    const ms = Math.max(0, tickCooldown.until - Date.now());
+    const id = setTimeout(() => setTickCooldown(null), ms);
+    return () => clearTimeout(id);
+  }, [tickCooldown]);
+
   // Auto-scroll to newest commentary
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
@@ -99,8 +110,27 @@ export function WatcherPanel({ agentId, agentStatus }: WatcherPanelProps) {
   const handleTickNow = async () => {
     if (busy) return;
     setBusy(true);
-    try { await fetch(`/api/agents/${agentId}/watcher/tick`, { method: 'POST' }); }
-    finally { setBusy(false); }
+    try {
+      const r = await fetch(`/api/agents/${agentId}/watcher/tick`, { method: 'POST' });
+      if (r.status === 429) {
+        // Surface the cooldown to the user so the silent flash-of-busy is replaced
+        // with a clear "wait Ns" banner that auto-clears.
+        let retryMs = 0;
+        try { const body = await r.json(); retryMs = Number(body.retry_after_ms ?? 0); } catch { /* body may be empty */ }
+        if (!retryMs) {
+          const hdr = r.headers.get('Retry-After');
+          retryMs = hdr ? Number(hdr) * 1000 : 5000;
+        }
+        const secs = Math.max(1, Math.ceil(retryMs / 1000));
+        setTickCooldown({ until: Date.now() + retryMs, message: `Tick rate-limited — retry in ${secs}s` });
+      } else if (!r.ok) {
+        setTickCooldown({ until: Date.now() + 5000, message: `Tick failed (HTTP ${r.status})` });
+      } else {
+        setTickCooldown(null);
+      }
+    } catch (err) {
+      setTickCooldown({ until: Date.now() + 5000, message: `Tick failed: ${(err as Error).message}` });
+    } finally { setBusy(false); }
   };
 
   const handleStart = async () => {
@@ -127,6 +157,11 @@ export function WatcherPanel({ agentId, agentStatus }: WatcherPanelProps) {
         onStop={handleStop}
         onTickNow={handleTickNow}
       />
+      {tickCooldown && (
+        <div className="watcher-cooldown-banner" role="status">
+          {tickCooldown.message}
+        </div>
+      )}
       <div className="watcher-stream">
         {loading && merged.length === 0 && (
           <div className="watcher-empty">Loading watcher state…</div>

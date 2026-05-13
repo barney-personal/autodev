@@ -2344,6 +2344,15 @@
   font-style: normal;
 }
 
+.watcher-cooldown-banner {
+  padding: 6px 14px;
+  background: rgba(245, 158, 11, 0.12);
+  color: #f59e0b;
+  border-bottom: 1px solid rgba(245, 158, 11, 0.3);
+  font-size: 12px;
+  text-align: center;
+}
+
 .watcher-item {
   border-left: 3px solid #64748b;
   padding: 8px 12px;

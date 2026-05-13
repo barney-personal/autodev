@@ -85,7 +85,14 @@ export function startJobWatcherManager(): void {
     }
   }, envHeartbeatMs());
   // Re-attach watchers for agents that were already running across a restart
-  void rehydrateActiveWatchers();
+  // Don't await — startup must not block on rehydration — but DO surface
+  // failures. Previously errors here were silently swallowed (e.g. a
+  // corrupt job_watchers table would leave the manager running but with
+  // zero rehydrated sessions, and no log line to point at the cause).
+  rehydrateActiveWatchers().catch(err => {
+    log.error({ err }, 'rehydrateActiveWatchers failed — running agents will not have watcher sessions until next event');
+    captureWithContext(err, { component: 'JobWatcherManager' });
+  });
 }
 
 export function stopJobWatcherManager(): void {
@@ -283,6 +290,15 @@ function stopSession(agentId: string): void {
       queries.updateWatcher(w.id, { status: 'stopped', finished_at: Date.now() });
       const fresh = queries.getWatcherById(w.id);
       if (fresh) socket.emitWatcherSessionUpdate(fresh);
+      // Cost observability: each watcher's tick budget is small but a busy
+      // orchestrator running many concurrent agents adds up. Log the
+      // per-session cost plus the running lifetime total so an operator
+      // can spot runaway spend without a dashboard query.
+      const total = queries.totalWatcherCostUsd();
+      log.info(
+        { agentId, sessionCostUsd: +fresh!.cost_usd.toFixed(4), tickCount: fresh!.tick_count, lifetimeTotalUsd: +total.toFixed(4) },
+        'watcher session stopped',
+      );
     }
     // Drop any pending nudge note for this agent — the agent is gone, the
     // notes table doesn't need to hold stale advice indefinitely.

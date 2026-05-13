@@ -16,6 +16,7 @@
 import { randomUUID } from 'crypto';
 import { execFileSync } from 'child_process';
 import * as queries from '../db/queries.js';
+import { withTransaction } from '../db/database.js';
 import * as socket from '../socket/SocketManager.js';
 import { agentLogger } from '../lib/logger.js';
 import { cancelledAgents } from './AgentConfig.js';
@@ -270,18 +271,22 @@ export function execRestartJob(watcher: JobWatcher, input: RestartJobInput): Too
     // Best-effort kill the tmux session too
     try { execFileSync('tmux', ['kill-session', '-t', `orchestrator-${agent.id}`], { stdio: 'pipe' }); } catch { /* gone */ }
 
-    queries.updateAgent(agent.id, { status: 'cancelled', finished_at: Date.now() });
-
+    // Atomic restart transition: the agent goes 'cancelled', the job's
+    // description picks up the watcher's diagnosis, and the job status flips
+    // back to 'queued' for re-dispatch. Wrapped in withTransaction so a
+    // mid-sequence failure can't leave us with the agent cancelled but the
+    // job still 'running' (the agent would never be re-dispatched).
     const job = queries.getJobById(agent.job_id);
-    if (job) {
-      // Append the watcher's diagnosis to the job description so the next dispatch
-      // includes the context that motivated the restart.
-      const annotated = appendWatcherDiagnosis(job.description, reason, input.diagnosis);
-      if (annotated !== job.description) {
+    const annotated = job ? appendWatcherDiagnosis(job.description, reason, input.diagnosis) : null;
+    withTransaction(() => {
+      queries.updateAgent(agent.id, { status: 'cancelled', finished_at: Date.now() });
+      if (job && annotated && annotated !== job.description) {
         queries.updateJobDescription(job.id, annotated);
       }
-      queries.updateJobStatus(job.id, 'queued');
-    }
+      if (job) {
+        queries.updateJobStatus(job.id, 'queued');
+      }
+    });
 
     // Pending question — timeout it so the MCP ask_user call doesn't hang
     const pendingQ = queries.getPendingQuestion(agent.id);
@@ -341,7 +346,8 @@ const WATCHER_NUDGE_REASON_CAP = 500;
 const RESTART_NOTES_SENTINEL = '<!--watcher:restart-notes:v1-->';
 const RESTART_NOTES_HEADER = `\n\n---\n## Watcher restart notes ${RESTART_NOTES_SENTINEL}`;
 
-function appendWatcherDiagnosis(description: string, reason: string, diagnosis: string | undefined): string {
+/** Exported for direct unit testing — the primary injection-defence path. */
+export function appendWatcherDiagnosis(description: string, reason: string, diagnosis: string | undefined): string {
   const hasPriorSection = description.includes(RESTART_NOTES_SENTINEL);
   const safeReason = capUntrustedText(reason, WATCHER_DIAGNOSIS_REASON_CAP);
   const safeDiagnosis = diagnosis ? capUntrustedText(diagnosis, WATCHER_DIAGNOSIS_BODY_CAP) : null;

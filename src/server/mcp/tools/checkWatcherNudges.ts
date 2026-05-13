@@ -2,7 +2,12 @@ import { z } from 'zod';
 import * as queries from '../../db/queries.js';
 
 export const checkWatcherNudgesSchema = z.object({
-  consume: z.boolean().optional().describe('If true (default), clear the nudges after reading. If false, just peek.'),
+  // Schema-level: the field is optional with no default value. Behaviour:
+  // when omitted OR set to true, the nudges are cleared after this call
+  // returns. Only consume=false peeks without clearing. The description
+  // spells this out so an agent inferring from the wording doesn't have
+  // to guess about the absent-field semantics.
+  consume: z.boolean().optional().describe('Clear the nudges after reading. Pass false to peek without clearing. When omitted, defaults to true (the nudges WILL be consumed).'),
 });
 
 /**

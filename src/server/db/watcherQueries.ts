@@ -53,6 +53,17 @@ export function listActiveWatchers(): JobWatcher[] {
   return rows.map((r: unknown) => cast<JobWatcher>(r));
 }
 
+/**
+ * Sum of cost_usd across all watcher sessions (lifetime). Used for the
+ * "watchers spent $X total" log line on stopSession and as a building
+ * block for a future dashboard cost card.
+ */
+export function totalWatcherCostUsd(): number {
+  const db = getDb();
+  const row = db.prepare('SELECT SUM(cost_usd) AS total FROM job_watchers').get() as { total: number | null } | undefined;
+  return row?.total ?? 0;
+}
+
 // IMPORTANT: must mirror the `Partial<Pick<JobWatcher, …>>` type below — when
 // adding a column to updateWatcher, add it here too (otherwise the call will
 // throw at runtime rather than fail to compile). The set guards against
