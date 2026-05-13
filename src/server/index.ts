@@ -73,7 +73,12 @@ async function main() {
   const app = express();
   app.use(cors());
   app.use(compression());
-  app.use(express.json());
+  app.use(express.json({
+    verify: (req, _res, buf) => {
+      // Sentry webhook HMAC verification needs the unparsed bytes.
+      (req as { rawBody?: Buffer }).rawBody = Buffer.from(buf);
+    },
+  }));
 
   // REST API
   app.use('/api', apiRouter);

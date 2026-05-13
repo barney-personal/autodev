@@ -102,6 +102,24 @@ export function getJobById(id: string): Job | null {
   return row ? cast<Job>(row) : null;
 }
 
+// Sentry retries webhooks on timeout/5xx, which can dispatch duplicate
+// remediation jobs for the same issue. Look for an existing job for the same
+// sentryIssueId within a bounded window; the scan is small because terminal
+// jobs are archived.
+export function findRecentSentryDispatch(sentryIssueId: string, windowMs: number): Job | null {
+  const db = getDb();
+  const cutoff = Date.now() - windowMs;
+  const row = db.prepare(
+    `SELECT * FROM jobs
+     WHERE created_at > ?
+       AND context IS NOT NULL
+       AND json_extract(context, '$.sentryIssueId') = ?
+     ORDER BY created_at DESC
+     LIMIT 1`,
+  ).get(cutoff, sentryIssueId);
+  return row ? cast<Job>(row) : null;
+}
+
 export function listJobs(status?: JobStatus): Job[] {
   const db = getDb();
   let rows: unknown[];

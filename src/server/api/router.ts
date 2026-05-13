@@ -22,6 +22,7 @@ import healthRouter from './health.js';
 import eventsRouter from './events.js';
 import resilienceEventsRouter from './resilienceEvents.js';
 import tasksRouter from './tasks.js';
+import webhooksRouter from './webhooks.js';
 
 const router = Router();
 
@@ -43,6 +44,7 @@ function authMiddleware(req: Request, res: Response, next: NextFunction): void {
 }
 
 router.use('/health', healthRouter);
+router.use('/webhooks', webhooksRouter);
 
 router.use(authMiddleware);
 router.use('/events', eventsRouter);
