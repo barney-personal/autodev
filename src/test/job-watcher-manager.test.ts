@@ -157,9 +157,50 @@ describe('JobWatcherManager', () => {
     expect(w?.status).toBe('stopped');
   });
 
-  it('requestTickNow returns false for unknown agent', async () => {
+  it('requestTickNow returns no_session for an unknown agent', async () => {
     const mod = await import('../server/orchestrator/JobWatcherManager.js');
-    expect(mod.requestTickNow('unknown-agent')).toBe(false);
+    const result = mod.requestTickNow('unknown-agent');
+    expect(result).toEqual({ ok: false, reason: 'no_session' });
+  });
+
+  it('rehydrates a session for an agent already running when the manager starts (crash-recovery)', async () => {
+    const mod = await import('../server/orchestrator/JobWatcherManager.js');
+    // Tear down the auto-started manager from beforeEach so we can simulate
+    // a fresh boot AFTER an agent is already running in the DB.
+    mod.stopJobWatcherManager();
+    mod._resetForTest();
+    ticks.length = 0;
+
+    const agentId = await makeRunningAgent();
+    expect(mod._activeSessionCount()).toBe(0);
+
+    mod.startJobWatcherManager();
+    // rehydrateActiveWatchers is called via void rehydrateActiveWatchers() —
+    // wait for that microtask + the debounce so the initial tick fires.
+    await new Promise(r => setTimeout(r, 50));
+
+    expect(mod._activeSessionCount()).toBe(1);
+    expect(ticks.length).toBeGreaterThanOrEqual(1);
+    expect(ticks[0]).toEqual({ agentId, trigger: 'initial' });
+  });
+
+  it('rate-limits manual ticks per agent', async () => {
+    process.env.WATCHER_MANUAL_TICK_COOLDOWN_MS = '500';
+    const mod = await import('../server/orchestrator/JobWatcherManager.js');
+    const agentId = await makeRunningAgent();
+    mod.onAgentStarted(agentId);
+    await new Promise(r => setTimeout(r, 30));
+
+    const first = mod.requestTickNow(agentId);
+    expect(first).toEqual({ ok: true });
+
+    const second = mod.requestTickNow(agentId);
+    expect(second.ok).toBe(false);
+    if (!second.ok) {
+      expect(second.reason).toBe('cooldown');
+      expect(second.retryAfterMs).toBeGreaterThan(0);
+    }
+    delete process.env.WATCHER_MANUAL_TICK_COOLDOWN_MS;
   });
 
   it('startWatcherForAgent refuses to create a session without ANTHROPIC_API_KEY', async () => {

@@ -31,6 +31,10 @@ function envHeartbeatMs(): number { return Number(process.env.WATCHER_HEARTBEAT_
 function envDebounceMs(): number { return Number(process.env.WATCHER_DEBOUNCE_MS ?? 800); }
 function envEnabled(): boolean { return (process.env.WATCHER_ENABLED ?? '1') !== '0'; }
 function envHasKey(): boolean { return !!process.env.ANTHROPIC_API_KEY; }
+// Cooldown between manual /watcher/tick requests, per agent. Cheap defence
+// against accidental dashboard hammering or adversarial spam — every tick
+// fires a real Opus 4.7 call.
+function envManualTickCooldownMs(): number { return Number(process.env.WATCHER_MANUAL_TICK_COOLDOWN_MS ?? 10_000); }
 
 interface SessionEntry {
   session: WatcherSession;
@@ -39,6 +43,7 @@ interface SessionEntry {
 }
 
 const _sessions = new Map<string, SessionEntry>();
+const _lastManualTickAt = new Map<string, number>();
 let _heartbeat: NodeJS.Timeout | null = null;
 let _started = false;
 let _initialised = false;
@@ -51,6 +56,7 @@ export function _resetForTest(): void {
     entry.session.stop();
   }
   _sessions.clear();
+  _lastManualTickAt.clear();
   _started = false;
   _initialised = false;
 }
@@ -140,13 +146,29 @@ export function onWarning(warning: AgentWarning): void {
   scheduleTick(warning.agent_id, 'warning');
 }
 
-/** User-triggered tick (e.g. dashboard "Re-evaluate now" button). */
-export function requestTickNow(agentId: string): boolean {
-  if (!_started) return false;
+export type ManualTickResult =
+  | { ok: true }
+  | { ok: false; reason: 'manager_stopped' | 'no_session' | 'cooldown'; retryAfterMs?: number };
+
+/**
+ * User-triggered tick (e.g. dashboard "Re-evaluate now" button).
+ *
+ * Rate-limited per agent: each tick fires a real Opus 4.7 API call, so a
+ * naive endpoint would let any dashboard user run up an unbounded bill.
+ * Returns the structured result so the API layer can map `cooldown` to 429.
+ */
+export function requestTickNow(agentId: string): ManualTickResult {
+  if (!_started) return { ok: false, reason: 'manager_stopped' };
   const entry = _sessions.get(agentId);
-  if (!entry) return false;
+  if (!entry) return { ok: false, reason: 'no_session' };
+  const cooldownMs = envManualTickCooldownMs();
+  const lastAt = _lastManualTickAt.get(agentId);
+  if (lastAt != null && Date.now() - lastAt < cooldownMs) {
+    return { ok: false, reason: 'cooldown', retryAfterMs: cooldownMs - (Date.now() - lastAt) };
+  }
+  _lastManualTickAt.set(agentId, Date.now());
   void entry.session.requestTick('user_request');
-  return true;
+  return { ok: true };
 }
 
 /**
@@ -249,6 +271,7 @@ function stopSession(agentId: string): void {
   if (entry.debounceTimer) clearTimeout(entry.debounceTimer);
   entry.session.stop();
   _sessions.delete(agentId);
+  _lastManualTickAt.delete(agentId);
   try {
     const w = queries.getWatcherByAgentId(agentId);
     if (w && (w.status === 'running' || w.status === 'starting')) {

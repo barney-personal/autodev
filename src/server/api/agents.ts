@@ -346,8 +346,18 @@ router.post('/:id/watcher/stop', (req, res) => {
 router.post('/:id/watcher/tick', (req, res) => {
   const agent = queries.getAgentById(req.params.id);
   if (!agent) { res.status(404).json({ error: 'not found' }); return; }
-  const ok = requestTickNow(req.params.id);
-  res.json({ ok });
+  const result = requestTickNow(req.params.id);
+  if (result.ok) {
+    res.json({ ok: true });
+    return;
+  }
+  if (result.reason === 'cooldown') {
+    // Each tick is an Opus 4.7 call; the cooldown prevents accidental spam.
+    res.setHeader('Retry-After', Math.ceil((result.retryAfterMs ?? 1000) / 1000));
+    res.status(429).json({ ok: false, error: 'tick cooldown active', retry_after_ms: result.retryAfterMs });
+    return;
+  }
+  res.status(400).json({ ok: false, error: result.reason });
 });
 
 router.post('/:id/dismiss-warnings', (req, res) => {

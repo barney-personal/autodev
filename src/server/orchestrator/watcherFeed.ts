@@ -40,6 +40,11 @@ export interface WatcherTick {
   diff_stat: string | null;
   /** Last few commentary entries the watcher itself posted. */
   recent_commentary: WatcherCommentaryView[];
+  /** Count of fresh events that existed past sinceSeq but didn't fit in the
+   * curated tail. The watcher can call read_recent_output if it needs to see
+   * what was elided — useful when a high-rank trigger (turn_failed) fires
+   * mid-burst and we want the watcher to investigate the actual failure. */
+  omitted_event_count: number;
 }
 
 export type WatcherTrigger =
@@ -174,6 +179,13 @@ export function buildWatcherTick(input: BuildTickInput): WatcherTick | null {
   // events on the next tick. getAgentLastSeq is a single MAX(seq) query.
   const absoluteLastSeq = queries.getAgentLastSeq(agentId);
   if (absoluteLastSeq > highSeq) highSeq = absoluteLastSeq;
+  // Count of fresh events that existed past sinceSeq but were elided from the
+  // bounded tail. Surfaced to the watcher so it knows to use read_recent_output
+  // when it needs the full picture.
+  const totalFresh = sinceSeq >= 0
+    ? Math.max(0, absoluteLastSeq - sinceSeq)
+    : (absoluteLastSeq >= 0 ? absoluteLastSeq + 1 : 0);
+  const omittedEventCount = Math.max(0, totalFresh - tail.length);
 
   const warnings: WatcherWarningView[] = queries.getActiveWarningsForAgent(agentId).map(w => ({
     type: w.type,
@@ -208,6 +220,7 @@ export function buildWatcherTick(input: BuildTickInput): WatcherTick | null {
     warnings,
     diff_stat,
     recent_commentary: recent,
+    omitted_event_count: omittedEventCount,
   };
 
   return tick;
@@ -245,6 +258,9 @@ export function renderWatcherTick(tick: WatcherTick): string {
     lines.push('RECENT EVENTS (oldest → newest):');
     for (const e of tick.events) {
       lines.push(`  #${e.seq} [${e.kind}] ${e.detail}`);
+    }
+    if (tick.omitted_event_count > 0) {
+      lines.push(`  … (${tick.omitted_event_count} earlier event${tick.omitted_event_count === 1 ? '' : 's'} omitted — call read_recent_output if you need the full picture)`);
     }
     lines.push('');
   } else {

@@ -161,6 +161,87 @@ describe('watcherTools.execRestartJob', () => {
   });
 });
 
+describe('watcherTools.execReadRecentOutput', () => {
+  beforeEach(async () => { await setupTestDb(); vi.clearAllMocks(); });
+  afterEach(async () => { await cleanupTestDb(); });
+
+  it('returns a slim text summary of recent stream-json output', async () => {
+    const { execReadRecentOutput } = await import('../server/orchestrator/watcherTools.js');
+    const queries = await import('../server/db/queries.js');
+    const { watcher } = await makeWatcher();
+
+    // Insert a mix of assistant text, tool_use, result, error, and a Codex
+    // command_execution. The reader must render each compactly.
+    const evs = [
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'Working on it.' }] } },
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'Edit', input: { file_path: 'src/foo.ts' } }] } },
+      { type: 'result', is_error: false, result: 'all done', num_turns: 2 },
+      { type: 'error', error: { message: 'fork failed' } },
+      { type: 'item.completed', item: { type: 'command_execution', command: 'npm test', exit_code: 0, aggregated_output: 'PASS' } },
+    ];
+    for (let i = 0; i < evs.length; i++) {
+      queries.insertAgentOutput({
+        agent_id: watcher.agent_id, seq: i, event_type: String(evs[i].type ?? '?'),
+        content: JSON.stringify(evs[i]), created_at: Date.now(),
+      });
+    }
+
+    const r = execReadRecentOutput(watcher, { limit: 50 });
+    expect(r.ok).toBe(true);
+    expect(r.message).toContain('text: Working on it.');
+    expect(r.message).toContain('tool Edit');
+    expect(r.message).toContain('result: all done');
+    expect(r.message).toContain('error: fork failed');
+    expect(r.message).toContain('bash: npm test exit=0');
+    expect(r.message).toContain('stdout: PASS');
+  });
+
+  it('returns a friendly message when the agent has produced no output yet', async () => {
+    const { execReadRecentOutput } = await import('../server/orchestrator/watcherTools.js');
+    const { watcher } = await makeWatcher();
+    const r = execReadRecentOutput(watcher, {});
+    expect(r.ok).toBe(true);
+    expect(r.message).toContain('no output yet');
+  });
+
+  it('skips unparseable rows without throwing', async () => {
+    const { execReadRecentOutput } = await import('../server/orchestrator/watcherTools.js');
+    const queries = await import('../server/db/queries.js');
+    const { watcher } = await makeWatcher();
+    queries.insertAgentOutput({
+      agent_id: watcher.agent_id, seq: 0, event_type: 'raw',
+      content: 'not even json {{{', created_at: Date.now(),
+    });
+    const r = execReadRecentOutput(watcher, {});
+    expect(r.ok).toBe(true);
+    expect(r.message).toContain('(unparseable)');
+  });
+});
+
+describe('watcherTools.execReadDiff', () => {
+  beforeEach(async () => { await setupTestDb(); vi.clearAllMocks(); });
+  afterEach(async () => { await cleanupTestDb(); });
+
+  it('returns ok=false when the agent has no base_sha recorded', async () => {
+    const { execReadDiff } = await import('../server/orchestrator/watcherTools.js');
+    const { watcher } = await makeWatcher();
+    const r = execReadDiff(watcher);
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain('base_sha');
+  });
+
+  it('returns ok=false when the job has no work_dir', async () => {
+    const { execReadDiff } = await import('../server/orchestrator/watcherTools.js');
+    const queries = await import('../server/db/queries.js');
+    const { watcher } = await makeWatcher();
+    // Add a base_sha, but the test job has work_dir=null by default.
+    queries.updateAgent(watcher.agent_id, { base_sha: 'abc123' });
+    const r = execReadDiff(watcher);
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain('work_dir');
+  });
+});
+
 describe('watcherTools.execEscalateToUser', () => {
   beforeEach(async () => { await setupTestDb(); vi.clearAllMocks(); });
   afterEach(async () => { await cleanupTestDb(); });
