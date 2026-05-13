@@ -144,6 +144,36 @@ describe('watcherTools.execNudgeJob', () => {
   beforeEach(async () => { await setupTestDb(); vi.clearAllMocks(); });
   afterEach(async () => { await cleanupTestDb(); });
 
+  it('appends an ellipsis when the headline is truncated', async () => {
+    // Consistency with capUntrustedText: a 241-char headline should land
+    // as 240 chars with a trailing `…`, not a silent flat truncation.
+    const { execPostCommentary } = await import('../server/orchestrator/watcherTools.js');
+    const queries = await import('../server/db/queries.js');
+    const { watcher } = await makeWatcher();
+
+    const long = 'x'.repeat(500);
+    const r = execPostCommentary(watcher, { severity: 'info', headline: long });
+    expect(r.ok).toBe(true);
+
+    const stored = queries.listCommentaryForAgent(watcher.agent_id)[0];
+    expect(stored.headline.length).toBe(240);
+    expect(stored.headline.endsWith('…')).toBe(true);
+  });
+
+  it('does not add an ellipsis when the headline fits inside the cap', async () => {
+    const { execPostCommentary } = await import('../server/orchestrator/watcherTools.js');
+    const queries = await import('../server/db/queries.js');
+    const { watcher } = await makeWatcher();
+
+    const fits = 'just under the limit';
+    const r = execPostCommentary(watcher, { severity: 'info', headline: fits });
+    expect(r.ok).toBe(true);
+
+    const stored = queries.listCommentaryForAgent(watcher.agent_id)[0];
+    expect(stored.headline).toBe(fits);
+    expect(stored.headline.endsWith('…')).toBe(false);
+  });
+
   it('strips control characters from the nudge message + reason before storage', async () => {
     const { execNudgeJob } = await import('../server/orchestrator/watcherTools.js');
     const queries = await import('../server/db/queries.js');
@@ -168,6 +198,36 @@ describe('watcherTools.execNudgeJob', () => {
     // And the auto-commentary detail.
     const commentary = queries.listCommentaryForAgent(watcher.agent_id)[0];
     expect(commentary.detail ?? '').not.toMatch(/[\x00-\x08\x0E-\x1F\x7F-\x9F]/);
+  });
+
+  it('keeps the nudge note bounded at 8000 chars by trimming from the front', async () => {
+    // Defensive bound: appendNudgeToNote concatenates new nudges onto the
+    // existing note value and trims to the last 8000 chars. Per-nudge
+    // length is already capped at 2000, but a long-running agent could
+    // accumulate enough history to exceed the bound. Verify the trim
+    // happens and keeps the newest content.
+    const { execNudgeJob } = await import('../server/orchestrator/watcherTools.js');
+    const queries = await import('../server/db/queries.js');
+    const { watcher } = await makeWatcher();
+    const key = `watcher/nudges/${watcher.agent_id}`;
+
+    // Pre-seed with a unique front marker followed by filler that pushes
+    // the total well over 8000 chars. After the new nudge is appended and
+    // the result is trimmed to the last 8000 chars, the front marker must
+    // be gone.
+    const FRONT_MARKER = 'UNIQUEFRONTMARKER';
+    queries.upsertNote(key, FRONT_MARKER + 'X'.repeat(8500), null);
+    expect(queries.getNote(key)!.value.startsWith(FRONT_MARKER)).toBe(true);
+
+    const r = execNudgeJob(watcher, { message: 'NEW-instruction-arrived' });
+    expect(r.ok).toBe(true);
+
+    const after = queries.getNote(key)!.value;
+    expect(after.length).toBeLessThanOrEqual(8000);
+    // Newest message survives — the bound keeps the tail.
+    expect(after).toContain('NEW-instruction-arrived');
+    // Front marker is gone — the trim dropped the head.
+    expect(after).not.toContain(FRONT_MARKER);
   });
 
   it('applies first nudge and gates rapid second nudge', async () => {

@@ -46,7 +46,15 @@ function isStoppedWatcherStatus(status: WatcherStatus): boolean {
   return STOPPED_WATCHER_STATUSES.has(status);
 }
 
-export const DEFAULT_WATCHER_MODEL = process.env.WATCHER_MODEL ?? 'claude-opus-4-7';
+/**
+ * Re-read the configured watcher model on each call — matches the
+ * env*-helper pattern in JobWatcherManager so tests can patch
+ * `process.env.WATCHER_MODEL` after import without ESM hoisting tricks.
+ * The default (claude-opus-4-7) is what shipped; override via env.
+ */
+export function defaultWatcherModel(): string {
+  return process.env.WATCHER_MODEL ?? 'claude-opus-4-7';
+}
 
 /**
  * Validate the configured watcher model against the known Claude options at

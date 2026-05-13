@@ -19,7 +19,7 @@ import { workflowLogger } from '../lib/logger.js';
 import { captureWithContext } from '../instrument.js';
 import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
-import { WatcherSession, DEFAULT_WATCHER_MODEL, validateWatcherModel } from './WatcherSession.js';
+import { WatcherSession, defaultWatcherModel, validateWatcherModel } from './WatcherSession.js';
 import { highestTrigger, type WatcherTrigger } from './watcherFeed.js';
 import type { ClaudeStreamEvent, CodexStreamEvent, AgentWarning } from '../../shared/types.js';
 
@@ -76,8 +76,9 @@ export function startJobWatcherManager(): void {
   if (!envHasKey()) {
     log.warn('ANTHROPIC_API_KEY not set — watchers will not be created');
   }
-  validateWatcherModel(DEFAULT_WATCHER_MODEL, log);
-  log.info({ heartbeatMs: envHeartbeatMs(), debounceMs: envDebounceMs(), model: DEFAULT_WATCHER_MODEL }, 'Job watcher manager started');
+  const model = defaultWatcherModel();
+  validateWatcherModel(model, log);
+  log.info({ heartbeatMs: envHeartbeatMs(), debounceMs: envDebounceMs(), model }, 'Job watcher manager started');
   _heartbeat = setInterval(() => {
     try { runHeartbeats(); } catch (err) {
       log.error({ err }, 'heartbeat error');
@@ -237,7 +238,7 @@ function ensureSession(agentId: string, trigger: WatcherTrigger): void {
         id: randomUUID(),
         agent_id: agentId,
         job_id: agent.job_id,
-        model: DEFAULT_WATCHER_MODEL,
+        model: defaultWatcherModel(),
         status: 'starting',
       });
       socket.emitWatcherSessionNew(watcher);

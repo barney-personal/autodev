@@ -666,7 +666,12 @@ function sanitiseHeadline(s: string | undefined): string {
   // *guides* the model to keep headlines ≤ 80 chars, but a hard limit at 80
   // would mid-truncate the occasional informative long headline. 240 is a
   // safety ceiling against unbounded LLM output, not the target.
-  return stripControlChars(s).replace(/\s+/g, ' ').trim().slice(0, 240);
+  //
+  // Append `…` on truncation so the UI / log reader can tell the headline
+  // was cut off — matching the truncation indicator capUntrustedText uses
+  // for diagnoses and nudge messages.
+  const cleaned = stripControlChars(s).replace(/\s+/g, ' ').trim();
+  return cleaned.length > 240 ? cleaned.slice(0, 239) + '…' : cleaned;
 }
 
 function truncate(s: string, max: number): string {
