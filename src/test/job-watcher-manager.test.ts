@@ -17,6 +17,7 @@ const ticks: Array<{ agentId: string; trigger: string }> = [];
 vi.mock('../server/orchestrator/WatcherSession.js', () => {
   return {
     DEFAULT_WATCHER_MODEL: 'claude-opus-4-7',
+    validateWatcherModel: () => true,
     WatcherSession: class FakeSession {
       readonly watcherId: string;
       readonly agentId: string;

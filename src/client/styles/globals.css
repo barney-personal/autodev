@@ -2339,6 +2339,11 @@
   font-size: 13px;
 }
 
+.watcher-error {
+  color: #ef4444;
+  font-style: normal;
+}
+
 .watcher-item {
   border-left: 3px solid #64748b;
   padding: 8px 12px;

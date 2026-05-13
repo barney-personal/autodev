@@ -206,6 +206,24 @@ describe('WatcherSession — error rollback', () => {
   });
 });
 
+describe('validateWatcherModel', () => {
+  it('accepts a known Claude model without warning', async () => {
+    const { validateWatcherModel } = await import('../server/orchestrator/WatcherSession.js');
+    const warn = vi.fn();
+    const ok = validateWatcherModel('claude-opus-4-7', { warn });
+    expect(ok).toBe(true);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('warns (but does not throw) on an unknown model name', async () => {
+    const { validateWatcherModel } = await import('../server/orchestrator/WatcherSession.js');
+    const warn = vi.fn();
+    const ok = validateWatcherModel('claude-opus-4-77', { warn });
+    expect(ok).toBe(false);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('lastActionAtForAgent — applied-only filter', () => {
   beforeEach(async () => { await setupTestDb(); });
   afterEach(async () => { await cleanupTestDb(); });

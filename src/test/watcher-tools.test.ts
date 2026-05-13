@@ -247,6 +247,67 @@ describe('watcherTools.execReadRecentOutput', () => {
   });
 });
 
+describe('watcherTools.execRestartJob — diagnosis safety', () => {
+  beforeEach(async () => { await setupTestDb(); vi.clearAllMocks(); });
+  afterEach(async () => { await cleanupTestDb(); });
+
+  it('caps and labels the watcher diagnosis when appending to the job description', async () => {
+    const { execRestartJob } = await import('../server/orchestrator/watcherTools.js');
+    const queries = await import('../server/db/queries.js');
+    const { watcher, jobId } = await makeWatcher();
+
+    const huge = 'x'.repeat(20_000);  // way over the cap
+    const r = execRestartJob(watcher, { reason: 'looping', diagnosis: huge });
+    expect(r.ok).toBe(true);
+
+    const job = queries.getJobById(jobId)!;
+    // Capped at WATCHER_DIAGNOSIS_BODY_CAP (4000) + headroom for the surrounding markup.
+    expect(job.description.length).toBeLessThan(6000);
+    // Wrapped with an explicit "untrusted" label so the next agent doesn't
+    // treat the diagnosis as instructions.
+    expect(job.description).toContain('untrusted');
+    // The watcher's text is rendered as a blockquote so prompt-injection text
+    // inside it is visibly contained.
+    expect(job.description).toContain('> ');
+  });
+
+  it('strips control characters from the diagnosis to prevent log/terminal corruption', async () => {
+    const { execRestartJob } = await import('../server/orchestrator/watcherTools.js');
+    const queries = await import('../server/db/queries.js');
+    const { watcher, jobId } = await makeWatcher();
+
+    const malicious = `clean text${String.fromCharCode(0x00)}<NUL>${String.fromCharCode(0x1B)}[31mESC[0m${String.fromCharCode(0x07)}BELL`;
+    const r = execRestartJob(watcher, { reason: 'odd state', diagnosis: malicious });
+    expect(r.ok).toBe(true);
+
+    const job = queries.getJobById(jobId)!;
+    // The literal control bytes must be gone…
+    expect(job.description).not.toMatch(/[\x00-\x08\x0E-\x1F\x7F-\x9F]/);
+    // …but the surrounding text survives.
+    expect(job.description).toContain('clean text');
+    expect(job.description).toContain('BELL');
+  });
+});
+
+describe('watcherTools.sanitiseHeadline — control chars', () => {
+  beforeEach(async () => { await setupTestDb(); vi.clearAllMocks(); });
+  afterEach(async () => { await cleanupTestDb(); });
+
+  it('strips control characters before storing commentary headlines', async () => {
+    const { execPostCommentary } = await import('../server/orchestrator/watcherTools.js');
+    const queries = await import('../server/db/queries.js');
+    const { watcher } = await makeWatcher();
+
+    const dirty = `Headline${String.fromCharCode(0)}NUL${String.fromCharCode(0x1B)}[2J`;
+    const r = execPostCommentary(watcher, { severity: 'info', headline: dirty });
+    expect(r.ok).toBe(true);
+
+    const stored = queries.listCommentaryForAgent(watcher.agent_id)[0];
+    expect(stored.headline).not.toMatch(/[\x00-\x08\x0E-\x1F\x7F-\x9F]/);
+    expect(stored.headline).toContain('Headline');
+  });
+});
+
 describe('watcherTools.execReadDiff', () => {
   beforeEach(async () => { await setupTestDb(); vi.clearAllMocks(); });
   afterEach(async () => { await cleanupTestDb(); });

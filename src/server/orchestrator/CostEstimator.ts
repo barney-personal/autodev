@@ -30,6 +30,12 @@ function getPricing(model: string | null): ModelPricing {
   return PRICING[model] ?? DEFAULT_PRICING;
 }
 
+/** List of Claude model names this server knows pricing for. Used as a
+ * sanity-check at startup for env-configured model names. */
+export function getKnownClaudeModels(): string[] {
+  return Object.keys(PRICING);
+}
+
 /**
  * Estimate cost in USD given a model and accumulated token counts.
  */

@@ -19,7 +19,7 @@ import { workflowLogger } from '../lib/logger.js';
 import { captureWithContext } from '../instrument.js';
 import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
-import { WatcherSession, DEFAULT_WATCHER_MODEL } from './WatcherSession.js';
+import { WatcherSession, DEFAULT_WATCHER_MODEL, validateWatcherModel } from './WatcherSession.js';
 import { highestTrigger, type WatcherTrigger } from './watcherFeed.js';
 import type { ClaudeStreamEvent, CodexStreamEvent, AgentWarning } from '../../shared/types.js';
 
@@ -43,6 +43,10 @@ interface SessionEntry {
 }
 
 const _sessions = new Map<string, SessionEntry>();
+// In-memory only — a server restart resets all manual-tick cooldowns. For a
+// local-only orchestrator that's fine (an attacker controlling restarts is
+// already past the security model). If this ever moves behind a network
+// boundary the cooldown should be persisted alongside watcher_actions.
 const _lastManualTickAt = new Map<string, number>();
 let _heartbeat: NodeJS.Timeout | null = null;
 let _started = false;
@@ -72,7 +76,8 @@ export function startJobWatcherManager(): void {
   if (!envHasKey()) {
     log.warn('ANTHROPIC_API_KEY not set — watchers will not be created');
   }
-  log.info({ heartbeatMs: envHeartbeatMs(), debounceMs: envDebounceMs() }, 'Job watcher manager started');
+  validateWatcherModel(DEFAULT_WATCHER_MODEL, log);
+  log.info({ heartbeatMs: envHeartbeatMs(), debounceMs: envDebounceMs(), model: DEFAULT_WATCHER_MODEL }, 'Job watcher manager started');
   _heartbeat = setInterval(() => {
     try { runHeartbeats(); } catch (err) {
       log.error({ err }, 'heartbeat error');

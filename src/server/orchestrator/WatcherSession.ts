@@ -35,16 +35,35 @@ import {
   execEscalateToUser,
   type ToolExecResult,
 } from './watcherTools.js';
-import { estimateCostUsdDetailed } from './CostEstimator.js';
+import { estimateCostUsdDetailed, getKnownClaudeModels } from './CostEstimator.js';
 import type { JobWatcher, WatcherStatus } from '../../shared/types.js';
 
-const TERMINAL_WATCHER_STATUSES: ReadonlySet<WatcherStatus> = new Set(['stopped']);
+// Only 'stopped' is a hard terminal — 'error' is retryable on the next tick,
+// so it must NOT be treated as terminal by the stop-race guards below.
+const STOPPED_WATCHER_STATUSES: ReadonlySet<WatcherStatus> = new Set(['stopped']);
 
-function isTerminalStatus(status: WatcherStatus): boolean {
-  return TERMINAL_WATCHER_STATUSES.has(status);
+function isStoppedWatcherStatus(status: WatcherStatus): boolean {
+  return STOPPED_WATCHER_STATUSES.has(status);
 }
 
 export const DEFAULT_WATCHER_MODEL = process.env.WATCHER_MODEL ?? 'claude-opus-4-7';
+
+/**
+ * Validate the configured watcher model against the known Claude options at
+ * boot. We warn-only rather than throw — a future model might roll out before
+ * we update the allowlist, and the API will surface its own error on the
+ * first tick if the name is wrong. Returns true if the model is known.
+ */
+export function validateWatcherModel(model: string, logger: { warn: (obj: unknown, msg?: string) => void } = console as never): boolean {
+  const known = new Set(getKnownClaudeModels());
+  if (known.has(model)) return true;
+  logger.warn(
+    { model, knownModels: [...known] },
+    'WATCHER_MODEL is not in the known Claude model list — first tick may fail with an API error if the name is invalid',
+  );
+  return false;
+}
+
 const MAX_TOOL_ROUNDS = 4;
 // Total individual messages (user + assistant + tool-result) to keep before
 // trimming. Anthropic requires strictly alternating user/assistant roles
@@ -290,7 +309,7 @@ export class WatcherSession {
       // while this tick was in flight (slow API call), don't resurrect the
       // session by writing 'running' / clearing the error.
       const current = queries.getWatcherById(this.watcherId);
-      if (this._stopped || !current || isTerminalStatus(current.status)) return;
+      if (this._stopped || !current || isStoppedWatcherStatus(current.status)) return;
       queries.updateWatcher(this.watcherId, {
         last_seq: highSeq,
         status: 'running',
@@ -305,7 +324,7 @@ export class WatcherSession {
       // Same stop-race guard on the error path — don't flip a stopped watcher
       // to 'error'.
       const current = queries.getWatcherById(this.watcherId);
-      if (!this._stopped && current && !isTerminalStatus(current.status)) {
+      if (!this._stopped && current && !isStoppedWatcherStatus(current.status)) {
         queries.updateWatcher(this.watcherId, { status: 'error', error_message: errMsg.slice(0, 500) });
         const updated = queries.getWatcherById(this.watcherId);
         if (updated) socket.emitWatcherSessionUpdate(updated);

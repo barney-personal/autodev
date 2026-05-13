@@ -49,23 +49,37 @@ export function WatcherPanel({ agentId, agentStatus }: WatcherPanelProps) {
   const [now, setNow] = useState(Date.now());
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const fetchedAgentId = useRef<string | null>(null);
 
-  // One-time hydrate per agent
+  // One-time hydrate per agent. We catch every failure mode (network, non-OK
+  // status, malformed JSON) so a single fetch error doesn't leave the panel
+  // stuck in a blank loading state or surface as an unhandled rejection.
   useEffect(() => {
     if (fetchedAgentId.current === agentId) return;
     fetchedAgentId.current = agentId;
     setLoading(true);
-    fetch(`/api/agents/${agentId}/watcher`)
-      .then(r => r.ok ? r.json() : null)
-      .then(data => {
-        if (!data) return;
-        if (data.watcher) upsertWatcher(data.watcher);
-        if (Array.isArray(data.commentary)) setCommentary(agentId, data.commentary);
-        if (Array.isArray(data.actions)) setActions(agentId, data.actions);
-      })
-      .finally(() => setLoading(false));
+    setFetchError(null);
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch(`/api/agents/${agentId}/watcher`);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const data = await r.json();
+        if (cancelled) return;
+        if (data?.watcher) upsertWatcher(data.watcher);
+        if (Array.isArray(data?.commentary)) setCommentary(agentId, data.commentary);
+        if (Array.isArray(data?.actions)) setActions(agentId, data.actions);
+      } catch (err) {
+        if (cancelled) return;
+        console.error('[watcher-panel] hydrate failed:', err);
+        setFetchError((err as Error).message ?? 'failed to load watcher state');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
   }, [agentId, upsertWatcher, setCommentary, setActions]);
 
   // Live clock for "x ago" formatting
@@ -118,7 +132,12 @@ export function WatcherPanel({ agentId, agentStatus }: WatcherPanelProps) {
         {loading && merged.length === 0 && (
           <div className="watcher-empty">Loading watcher state…</div>
         )}
-        {!loading && merged.length === 0 && (
+        {!loading && fetchError && merged.length === 0 && (
+          <div className="watcher-empty watcher-error">
+            Couldn't load watcher state: {fetchError}. Live updates will still arrive via socket.
+          </div>
+        )}
+        {!loading && !fetchError && merged.length === 0 && (
           <div className="watcher-empty">
             {watcher
               ? 'No commentary yet — the watcher is observing.'
