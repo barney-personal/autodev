@@ -473,7 +473,11 @@ async function safeDiffStat(workDir: string, baseSha: string): Promise<string | 
   try {
     const { stdout } = await execFileAsync(
       'git',
-      ['diff', '--stat', '--no-color', baseSha],
+      // --end-of-options tells git "no more flags after this" — belt-and-
+      // suspenders next to isValidGitSha so a value beginning with '-' can't
+      // be parsed as an option even if the regex check is ever bypassed.
+      // (`--` alone would make git treat baseSha as a pathspec, not a ref.)
+      ['diff', '--stat', '--no-color', '--end-of-options', baseSha],
       { cwd: workDir, encoding: 'utf8', timeout: 4000, maxBuffer: 64 * 1024 },
     );
     const out = stdout.trim();

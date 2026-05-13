@@ -153,8 +153,15 @@ export const DEFAULT_WATCHER_LIST_LIMIT = 500;
 
 export function listCommentaryForAgent(agentId: string, limit = DEFAULT_WATCHER_LIST_LIMIT): WatcherCommentary[] {
   const db = getDb();
+  // Newest-first inner SELECT (LIMIT applies before order reversal) so we
+  // return the most recent N rows, then reverse to chronological order for
+  // the UI. The naive ORDER BY ASC LIMIT N returned the OLDEST N rows —
+  // which, combined with the client store's slice(-500) cap on the live
+  // stream, produced a hydrate-vs-stream gap on agents with > limit rows
+  // (the panel would render the oldest 500 then jump straight to the
+  // newest socket-delivered entries, with a hole in the middle).
   const rows = db.prepare(
-    'SELECT * FROM watcher_commentary WHERE agent_id = ? ORDER BY created_at ASC LIMIT ?'
+    'SELECT * FROM (SELECT * FROM watcher_commentary WHERE agent_id = ? ORDER BY created_at DESC LIMIT ?) ORDER BY created_at ASC'
   ).all(agentId, limit);
   return rows.map((r: unknown) => cast<WatcherCommentary>(r));
 }
@@ -203,8 +210,10 @@ export function updateActionOutcome(id: string, outcome: WatcherActionOutcome, d
 
 export function listActionsForAgent(agentId: string, limit = DEFAULT_WATCHER_LIST_LIMIT): WatcherAction[] {
   const db = getDb();
+  // Same newest-first-then-reverse pattern as listCommentaryForAgent — see
+  // that function for why the naive ASC LIMIT was wrong.
   const rows = db.prepare(
-    'SELECT * FROM watcher_actions WHERE agent_id = ? ORDER BY created_at ASC LIMIT ?'
+    'SELECT * FROM (SELECT * FROM watcher_actions WHERE agent_id = ? ORDER BY created_at DESC LIMIT ?) ORDER BY created_at ASC'
   ).all(agentId, limit);
   return rows.map((r: unknown) => cast<WatcherAction>(r));
 }

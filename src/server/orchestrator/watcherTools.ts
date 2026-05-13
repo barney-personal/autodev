@@ -14,7 +14,7 @@
  *   • escalate_to_user → max MAX_ESCALATIONS_PER_AGENT applied
  */
 import { randomUUID } from 'crypto';
-import { execFile, execFileSync } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as queries from '../db/queries.js';
 import { withTransaction } from '../db/database.js';
@@ -181,7 +181,10 @@ export async function execReadDiff(watcher: JobWatcher): Promise<ToolExecResult>
     // Async + bounded (64KB maxBuffer, 8s timeout). The sync version held
     // Node's event loop for up to 8s on slow filesystems — every other
     // socket emission and API response stalled while git walked the index.
-    const { stdout } = await execFileAsync('git', ['diff', '--no-color', agent.base_sha], {
+    // --end-of-options pins the SHA as a non-option arg — defence in depth
+     // with isValidGitSha. `--` would not work here (git diff treats post-`--`
+    // args as pathspecs, not refs).
+    const { stdout } = await execFileAsync('git', ['diff', '--no-color', '--end-of-options', agent.base_sha], {
       cwd: job.work_dir,
       encoding: 'utf8',
       timeout: 8000,
@@ -301,8 +304,11 @@ export function execRestartJob(watcher: JobWatcher, input: RestartJobInput): Too
         agentLogger(agent.id).debug({ err }, 'watcher kill failed — proceeding with requeue');
       }
     }
-    // Best-effort kill the tmux session too
-    try { execFileSync('tmux', ['kill-session', '-t', `orchestrator-${agent.id}`], { stdio: 'pipe' }); } catch { /* gone */ }
+    // Best-effort kill the tmux session too — fire-and-forget so we don't
+    // block the dispatch handler on a slow tmux teardown (NFS-backed /tmp,
+    // stuck PTY) that would otherwise stall every other socket emission
+    // and API response for its duration.
+    execFileAsync('tmux', ['kill-session', '-t', `orchestrator-${agent.id}`]).catch(() => { /* session already gone */ });
 
     // Close any MCP transport bound to the killed agent so a slow-to-die
     // zombie subprocess that survives SIGTERM can't keep firing tool calls
