@@ -142,6 +142,46 @@ describe('WatcherSession — error rollback', () => {
     expect((sessionWithInternals.history[0] as { role: string }).role).toBe('user');
     expect((sessionWithInternals.history[1] as { role: string }).role).toBe('assistant');
   });
+
+  it('does not flip a stopped watcher back to running after a slow in-flight tick', async () => {
+    // The race: onAgentFinished marks the row 'stopped' while this tick is
+    // still awaiting messages.create. Without the guard, the success path
+    // would write status='running' and resurrect the session in the DB/UI.
+    const queries = await import('../server/db/queries.js');
+    const { WatcherSession } = await import('../server/orchestrator/WatcherSession.js');
+
+    const job = await insertTestJob({ status: 'running' });
+    const agentId = randomUUID();
+    queries.insertAgent({ id: agentId, job_id: job.id, status: 'running', started_at: Date.now() });
+    const watcher = queries.insertWatcher({ id: randomUUID(), agent_id: agentId, job_id: job.id, model: 'claude-opus-4-7' });
+
+    // Simulate the race: while the API call is pending, flip the watcher to
+    // 'stopped' in the DB (mirroring what stopSession does) and call
+    // session.stop() to set the in-process flag.
+    let resolveApi!: (resp: unknown) => void;
+    mockCreate.mockImplementationOnce(() => new Promise(resolve => { resolveApi = resolve; }));
+
+    const session = new WatcherSession(watcher.id, agentId);
+    const tickPromise = session.requestTick('initial');
+
+    // Wait for the manager-side stop to land before the API resolves.
+    await new Promise(r => setTimeout(r, 10));
+    queries.updateWatcher(watcher.id, { status: 'stopped', finished_at: Date.now() });
+    session.stop();
+
+    // Now let the in-flight API call resolve successfully.
+    resolveApi({
+      content: [{ type: 'text', text: 'final tick' }],
+      usage: { input_tokens: 5, output_tokens: 3, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      stop_reason: 'end_turn',
+    });
+    await tickPromise;
+
+    const finalState = queries.getWatcherById(watcher.id)!;
+    expect(finalState.status).toBe('stopped');
+    // Usage still recorded — tokens were paid for.
+    expect(finalState.input_tokens).toBeGreaterThanOrEqual(5);
+  });
 });
 
 describe('lastActionAtForAgent — applied-only filter', () => {

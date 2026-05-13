@@ -162,6 +162,23 @@ describe('JobWatcherManager', () => {
     expect(mod.requestTickNow('unknown-agent')).toBe(false);
   });
 
+  it('startWatcherForAgent refuses to create a session without ANTHROPIC_API_KEY', async () => {
+    const mod = await import('../server/orchestrator/JobWatcherManager.js');
+    const queries = await import('../server/db/queries.js');
+    const agentId = await makeRunningAgent();
+
+    const prevKey = process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+    try {
+      const ok = mod.startWatcherForAgent(agentId);
+      expect(ok).toBe(false);
+      expect(mod._activeSessionCount()).toBe(0);
+      expect(queries.getWatcherByAgentId(agentId)).toBeNull();
+    } finally {
+      if (prevKey !== undefined) process.env.ANTHROPIC_API_KEY = prevKey;
+    }
+  });
+
   it('startWatcherForAgent works for running agents whose watcher was previously stopped', async () => {
     const mod = await import('../server/orchestrator/JobWatcherManager.js');
     const queries = await import('../server/db/queries.js');

@@ -152,6 +152,25 @@ export function getLatestAgentOutput(agentId: string): AgentOutput | null {
   return row ? cast<AgentOutput>(row) : null;
 }
 
+/**
+ * Fetch up to `limit` events newer than `sinceSeq`, returned chronologically
+ * (oldest → newest). Backed by the (agent_id, seq) unique index so reads are
+ * O(log N + result) — used by the live watcher's tick builder, which fires
+ * frequently and shouldn't degrade as the log grows.
+ *
+ * When more than `limit` new events exist the OLDEST are dropped, so callers
+ * always receive the most recent slice of new activity.
+ */
+export function getAgentOutputSinceSeq(agentId: string, sinceSeq: number, limit: number): AgentOutput[] {
+  const db = getDb();
+  // Newest-first internally so the DB only walks `limit` rows when there are
+  // many new events, then reverse for chronological order.
+  const rows = db.prepare(
+    'SELECT * FROM (SELECT * FROM agent_output WHERE agent_id = ? AND seq > ? ORDER BY seq DESC LIMIT ?) ORDER BY seq ASC'
+  ).all(agentId, sinceSeq, limit);
+  return rows.map((r: unknown) => cast<AgentOutput>(r));
+}
+
 export function getAgentFullOutput(agentId: string, tailLines?: number): AgentOutputSegment[] {
   const db = getDb();
   // Walk the parent chain to build oldest-first list of agents

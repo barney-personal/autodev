@@ -155,6 +155,9 @@ export function requestTickNow(agentId: string): boolean {
  */
 export function startWatcherForAgent(agentId: string): boolean {
   if (!_started || !envEnabled()) return false;
+  // Mirror the automatic-startup gate — a watcher with no API key would just
+  // 401 on its first tick, which contradicts the route's success semantics.
+  if (!envHasKey()) return false;
   const agent = queries.getAgentById(agentId);
   if (!agent) return false;
   if (!['starting', 'running', 'waiting_user'].includes(agent.status)) return false;

@@ -147,10 +147,11 @@ export function buildWatcherTick(input: BuildTickInput): WatcherTick | null {
   const job = queries.getJobById(agent.job_id);
   if (!job) return null;
 
-  const allOutput = queries.getAgentOutput(agentId);
-  // Filter to events newer than sinceSeq, then trim to MAX_TURNS_IN_FEED.
-  const fresh = allOutput.filter(o => o.seq > sinceSeq);
-  const tail = fresh.slice(-MAX_TURNS_IN_FEED);
+  // Bounded read: fetch only the most recent MAX_TURNS_IN_FEED events newer
+  // than sinceSeq. Avoids the O(total_rows) scan + in-memory filter that the
+  // original implementation did on every tick — important for long-running
+  // agents with thousands of stream-json events.
+  const tail = queries.getAgentOutputSinceSeq(agentId, sinceSeq, MAX_TURNS_IN_FEED);
   const events: WatcherEventSummary[] = [];
   let highSeq = sinceSeq;
   const textPieces: string[] = [];
@@ -168,10 +169,11 @@ export function buildWatcherTick(input: BuildTickInput): WatcherTick | null {
       }
     }
   }
-  // Make sure highSeq reflects the absolute latest even when nothing fresh arrived.
-  if (allOutput.length > 0 && allOutput[allOutput.length - 1].seq > highSeq) {
-    highSeq = allOutput[allOutput.length - 1].seq;
-  }
+  // Advance high_water_seq past any events that exist beyond sinceSeq but
+  // weren't included in the bounded tail — otherwise we'd re-summarise older
+  // events on the next tick. getAgentLastSeq is a single MAX(seq) query.
+  const absoluteLastSeq = queries.getAgentLastSeq(agentId);
+  if (absoluteLastSeq > highSeq) highSeq = absoluteLastSeq;
 
   const warnings: WatcherWarningView[] = queries.getActiveWarningsForAgent(agentId).map(w => ({
     type: w.type,

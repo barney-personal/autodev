@@ -122,6 +122,44 @@ describe('watcherFeed.buildWatcherTick', () => {
     expect(tick.recent_commentary[0].severity).toBe('concern');
   });
 
+  it('uses a bounded DB read instead of scanning the full history each tick', async () => {
+    // Regression: the original implementation called getAgentOutput(agentId)
+    // with no limit and then filter()ed in memory — O(total_rows) per tick
+    // for long-running agents. We assert that buildWatcherTick never asks
+    // for the full history, and that high_water_seq still advances past
+    // events we didn't include in the feed.
+    const queries = await import('../server/db/queries.js');
+    const fullSpy = vi.spyOn(queries, 'getAgentOutput');
+    const sinceSpy = vi.spyOn(queries, 'getAgentOutputSinceSeq');
+
+    const { buildWatcherTick } = await import('../server/orchestrator/watcherFeed.js');
+    const job = await insertTestJob({ status: 'running' });
+    const agentId = await insertAgent(job.id);
+
+    // 60 events — well above MAX_TURNS_IN_FEED (12).
+    for (let i = 0; i < 60; i++) {
+      await insertOutput(agentId, i, {
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', name: 'Edit', input: { i } }] },
+      });
+    }
+
+    const tick = buildWatcherTick({ agentId, trigger: 'tool_use', sinceSeq: -1 })!;
+
+    // No full-history scan.
+    expect(fullSpy).not.toHaveBeenCalled();
+    // Bounded query was used.
+    expect(sinceSpy).toHaveBeenCalledWith(agentId, -1, expect.any(Number));
+
+    // Only the newest ≤MAX_TURNS_IN_FEED events surface…
+    expect(tick.events.length).toBeLessThanOrEqual(12);
+    // …but the watermark advances past ALL fresh events so we don't replay them.
+    expect(tick.high_water_seq).toBe(59);
+
+    fullSpy.mockRestore();
+    sinceSpy.mockRestore();
+  });
+
   it('renders a deterministic, byte-bounded text view', async () => {
     const { buildWatcherTick, renderWatcherTick } = await import('../server/orchestrator/watcherFeed.js');
     const job = await insertTestJob({ status: 'running', title: 'My task' });

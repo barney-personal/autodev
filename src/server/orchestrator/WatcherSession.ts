@@ -36,7 +36,13 @@ import {
   type ToolExecResult,
 } from './watcherTools.js';
 import { estimateCostUsd } from './CostEstimator.js';
-import type { JobWatcher } from '../../shared/types.js';
+import type { JobWatcher, WatcherStatus } from '../../shared/types.js';
+
+const TERMINAL_WATCHER_STATUSES: ReadonlySet<WatcherStatus> = new Set(['stopped']);
+
+function isTerminalStatus(status: WatcherStatus): boolean {
+  return TERMINAL_WATCHER_STATUSES.has(status);
+}
 
 export const DEFAULT_WATCHER_MODEL = process.env.WATCHER_MODEL ?? 'claude-opus-4-7';
 const MAX_TOOL_ROUNDS = 4;
@@ -263,6 +269,8 @@ export class WatcherSession {
       }
 
       const cost = estimateCostUsd(watcher.model, totalInput + totalCacheRead + totalCacheCreate, totalOutput);
+      // Always record usage — the tokens were consumed regardless of whether
+      // the watcher row has since been stopped by onAgentFinished.
       queries.accumulateWatcherUsage(
         this.watcherId,
         totalInput,
@@ -271,6 +279,11 @@ export class WatcherSession {
         totalCacheCreate,
         cost,
       );
+      // Guard against the stop race: if onAgentFinished marked us 'stopped'
+      // while this tick was in flight (slow API call), don't resurrect the
+      // session by writing 'running' / clearing the error.
+      const current = queries.getWatcherById(this.watcherId);
+      if (this._stopped || !current || isTerminalStatus(current.status)) return;
       queries.updateWatcher(this.watcherId, {
         last_seq: highSeq,
         status: 'running',
@@ -282,9 +295,14 @@ export class WatcherSession {
       const errMsg = (err as Error).message ?? String(err);
       this.log.error({ err }, 'tick failed');
       captureWithContext(err, { agent_id: this.agentId, watcher_id: this.watcherId, component: 'WatcherSession' });
-      queries.updateWatcher(this.watcherId, { status: 'error', error_message: errMsg.slice(0, 500) });
-      const updated = queries.getWatcherById(this.watcherId);
-      if (updated) socket.emitWatcherSessionUpdate(updated);
+      // Same stop-race guard on the error path — don't flip a stopped watcher
+      // to 'error'.
+      const current = queries.getWatcherById(this.watcherId);
+      if (!this._stopped && current && !isTerminalStatus(current.status)) {
+        queries.updateWatcher(this.watcherId, { status: 'error', error_message: errMsg.slice(0, 500) });
+        const updated = queries.getWatcherById(this.watcherId);
+        if (updated) socket.emitWatcherSessionUpdate(updated);
+      }
       // Atomic rollback — restore the history to its pre-tick length so the
       // next retry starts from a known-valid prefix (no half-finished
       // tool-use turns, no consecutive same-role messages).
