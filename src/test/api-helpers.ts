@@ -16,7 +16,11 @@ import apiRouter from '../server/api/router.js';
  */
 export function createTestApp(): express.Express {
   const app = express();
-  app.use(express.json());
+  app.use(express.json({
+    verify: (req, _res, buf) => {
+      (req as { rawBody?: Buffer }).rawBody = Buffer.from(buf);
+    },
+  }));
   app.use('/api', apiRouter);
   return app;
 }
