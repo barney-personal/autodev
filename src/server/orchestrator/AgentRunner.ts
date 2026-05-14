@@ -110,8 +110,8 @@ export function runAgent(options: RunOptions): void {
   const maxTurns = effectiveMaxTurns(stopMode, stopValue);
   const model: string | null = job.model ?? null;
   const useCodex = isCodexModel(model);
-  const codexReasoningEffort = getCodexReasoningEffort(model);
-  const claudeEffort = getClaudeEffort(model);
+  const codexReasoningEffort = getCodexReasoningEffort(model, job.workflow_phase);
+  const claudeEffort = getClaudeEffort(model, job.workflow_phase);
   if (useCodex) ensureCodexTrusted(workDir);
 
   const mcpUrl = `http://localhost:${mcpPort}/mcp/${agentId}`;

@@ -143,8 +143,8 @@ export interface BuildAgentScriptOptions {
 export function buildAgentScript(opts: BuildAgentScriptOptions): string {
   const { agentId, job, workDir, mcpConfig, promptFilePath, useCodex, usePrintMode, resumeSessionId, expectedBranch } = opts;
   const model: string | null = job.model ?? null;
-  const codexReasoningEffort = getCodexReasoningEffort(model);
-  const claudeEffort = getClaudeEffort(model);
+  const codexReasoningEffort = getCodexReasoningEffort(model, job.workflow_phase);
+  const claudeEffort = getClaudeEffort(model, job.workflow_phase);
 
   let execLine: string;
   if (useCodex) {

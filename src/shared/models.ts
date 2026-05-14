@@ -20,13 +20,54 @@ export const DEFAULT_EYE_MODEL = DEFAULT_CLAUDE_OPUS_MODEL;
 export const DEFAULT_CLAUDE_EFFORT = 'xhigh';
 export const DEFAULT_CODEX_REASONING_EFFORT = 'xhigh';
 
-export function getClaudeEffort(model: string | null): string | null {
-  if (model === DEFAULT_CLAUDE_OPUS_MODEL || model === DEFAULT_CLAUDE_OPUS_MODEL_1M) return DEFAULT_CLAUDE_EFFORT;
+/** Phases with dedicated effort/thinking-budget defaults. */
+export type EffortPhase = 'assess' | 'review' | 'implement' | 'verify';
+
+/**
+ * Effort defaults by workflow phase. Tuned so judgment-heavy phases keep max
+ * thinking budget and execution-heavy phases drop to `medium` — the plan was
+ * already produced at `xhigh` in assess, so each implement turn doesn't need
+ * to re-derive strategy. Non-workflow jobs and phases not listed here fall
+ * back to `DEFAULT_CLAUDE_EFFORT` ('xhigh').
+ */
+const PHASE_EFFORT_DEFAULTS: Record<EffortPhase, string> = {
+  assess: 'xhigh',
+  review: 'xhigh',
+  implement: 'medium',
+  verify: 'xhigh',
+};
+
+/**
+ * Resolve effort/reasoning budget for a phase, with env-var overrides:
+ *   EFFORT_ASSESS, EFFORT_REVIEW, EFFORT_IMPLEMENT, EFFORT_VERIFY,
+ *   EFFORT_DEFAULT (for jobs without a workflow_phase).
+ *
+ * Set an env var to the empty string to disable the flag for that phase
+ * (the agent CLI is spawned without `--effort` / `model_reasoning_effort`).
+ */
+function resolveEffort(phase: string | null | undefined): string | null {
+  const envKey = phase ? `EFFORT_${phase.toUpperCase()}` : 'EFFORT_DEFAULT';
+  const fromEnv = process.env[envKey];
+  if (fromEnv !== undefined) {
+    return fromEnv === '' ? null : fromEnv;
+  }
+  if (phase && phase in PHASE_EFFORT_DEFAULTS) {
+    return PHASE_EFFORT_DEFAULTS[phase as EffortPhase];
+  }
+  return DEFAULT_CLAUDE_EFFORT;
+}
+
+export function getClaudeEffort(model: string | null, phase?: string | null): string | null {
+  if (model === DEFAULT_CLAUDE_OPUS_MODEL || model === DEFAULT_CLAUDE_OPUS_MODEL_1M) {
+    return resolveEffort(phase);
+  }
   return null;
 }
 
-export function getCodexReasoningEffort(model: string | null): string | null {
-  if (model === 'codex' || (model != null && model.startsWith('codex-'))) return DEFAULT_CODEX_REASONING_EFFORT;
+export function getCodexReasoningEffort(model: string | null, phase?: string | null): string | null {
+  if (model === 'codex' || (model != null && model.startsWith('codex-'))) {
+    return resolveEffort(phase);
+  }
   return null;
 }
 

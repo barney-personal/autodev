@@ -250,3 +250,8 @@ data/
 | `ORCHESTRATOR_API_URL` | `http://localhost:3456` | Base URL for lock verification |
 | `ANTHROPIC_API_KEY` | — | Required for model auto-classification |
 | `SENTRY_DSN` | — | Optional error tracking |
+| `EFFORT_ASSESS` | `xhigh` | Effort/reasoning budget for the assess phase (Claude `--effort` / Codex `model_reasoning_effort`). Set to empty string to omit the flag. |
+| `EFFORT_REVIEW` | `xhigh` | Effort budget for the review phase. |
+| `EFFORT_IMPLEMENT` | `medium` | Effort budget for the implement phase. Lowered from `xhigh` because plan and judgment already happened in assess/review — most implement turns are tool execution that doesn't benefit from extended thinking. |
+| `EFFORT_VERIFY` | `xhigh` | Effort budget for the verify phase. |
+| `EFFORT_DEFAULT` | `xhigh` | Effort budget for one-shot (non-workflow) jobs. |
