@@ -298,7 +298,18 @@ describe('removeWorktree (idempotent cleanup)', () => {
 
   it('skips the remove call when the worktree directory is already gone and just prunes', () => {
     existsSyncMock.mockReturnValue(false);
-    execSyncMock.mockReturnValue(Buffer.from(''));
+    // Model real execution: with the worktree dir gone, the
+    // `git status --porcelain` call's cwd doesn't exist, so execSync
+    // throws ENOENT. The outer try/catch in removeWorktree swallows
+    // it and falls through to the existsSync probe.
+    execSyncMock.mockImplementation((cmd: string) => {
+      if (cmd.includes('git status --porcelain')) {
+        const err = new Error(`spawn ${cmd} ENOENT`) as NodeJS.ErrnoException;
+        err.code = 'ENOENT';
+        throw err;
+      }
+      return Buffer.from('');
+    });
 
     removeWorktree(baseWorkflow);
 
