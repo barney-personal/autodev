@@ -65,10 +65,14 @@ describe('phase-aware effort', () => {
     expect(getCodexReasoningEffort('codex-gpt-5.5', 'implement')).toBe('high');
   });
 
-  it('EFFORT_DEFAULT applies when no phase is set', () => {
+  it('EFFORT_DEFAULT applies when no phase is set (null, undefined, or omitted)', () => {
     process.env.EFFORT_DEFAULT = 'medium';
     expect(getClaudeEffort('claude-opus-4-7', null)).toBe('medium');
+    expect(getClaudeEffort('claude-opus-4-7', undefined)).toBe('medium');
+    expect(getClaudeEffort('claude-opus-4-7')).toBe('medium');
     expect(getCodexReasoningEffort('codex', null)).toBe('medium');
+    expect(getCodexReasoningEffort('codex', undefined)).toBe('medium');
+    expect(getCodexReasoningEffort('codex')).toBe('medium');
   });
 
   it('empty env var disables the flag', () => {
