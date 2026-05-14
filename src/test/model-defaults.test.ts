@@ -77,9 +77,18 @@ describe('phase-aware effort', () => {
     }
   });
 
-  it('falls back to xhigh for unknown / idle phases', () => {
+  it('falls back to xhigh for the idle phase (not a real dispatch phase)', () => {
     expect(getClaudeEffort('claude-opus-4-7', 'idle')).toBe('xhigh');
     expect(getCodexReasoningEffort('codex', 'idle')).toBe('xhigh');
+  });
+
+  it('idle phase routes through EFFORT_DEFAULT, not EFFORT_IDLE', () => {
+    // EFFORT_IDLE is intentionally undocumented — set it and confirm it is ignored
+    process.env.EFFORT_IDLE = 'minimal';
+    process.env.EFFORT_DEFAULT = 'low';
+    expect(getClaudeEffort('claude-opus-4-7', 'idle')).toBe('low');
+    expect(getCodexReasoningEffort('codex', 'idle')).toBe('low');
+    delete process.env.EFFORT_IDLE; // not in EFFORT_ENV_VARS, restore manually
   });
 
   it('env vars override per-phase defaults', () => {
@@ -187,6 +196,13 @@ describe('codex service tier', () => {
     process.env.CODEX_SERVICE_TIER_DEFAULT = 'flex';
     expect(getCodexServiceTier('codex', null)).toBe('flex');
     expect(getCodexServiceTier('codex')).toBe('flex');
+  });
+
+  it('idle phase routes through CODEX_SERVICE_TIER_DEFAULT, not _IDLE', () => {
+    process.env.CODEX_SERVICE_TIER_IDLE = 'priority';
+    process.env.CODEX_SERVICE_TIER_DEFAULT = 'flex';
+    expect(getCodexServiceTier('codex', 'idle')).toBe('flex');
+    delete process.env.CODEX_SERVICE_TIER_IDLE;
   });
 
   it('empty string disables the per-phase default (config.toml takes effect)', () => {

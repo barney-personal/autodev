@@ -20,7 +20,6 @@ export const DEFAULT_DEBATE_CODEX_MODEL = DEFAULT_CODEX_MODEL;
 export const DEFAULT_VERIFY_MODEL = DEFAULT_CLAUDE_OPUS_MODEL;
 export const DEFAULT_EYE_MODEL = DEFAULT_CLAUDE_OPUS_MODEL;
 export const DEFAULT_CLAUDE_EFFORT = 'xhigh';
-export const DEFAULT_CODEX_REASONING_EFFORT = 'xhigh';
 
 /** Phases with dedicated effort/thinking-budget defaults. */
 export type EffortPhase = 'assess' | 'review' | 'implement' | 'verify';
@@ -66,9 +65,19 @@ const KNOWN_EFFORT_LEVELS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh'
 const _warnedUnknownEffort = new Set<string>();
 
 /**
+ * Phases that should be treated as "no phase" — they aren't real dispatch
+ * phases, just workflow states. `'idle'` is the workflow's terminal/initial
+ * state; jobs shouldn't be spawned in it, but if one ever is, we route to
+ * `EFFORT_DEFAULT` rather than minting an undocumented `EFFORT_IDLE` key.
+ */
+function isDispatchPhase(phase: WorkflowPhase | null | undefined): phase is EffortPhase {
+  return phase != null && phase !== 'idle';
+}
+
+/**
  * Resolve effort/reasoning budget for a phase, with env-var overrides:
  *   EFFORT_ASSESS, EFFORT_REVIEW, EFFORT_IMPLEMENT, EFFORT_VERIFY,
- *   EFFORT_DEFAULT (for jobs without a workflow_phase).
+ *   EFFORT_DEFAULT (for jobs without a workflow_phase, or in `'idle'`).
  *
  * Set an env var to the empty string to disable the flag for that phase
  * (the agent CLI is spawned without `--effort` / `model_reasoning_effort`).
@@ -77,7 +86,7 @@ const _warnedUnknownEffort = new Set<string>();
  * at agent spawn time.
  */
 function resolveEffort(phase: WorkflowPhase | null | undefined): string | null {
-  const envKey = phase ? `EFFORT_${phase.toUpperCase()}` : 'EFFORT_DEFAULT';
+  const envKey = isDispatchPhase(phase) ? `EFFORT_${phase.toUpperCase()}` : 'EFFORT_DEFAULT';
   const fromEnv = process.env[envKey];
   if (fromEnv !== undefined) {
     if (fromEnv === '') return null;
@@ -94,8 +103,8 @@ function resolveEffort(phase: WorkflowPhase | null | undefined): string | null {
     }
     return fromEnv;
   }
-  if (phase && phase in PHASE_EFFORT_DEFAULTS) {
-    return PHASE_EFFORT_DEFAULTS[phase as EffortPhase];
+  if (isDispatchPhase(phase) && phase in PHASE_EFFORT_DEFAULTS) {
+    return PHASE_EFFORT_DEFAULTS[phase];
   }
   return DEFAULT_CLAUDE_EFFORT;
 }
@@ -130,7 +139,7 @@ export function getCodexReasoningEffort(model: string | null, phase?: WorkflowPh
  */
 export function getCodexServiceTier(model: string | null, phase?: WorkflowPhase | null): string | null {
   if (!(model === 'codex' || (model != null && model.startsWith('codex-')))) return null;
-  const envKey = phase ? `CODEX_SERVICE_TIER_${phase.toUpperCase()}` : 'CODEX_SERVICE_TIER_DEFAULT';
+  const envKey = isDispatchPhase(phase) ? `CODEX_SERVICE_TIER_${phase.toUpperCase()}` : 'CODEX_SERVICE_TIER_DEFAULT';
   const fromEnv = process.env[envKey];
   if (fromEnv !== undefined) {
     if (fromEnv === '') return null;
@@ -147,8 +156,8 @@ export function getCodexServiceTier(model: string | null, phase?: WorkflowPhase 
     }
     return fromEnv;
   }
-  if (phase && phase in PHASE_SERVICE_TIER_DEFAULTS) {
-    return PHASE_SERVICE_TIER_DEFAULTS[phase as EffortPhase] ?? null;
+  if (isDispatchPhase(phase) && phase in PHASE_SERVICE_TIER_DEFAULTS) {
+    return PHASE_SERVICE_TIER_DEFAULTS[phase] ?? null;
   }
   return null;
 }
