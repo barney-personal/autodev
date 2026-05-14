@@ -26,18 +26,33 @@ export const DEFAULT_CODEX_REASONING_EFFORT = 'xhigh';
 export type EffortPhase = 'assess' | 'review' | 'implement' | 'verify';
 
 /**
- * Effort defaults by workflow phase. Tuned so judgment-heavy phases keep max
- * thinking budget and execution-heavy phases drop to `medium` — the plan was
- * already produced at `xhigh` in assess, so each implement turn doesn't need
- * to re-derive strategy. Non-workflow jobs and phases not listed here fall
- * back to `DEFAULT_CLAUDE_EFFORT` ('xhigh').
+ * Effort defaults by workflow phase. Tuned so judgment-heavy phases keep
+ * max thinking budget and execution-heavy phases drop down. Reviewers run
+ * at `high` rather than `xhigh` because they're paired with the `fast`
+ * service tier (see `PHASE_SERVICE_TIER_DEFAULTS`) — together they trade a
+ * small amount of reviewer reasoning depth for ~1.5x throughput. Non-workflow
+ * jobs and phases not listed here fall back to `DEFAULT_CLAUDE_EFFORT`.
  */
 const PHASE_EFFORT_DEFAULTS: Record<EffortPhase, string> = {
   assess: 'xhigh',
-  review: 'xhigh',
+  review: 'high',
   implement: 'medium',
   verify: 'xhigh',
 };
+
+/**
+ * Codex `service_tier` defaults by phase. `fast` gives ~1.5x throughput on
+ * the priority lane at slightly higher cost — appropriate for the review
+ * phase, which is judgment-heavy and benefits from faster turnaround. Other
+ * phases fall through to whatever the user has in `~/.codex/config.toml`
+ * (no override).
+ */
+const PHASE_SERVICE_TIER_DEFAULTS: Partial<Record<EffortPhase, string>> = {
+  review: 'fast',
+};
+
+const KNOWN_SERVICE_TIERS = new Set(['default', 'flex', 'priority', 'fast', 'auto']);
+const _warnedUnknownServiceTier = new Set<string>();
 
 /**
  * Effort levels accepted by Claude `--effort` and Codex `model_reasoning_effort`.
@@ -85,9 +100,10 @@ function resolveEffort(phase: WorkflowPhase | null | undefined): string | null {
   return DEFAULT_CLAUDE_EFFORT;
 }
 
-/** @internal — test seam to reset the warn-once memo between specs. */
+/** @internal — test seam to reset the warn-once memos between specs. */
 export function _resetEffortWarningsForTest(): void {
   _warnedUnknownEffort.clear();
+  _warnedUnknownServiceTier.clear();
 }
 
 export function getClaudeEffort(model: string | null, phase?: WorkflowPhase | null): string | null {
@@ -100,6 +116,39 @@ export function getClaudeEffort(model: string | null, phase?: WorkflowPhase | nu
 export function getCodexReasoningEffort(model: string | null, phase?: WorkflowPhase | null): string | null {
   if (model === 'codex' || (model != null && model.startsWith('codex-'))) {
     return resolveEffort(phase);
+  }
+  return null;
+}
+
+/**
+ * Resolve Codex `service_tier` for a phase. Returns `null` when no override
+ * should be passed (the user's `~/.codex/config.toml` value takes effect).
+ *
+ * Env-var overrides: `CODEX_SERVICE_TIER_ASSESS`, `_REVIEW`, `_IMPLEMENT`,
+ * `_VERIFY`, and `_DEFAULT` (for non-workflow jobs). Empty string disables
+ * the per-phase default so the config.toml value is used.
+ */
+export function getCodexServiceTier(model: string | null, phase?: WorkflowPhase | null): string | null {
+  if (!(model === 'codex' || (model != null && model.startsWith('codex-')))) return null;
+  const envKey = phase ? `CODEX_SERVICE_TIER_${phase.toUpperCase()}` : 'CODEX_SERVICE_TIER_DEFAULT';
+  const fromEnv = process.env[envKey];
+  if (fromEnv !== undefined) {
+    if (fromEnv === '') return null;
+    if (!KNOWN_SERVICE_TIERS.has(fromEnv)) {
+      const seenKey = `${envKey}=${fromEnv}`;
+      if (!_warnedUnknownServiceTier.has(seenKey)) {
+        _warnedUnknownServiceTier.add(seenKey);
+        console.warn(
+          `[models] ${envKey}="${fromEnv}" is not a recognised Codex service tier ` +
+          `(expected one of: ${[...KNOWN_SERVICE_TIERS].join(', ')}). ` +
+          `Passing through to the CLI — typo? Spawn may fail.`,
+        );
+      }
+    }
+    return fromEnv;
+  }
+  if (phase && phase in PHASE_SERVICE_TIER_DEFAULTS) {
+    return PHASE_SERVICE_TIER_DEFAULTS[phase as EffortPhase] ?? null;
   }
   return null;
 }

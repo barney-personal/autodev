@@ -5,12 +5,18 @@ import {
   DEFAULT_WORKFLOW_REVIEWER_MODEL,
   getClaudeEffort,
   getCodexReasoningEffort,
+  getCodexServiceTier,
   _resetEffortWarningsForTest,
 } from '../shared/models.js';
 
-// Save/restore any EFFORT_* env vars the developer may have set locally so
-// the assertions below (which depend on built-in defaults) stay deterministic.
-const EFFORT_ENV_VARS = ['EFFORT_ASSESS', 'EFFORT_REVIEW', 'EFFORT_IMPLEMENT', 'EFFORT_VERIFY', 'EFFORT_DEFAULT'];
+// Save/restore any EFFORT_* / CODEX_SERVICE_TIER_* env vars the developer may
+// have set locally so the assertions below (which depend on built-in defaults)
+// stay deterministic.
+const EFFORT_ENV_VARS = [
+  'EFFORT_ASSESS', 'EFFORT_REVIEW', 'EFFORT_IMPLEMENT', 'EFFORT_VERIFY', 'EFFORT_DEFAULT',
+  'CODEX_SERVICE_TIER_ASSESS', 'CODEX_SERVICE_TIER_REVIEW', 'CODEX_SERVICE_TIER_IMPLEMENT',
+  'CODEX_SERVICE_TIER_VERIFY', 'CODEX_SERVICE_TIER_DEFAULT',
+];
 const savedEffortEnv: Record<string, string | undefined> = {};
 function clearEffortEnv() {
   for (const k of EFFORT_ENV_VARS) {
@@ -59,8 +65,13 @@ describe('phase-aware effort', () => {
     expect(getCodexReasoningEffort('codex-gpt-5.5', 'implement')).toBe('medium');
   });
 
-  it('keeps xhigh effort for judgment-heavy phases (assess/review/verify)', () => {
-    for (const phase of ['assess', 'review', 'verify'] as const) {
+  it('drops review-phase effort to high for both providers (paired with fast service tier)', () => {
+    expect(getClaudeEffort('claude-opus-4-7[1m]', 'review')).toBe('high');
+    expect(getCodexReasoningEffort('codex-gpt-5.5', 'review')).toBe('high');
+  });
+
+  it('keeps xhigh effort for assess and verify phases', () => {
+    for (const phase of ['assess', 'verify'] as const) {
       expect(getClaudeEffort('claude-opus-4-7', phase)).toBe('xhigh');
       expect(getCodexReasoningEffort('codex', phase)).toBe('xhigh');
     }
@@ -139,6 +150,79 @@ describe('effort typo detection', () => {
   it('does not warn for the empty-string opt-out', () => {
     process.env.EFFORT_IMPLEMENT = '';
     expect(getClaudeEffort('claude-opus-4-7[1m]', 'implement')).toBeNull();
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('codex service tier', () => {
+  beforeEach(clearEffortEnv);
+  afterEach(restoreEffortEnv);
+
+  it('defaults to fast tier for the review phase', () => {
+    expect(getCodexServiceTier('codex-gpt-5.5', 'review')).toBe('fast');
+    expect(getCodexServiceTier('codex', 'review')).toBe('fast');
+  });
+
+  it('returns null for non-review phases so config.toml takes effect', () => {
+    expect(getCodexServiceTier('codex', 'assess')).toBeNull();
+    expect(getCodexServiceTier('codex', 'implement')).toBeNull();
+    expect(getCodexServiceTier('codex', 'verify')).toBeNull();
+    expect(getCodexServiceTier('codex', null)).toBeNull();
+    expect(getCodexServiceTier('codex')).toBeNull();
+  });
+
+  it('returns null for non-codex models', () => {
+    expect(getCodexServiceTier('claude-opus-4-7', 'review')).toBeNull();
+    expect(getCodexServiceTier(null, 'review')).toBeNull();
+  });
+
+  it('env vars override per-phase defaults', () => {
+    process.env.CODEX_SERVICE_TIER_REVIEW = 'priority';
+    process.env.CODEX_SERVICE_TIER_IMPLEMENT = 'fast';
+    expect(getCodexServiceTier('codex', 'review')).toBe('priority');
+    expect(getCodexServiceTier('codex', 'implement')).toBe('fast');
+  });
+
+  it('CODEX_SERVICE_TIER_DEFAULT applies when no phase is set', () => {
+    process.env.CODEX_SERVICE_TIER_DEFAULT = 'flex';
+    expect(getCodexServiceTier('codex', null)).toBe('flex');
+    expect(getCodexServiceTier('codex')).toBe('flex');
+  });
+
+  it('empty string disables the per-phase default (config.toml takes effect)', () => {
+    process.env.CODEX_SERVICE_TIER_REVIEW = '';
+    expect(getCodexServiceTier('codex', 'review')).toBeNull();
+  });
+});
+
+describe('codex service tier typo detection', () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    clearEffortEnv();
+    _resetEffortWarningsForTest();
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    restoreEffortEnv();
+    warnSpy.mockRestore();
+  });
+
+  it('warns once when an unrecognised tier is passed via env', () => {
+    process.env.CODEX_SERVICE_TIER_REVIEW = 'turbo'; // not a real tier
+    expect(getCodexServiceTier('codex', 'review')).toBe('turbo');
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0][0]).toContain('CODEX_SERVICE_TIER_REVIEW="turbo"');
+    expect(warnSpy.mock.calls[0][0]).toContain('not a recognised Codex service tier');
+
+    getCodexServiceTier('codex', 'review');
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not warn for known tiers', () => {
+    for (const tier of ['default', 'flex', 'priority', 'fast', 'auto']) {
+      process.env.CODEX_SERVICE_TIER_REVIEW = tier;
+      getCodexServiceTier('codex', 'review');
+    }
     expect(warnSpy).not.toHaveBeenCalled();
   });
 });

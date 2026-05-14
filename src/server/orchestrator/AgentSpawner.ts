@@ -24,7 +24,7 @@ import { wrapExecLineWithNice } from './ProcessPriority.js';
 import { logResilienceEvent } from './ResilienceLogger.js';
 import { errMsg } from '../../shared/errors.js';
 import { isCodexModel, codexModelName, isAutoExitJob } from '../../shared/types.js';
-import { getClaudeEffort, getCodexReasoningEffort } from '../../shared/models.js';
+import { getClaudeEffort, getCodexReasoningEffort, getCodexServiceTier } from '../../shared/models.js';
 import { checkResources, escalateBackoff, resetBackoff, getBackoffMs, setLastResourceErrorTime, MAX_PTY_SESSIONS } from './PtyResourceManager.js';
 import { PTY_LOG_DIR, getNdjsonPath, getPtyStderrPath, getSnapshotPath, clearAgentLogFiles } from './PtyDiskLogger.js';
 import { isStandalonePrintJob } from './JobFinalizer.js';
@@ -144,6 +144,7 @@ export function buildAgentScript(opts: BuildAgentScriptOptions): string {
   const { agentId, job, workDir, mcpConfig, promptFilePath, useCodex, usePrintMode, resumeSessionId, expectedBranch } = opts;
   const model: string | null = job.model ?? null;
   const codexReasoningEffort = getCodexReasoningEffort(model, job.workflow_phase);
+  const codexServiceTier = getCodexServiceTier(model, job.workflow_phase);
   const claudeEffort = getClaudeEffort(model, job.workflow_phase);
 
   let execLine: string;
@@ -154,7 +155,10 @@ export function buildAgentScript(opts: BuildAgentScriptOptions): string {
     const reasoningFlag = codexReasoningEffort
       ? ` -c ${JSON.stringify(`model_reasoning_effort="${codexReasoningEffort}"`)}`
       : '';
-    execLine = `exec ${JSON.stringify(CODEX)} --dangerously-bypass-approvals-and-sandbox -C ${JSON.stringify(workDir)} -c 'mcp_servers.orchestrator.url="${mcpUrl}"'${modelFlag}${reasoningFlag}`;
+    const serviceTierFlag = codexServiceTier
+      ? ` -c ${JSON.stringify(`service_tier="${codexServiceTier}"`)}`
+      : '';
+    execLine = `exec ${JSON.stringify(CODEX)} --dangerously-bypass-approvals-and-sandbox -C ${JSON.stringify(workDir)} -c 'mcp_servers.orchestrator.url="${mcpUrl}"'${modelFlag}${reasoningFlag}${serviceTierFlag}`;
   } else {
     const resumeFlag = resumeSessionId ? ` --resume ${JSON.stringify(resumeSessionId)}` : '';
     const effortFlag = claudeEffort ? ` --effort ${JSON.stringify(claudeEffort)}` : '';
