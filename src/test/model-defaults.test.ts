@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   DEFAULT_CODEX_MODEL,
   DEFAULT_WORKFLOW_IMPLEMENTER_MODEL,
@@ -7,7 +7,27 @@ import {
   getCodexReasoningEffort,
 } from '../shared/models.js';
 
+// Save/restore any EFFORT_* env vars the developer may have set locally so
+// the assertions below (which depend on built-in defaults) stay deterministic.
+const EFFORT_ENV_VARS = ['EFFORT_ASSESS', 'EFFORT_REVIEW', 'EFFORT_IMPLEMENT', 'EFFORT_VERIFY', 'EFFORT_DEFAULT'];
+const savedEffortEnv: Record<string, string | undefined> = {};
+function clearEffortEnv() {
+  for (const k of EFFORT_ENV_VARS) {
+    savedEffortEnv[k] = process.env[k];
+    delete process.env[k];
+  }
+}
+function restoreEffortEnv() {
+  for (const k of EFFORT_ENV_VARS) {
+    if (savedEffortEnv[k] === undefined) delete process.env[k];
+    else process.env[k] = savedEffortEnv[k];
+  }
+}
+
 describe('shared model defaults', () => {
+  beforeEach(clearEffortEnv);
+  afterEach(restoreEffortEnv);
+
   it('pins workflow defaults to opus 4.7 and gpt-5.5', () => {
     expect(DEFAULT_WORKFLOW_IMPLEMENTER_MODEL).toBe('claude-opus-4-7[1m]');
     expect(DEFAULT_WORKFLOW_REVIEWER_MODEL).toBe('codex-gpt-5.5');
@@ -30,17 +50,8 @@ describe('shared model defaults', () => {
 });
 
 describe('phase-aware effort', () => {
-  const phaseEnvVars = [
-    'EFFORT_ASSESS',
-    'EFFORT_REVIEW',
-    'EFFORT_IMPLEMENT',
-    'EFFORT_VERIFY',
-    'EFFORT_DEFAULT',
-  ];
-
-  afterEach(() => {
-    for (const k of phaseEnvVars) delete process.env[k];
-  });
+  beforeEach(clearEffortEnv);
+  afterEach(restoreEffortEnv);
 
   it('drops implement-phase effort to medium for both providers', () => {
     expect(getClaudeEffort('claude-opus-4-7[1m]', 'implement')).toBe('medium');

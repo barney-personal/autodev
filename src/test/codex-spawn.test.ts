@@ -7,11 +7,29 @@
  * on "Reading prompt from stdin..." instead of exiting. Passing the prompt
  * as a positional arg to `codex exec <prompt>` avoids this entirely.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { isCodexModel, codexModelName } from '../shared/types.js';
 import { getCodexReasoningEffort } from '../shared/models.js';
 
 describe('Codex spawn args', () => {
+  // Isolate from any EFFORT_* env vars a developer might have set locally —
+  // these tests assert the default `xhigh` value, which would silently
+  // change if `EFFORT_DEFAULT` is exported.
+  const effortEnvVars = ['EFFORT_ASSESS', 'EFFORT_REVIEW', 'EFFORT_IMPLEMENT', 'EFFORT_VERIFY', 'EFFORT_DEFAULT'];
+  const saved: Record<string, string | undefined> = {};
+  beforeEach(() => {
+    for (const k of effortEnvVars) {
+      saved[k] = process.env[k];
+      delete process.env[k];
+    }
+  });
+  afterEach(() => {
+    for (const k of effortEnvVars) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  });
+
   /**
    * Simulate the arg-building logic from AgentRunner.runAgent() to verify
    * the prompt ends up as a positional argument for Codex models.
