@@ -3,7 +3,7 @@ import { execFileSync } from 'child_process';
 import { existsSync } from 'fs';
 import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
-import { resumeWorkflow, cleanupWorktree, pushAndCreatePr, getPrCreationOutcome } from '../orchestrator/WorkflowManager.js';
+import { resumeWorkflow, cleanupWorktree, pushBranch, createWorkflowPr, probeRecoverableWorkflowWork } from '../orchestrator/WorkflowManager.js';
 import { cancelledAgents } from '../orchestrator/AgentRunner.js';
 import { getFileLockRegistry } from '../orchestrator/FileLockRegistry.js';
 import { disconnectAgent, isTmuxSessionAlive, saveSnapshot } from '../orchestrator/PtyManager.js';
@@ -205,39 +205,6 @@ router.post('/:id/wrap-up', (req, res) => {
     }
   }
 
-  // Create draft PR with partial work
-  let prUrl: string | null = null;
-  if (workflow.worktree_path && workflow.work_dir) {
-    prUrl = pushAndCreatePr(workflow, true);
-  }
-  const prOutcome = getPrCreationOutcome(workflow, prUrl);
-
-  if (prOutcome === 'created') {
-    queries.updateWorkflow(workflow.id, {
-      status: 'complete',
-      current_phase: 'idle' as WorkflowPhase,
-      pr_url: prUrl,
-      blocked_reason: null,
-    });
-    const finalWorkflow = queries.getWorkflowById(workflow.id);
-    if (finalWorkflow) socket.emitWorkflowUpdate(finalWorkflow);
-    if (finalWorkflow) cleanupWorktree(finalWorkflow);
-    res.json({ workflow: finalWorkflow, pr_url: prUrl, outcome: 'draft_pr_created' });
-    return;
-  }
-
-  if (prOutcome === 'failed_with_publishable_commits') {
-    queries.updateWorkflow(workflow.id, {
-      status: 'blocked',
-      current_phase: 'idle' as WorkflowPhase,
-      blocked_reason: `Draft PR creation failed — worktree preserved for retry at ${workflow.worktree_path}`,
-    });
-    const finalWorkflow = queries.getWorkflowById(workflow.id);
-    if (finalWorkflow) socket.emitWorkflowUpdate(finalWorkflow);
-    res.status(409).json({ workflow: finalWorkflow, pr_url: null, outcome: 'draft_pr_failed_preserved' });
-    return;
-  }
-
   // Fix-C6b: If worktree metadata is missing but milestones were completed,
   // block instead of silently cancelling — the work may be recoverable.
   if (!workflow.worktree_path && workflow.milestones_done > 0) {
@@ -252,16 +219,80 @@ router.post('/:id/wrap-up', (req, res) => {
     return;
   }
 
+  // Probe for recoverable work first — this determines whether cleanup is safe
+  // regardless of how push/PR creation goes.
+  const probe = probeRecoverableWorkflowWork(workflow);
+  const preservedAt = workflow.worktree_path ?? '(unknown path)';
+
+  // If the probe proves no recoverable work, skip push/PR and cancel cleanly.
+  if (probe.status === 'clean') {
+    queries.updateWorkflow(workflow.id, {
+      status: 'cancelled',
+      current_phase: 'idle' as WorkflowPhase,
+      blocked_reason: null,
+      pr_url: null,
+    });
+    const finalWorkflow = queries.getWorkflowById(workflow.id);
+    if (finalWorkflow) socket.emitWorkflowUpdate(finalWorkflow);
+    if (finalWorkflow) cleanupWorktree(finalWorkflow);
+    res.json({ workflow: finalWorkflow, pr_url: null, outcome: 'no_publishable_commits' });
+    return;
+  }
+
+  // There is (or might be) recoverable work. Try push, then PR creation.
+  // From this point, we NEVER call cleanupWorktree unless the PR succeeds.
+  if (!workflow.worktree_path || !workflow.work_dir) {
+    queries.updateWorkflow(workflow.id, {
+      status: 'blocked',
+      current_phase: 'idle' as WorkflowPhase,
+      blocked_reason: `Wrap-up: unknown PR-creation failure (${probe.detail}) — worktree preserved at ${preservedAt}`,
+    });
+    const finalWorkflow = queries.getWorkflowById(workflow.id);
+    if (finalWorkflow) socket.emitWorkflowUpdate(finalWorkflow);
+    res.status(409).json({ workflow: finalWorkflow, pr_url: null, outcome: 'draft_pr_failed_preserved' });
+    return;
+  }
+
+  // Step 1: Push the branch
+  const pushResult = pushBranch(workflow);
+  if (!pushResult.ok) {
+    queries.updateWorkflow(workflow.id, {
+      status: 'blocked',
+      current_phase: 'idle' as WorkflowPhase,
+      blocked_reason: `Wrap-up: branch push failed (${pushResult.error}) — worktree preserved at ${preservedAt}`,
+    });
+    const finalWorkflow = queries.getWorkflowById(workflow.id);
+    if (finalWorkflow) socket.emitWorkflowUpdate(finalWorkflow);
+    res.status(409).json({ workflow: finalWorkflow, pr_url: null, outcome: 'draft_pr_failed_preserved' });
+    return;
+  }
+
+  // Step 2: Create draft PR (branch is now pushed)
+  const prResult = createWorkflowPr(workflow, { isDraft: true });
+  if (!prResult.ok || !prResult.url) {
+    const prError = prResult.error ?? 'unknown';
+    queries.updateWorkflow(workflow.id, {
+      status: 'blocked',
+      current_phase: 'idle' as WorkflowPhase,
+      blocked_reason: `Wrap-up: branch pushed but gh pr create failed (${prError}) — worktree preserved at ${preservedAt}`,
+    });
+    const finalWorkflow = queries.getWorkflowById(workflow.id);
+    if (finalWorkflow) socket.emitWorkflowUpdate(finalWorkflow);
+    res.status(409).json({ workflow: finalWorkflow, pr_url: null, outcome: 'draft_pr_failed_preserved' });
+    return;
+  }
+
+  // Success: PR created — mark complete and clean up
   queries.updateWorkflow(workflow.id, {
-    status: 'cancelled',
+    status: 'complete',
     current_phase: 'idle' as WorkflowPhase,
+    pr_url: prResult.url,
     blocked_reason: null,
-    pr_url: null,
   });
   const finalWorkflow = queries.getWorkflowById(workflow.id);
   if (finalWorkflow) socket.emitWorkflowUpdate(finalWorkflow);
   if (finalWorkflow) cleanupWorktree(finalWorkflow);
-  res.json({ workflow: finalWorkflow, pr_url: null, outcome: 'no_publishable_commits' });
+  res.json({ workflow: finalWorkflow, pr_url: prResult.url, outcome: 'draft_pr_created' });
 });
 
 // POST /api/workflows/:id/resume — resume a blocked or stuck workflow

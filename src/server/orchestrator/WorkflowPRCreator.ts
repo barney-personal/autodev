@@ -75,6 +75,146 @@ export function countBranchCommits(cwd: string): number {
   return 0;
 }
 
+// ─── Recoverable-Work Probe ─────────────────────────────────────────────────
+//
+// Wrap-up cleanup is gated by a stricter probe than countBranchCommits: any
+// uncertainty (missing worktree, missing/ambiguous origin refs, dirty tree,
+// probe command failures) must preserve the worktree. Only a positively clean
+// state — verified worktree, clean status, verified origin base ref, zero
+// commits ahead — may proceed to cleanup.
+
+export type RecoverableWorkProbeStatus = 'has_work' | 'clean' | 'unknown';
+
+export interface RecoverableWorkProbe {
+  status: RecoverableWorkProbeStatus;
+  detail: string;
+  baseRef: string | null;
+}
+
+function verifyRevExists(cwd: string, ref: string): boolean {
+  try {
+    execFileSync('git', ['rev-parse', '--verify', '--quiet', ref], {
+      cwd, stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Decide whether a workflow's worktree has any work that wrap-up cleanup
+ * would otherwise destroy.
+ *
+ * Returns:
+ *  - `clean`     — proven safe to cleanup: worktree exists, working tree is
+ *                  clean, an origin base ref was verified, and HEAD has no
+ *                  commits ahead of that base.
+ *  - `has_work`  — known recoverable state: dirty tree or commits ahead.
+ *  - `unknown`   — anything we can't positively verify (missing worktree,
+ *                  missing branch, ambiguous origin refs, probe failures).
+ *                  Treat as `has_work` for cleanup decisions.
+ */
+export function probeRecoverableWorkflowWork(workflow: Workflow): RecoverableWorkProbe {
+  const { worktree_path, worktree_branch } = workflow;
+  if (!worktree_path) {
+    return { status: 'unknown', detail: 'workflow has no worktree_path', baseRef: null };
+  }
+  if (!existsSync(worktree_path)) {
+    return { status: 'unknown', detail: `worktree directory missing at ${worktree_path}`, baseRef: null };
+  }
+
+  if (!worktree_branch) {
+    return { status: 'unknown', detail: 'workflow has no worktree_branch', baseRef: null };
+  }
+
+  // Non-mutating branch sanity check. ensureWorktreeBranch performs a checkout
+  // when it disagrees, which is the wrong shape for a probe — read-only here.
+  try {
+    const head = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+      cwd: worktree_path, stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000,
+    }).toString().trim();
+    if (head !== worktree_branch) {
+      return {
+        status: 'unknown',
+        detail: `HEAD on '${head}' instead of expected '${worktree_branch}'`,
+        baseRef: null,
+      };
+    }
+  } catch (err) {
+    return { status: 'unknown', detail: `git rev-parse failed: ${execErrMsg(err)}`, baseRef: null };
+  }
+
+  // Dirty tree — uncommitted changes are recoverable work.
+  let porcelain: string;
+  try {
+    porcelain = execFileSync('git', ['status', '--porcelain'], {
+      cwd: worktree_path, stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000,
+    }).toString();
+  } catch (err) {
+    return { status: 'unknown', detail: `git status failed: ${execErrMsg(err)}`, baseRef: null };
+  }
+  if (porcelain.trim().length > 0) {
+    return { status: 'has_work', detail: 'worktree has uncommitted changes', baseRef: null };
+  }
+
+  // Resolve a verified origin base ref.
+  const candidates: string[] = [];
+  let defaultBranch: string | null = null;
+  try {
+    defaultBranch = getRemoteDefaultBranch(worktree_path);
+  } catch (err) {
+    return {
+      status: 'unknown',
+      detail: `failed to resolve origin default branch: ${execErrMsg(err)}`,
+      baseRef: null,
+    };
+  }
+  if (defaultBranch) candidates.push(`origin/${defaultBranch}`);
+  for (const fallback of ['origin/HEAD', 'origin/main', 'origin/master']) {
+    if (!candidates.includes(fallback)) candidates.push(fallback);
+  }
+
+  let baseRef: string | null = null;
+  for (const candidate of candidates) {
+    if (verifyRevExists(worktree_path, candidate)) {
+      baseRef = candidate;
+      break;
+    }
+  }
+  if (!baseRef) {
+    return {
+      status: 'unknown',
+      detail: `could not verify any origin base ref (tried ${candidates.join(', ')})`,
+      baseRef: null,
+    };
+  }
+
+  // Count local commits ahead of the verified base ref.
+  let log: string;
+  try {
+    log = execFileSync('git', ['log', '--format=%H', `${baseRef}..HEAD`], {
+      cwd: worktree_path, stdio: ['ignore', 'pipe', 'pipe'], timeout: 10000,
+    }).toString();
+  } catch (err) {
+    return {
+      status: 'unknown',
+      detail: `git log against ${baseRef} failed: ${execErrMsg(err)}`,
+      baseRef,
+    };
+  }
+
+  const lines = log.split('\n').filter(l => l.trim().length > 0);
+  if (lines.length === 0) {
+    return { status: 'clean', detail: `no commits ahead of ${baseRef}`, baseRef };
+  }
+  return {
+    status: 'has_work',
+    detail: `${lines.length} commit(s) ahead of ${baseRef}`,
+    baseRef,
+  };
+}
+
 // ─── PR Body ────────────────────────────────────────────────────────────────
 
 export function _buildPrBody(workflow: Workflow, planText: string | null, options?: { partial?: boolean }): string {
@@ -110,113 +250,229 @@ export function _buildPrBody(workflow: Workflow, planText: string | null, option
 
 // ─── Push & PR Creation ─────────────────────────────────────────────────────
 
+export interface PushBranchResult {
+  ok: boolean;
+  error?: string;
+  authFailure?: boolean;
+  /** Number of `git push` attempts performed (1 or 2 in normal flow, 0 if validation failed). */
+  attempts?: number;
+  /** True iff a second attempt with `--force-with-lease` was made. */
+  retried?: boolean;
+}
+
+export interface CreatePrResult {
+  ok: boolean;
+  url?: string;
+  error?: string;
+}
+
+const AUTH_FAILURE_PATTERNS = [
+  'Authentication failed',
+  'Permission denied',
+  'could not read Username',
+  'could not read Password',
+  'terminal prompts disabled',
+  '403',
+  'The requested URL returned error: 403',
+];
+
+const RATE_LIMIT_PATTERNS = [
+  'retry-after',
+  'rate limit',
+  'rate_limit',
+  'secondary rate limit',
+  'abuse detection',
+];
+
+function isRateLimited(stderr: string): boolean {
+  const lower = stderr.toLowerCase();
+  return RATE_LIMIT_PATTERNS.some(p => lower.includes(p));
+}
+
+function isAuthFailure(stderr: string): boolean {
+  if (isRateLimited(stderr)) return false;
+  const lower = stderr.toLowerCase();
+  return AUTH_FAILURE_PATTERNS.some(p => lower.includes(p.toLowerCase()));
+}
+
+const DEFAULT_PUSH_RETRY_DELAY_MS = 5000;
+
 /**
- * Push the worktree branch and create a GitHub PR.
- * Does NOT remove the worktree — callers decide when to clean up.
- * Returns the PR URL on success, or null if no PR was created.
+ * Block the calling thread for `ms` without busy-waiting. Atomics.wait is the
+ * standard sync-sleep idiom in Node and works under Vitest. Tests inject a
+ * no-op `sleep` (or pass retryDelayMs: 0) to skip the real 5s wait.
  */
-export function pushAndCreatePr(
+function defaultSyncSleep(ms: number): void {
+  if (ms <= 0) return;
+  const buf = new Int32Array(new SharedArrayBuffer(4));
+  Atomics.wait(buf, 0, 0, ms);
+}
+
+export interface PushBranchOptions {
+  /** Use --force-with-lease on the first attempt. Retry always uses --force-with-lease. */
+  force?: boolean;
+  /** Delay between attempt 1 and attempt 2 in milliseconds. Defaults to 5000. */
+  retryDelayMs?: number;
+  /** Override the synchronous sleep used between attempts (for tests). */
+  sleep?: (ms: number) => void;
+}
+
+/**
+ * Push the worktree branch to origin with one bounded retry.
+ *
+ * Attempt 1: `git push -u origin <branch>` (or `--force-with-lease` if force=true).
+ * Attempt 2: `git push --force-with-lease -u origin <branch>`, run only if attempt
+ * 1 failed with a non-auth error, after a `retryDelayMs` pause.
+ *
+ * Auth failures (Authentication failed, Permission denied, terminal prompts
+ * disabled, plain 403) fail fast; 403 with rate-limit wording remains
+ * transient and gets the bounded retry.
+ */
+export function pushBranch(
   workflow: Workflow,
-  isDraft: boolean,
-  updateAndEmit?: (id: string, fields: Parameters<typeof queries.updateWorkflow>[1]) => void,
-): string | null {
+  options: PushBranchOptions = {},
+): PushBranchResult {
+  const { worktree_path, worktree_branch } = workflow;
+  if (!worktree_path || !worktree_branch) {
+    return { ok: false, error: 'missing worktree_path or worktree_branch', attempts: 0, retried: false };
+  }
+  if (!existsSync(worktree_path)) {
+    return { ok: false, error: `worktree directory missing at ${worktree_path}`, attempts: 0, retried: false };
+  }
+
+  const branchCheck = ensureWorktreeBranch(worktree_path, worktree_branch);
+  if (!branchCheck.ok) {
+    console.warn(`[workflow ${workflow.id}] branch check failed:`, branchCheck.error);
+  }
+
+  const retryDelayMs = options.retryDelayMs ?? DEFAULT_PUSH_RETRY_DELAY_MS;
+  const sleep = options.sleep ?? defaultSyncSleep;
+
+  const firstArgs = options.force
+    ? ['push', '--force-with-lease', '-u', 'origin', worktree_branch]
+    : ['push', '-u', 'origin', worktree_branch];
+
+  try {
+    execFileSync('git', firstArgs, {
+      cwd: worktree_path, stdio: 'pipe', timeout: 30000,
+    });
+    return { ok: true, attempts: 1, retried: false };
+  } catch (err) {
+    const stderr = execErrMsg(err);
+    if (isAuthFailure(stderr)) {
+      return { ok: false, error: stderr, authFailure: true, attempts: 1, retried: false };
+    }
+
+    console.warn(
+      `[workflow ${workflow.id}] git push attempt 1 failed (${stderr.split('\n')[0]}) — retrying once with --force-with-lease after ${retryDelayMs}ms`,
+    );
+    if (retryDelayMs > 0) sleep(retryDelayMs);
+
+    try {
+      execFileSync('git', ['push', '--force-with-lease', '-u', 'origin', worktree_branch], {
+        cwd: worktree_path, stdio: 'pipe', timeout: 30000,
+      });
+      return { ok: true, attempts: 2, retried: true };
+    } catch (err2) {
+      const stderr2 = execErrMsg(err2);
+      return {
+        ok: false,
+        error: stderr2,
+        authFailure: isAuthFailure(stderr2),
+        attempts: 2,
+        retried: true,
+      };
+    }
+  }
+}
+
+/**
+ * Create a GitHub PR for the workflow branch. Assumes branch is already pushed.
+ */
+export function createWorkflowPr(
+  workflow: Workflow,
+  { isDraft = false, updateAndEmit }: {
+    isDraft?: boolean;
+    updateAndEmit?: (id: string, fields: Parameters<typeof queries.updateWorkflow>[1]) => void;
+  } = {},
+): CreatePrResult {
   const _updateAndEmit = updateAndEmit ?? ((id: string, fields: Parameters<typeof queries.updateWorkflow>[1]) => {
     queries.updateWorkflow(id, fields);
   });
-  const { worktree_path, worktree_branch, work_dir } = workflow;
-  if (!worktree_path || !work_dir) return null;
-
+  const { worktree_path, worktree_branch } = workflow;
+  if (!worktree_path || !worktree_branch) {
+    return { ok: false, error: 'missing worktree_path or worktree_branch' };
+  }
   if (!existsSync(worktree_path)) {
-    workflowLogger(workflow.id).warn({ worktreePath: worktree_path }, 'worktree directory missing — cannot create PR');
-    return null;
-  }
-
-  if (worktree_branch) {
-    const branchCheck = ensureWorktreeBranch(worktree_path, worktree_branch);
-    if (!branchCheck.ok) {
-      console.warn(`[workflow ${workflow.id}] branch check failed:`, branchCheck.error);
-    }
-  }
-
-  let hasCommits = false;
-  try {
-    hasCommits = countBranchCommits(worktree_path) > 0;
-  } catch (err) {
-    console.warn(`[workflow ${workflow.id}] rev-list failed, assuming commits exist:`, err);
-    hasCommits = true;
-  }
-
-  if (!hasCommits || !worktree_branch) {
-    console.log(`[workflow ${workflow.id}] no commits on branch — skipping PR`);
-    return null;
+    return { ok: false, error: `worktree directory missing at ${worktree_path}` };
   }
 
   try {
-    execFileSync('git', ['push', '-u', 'origin', worktree_branch], {
-      cwd: worktree_path, stdio: 'pipe', timeout: 30000,
-    });
-
-    const planNote = queries.getNote(`workflow/${workflow.id}/plan`);
-    const body = _buildPrBody(workflow, planNote?.value ?? null, { partial: isDraft });
-    const title = `[Workflow] ${workflow.title}`;
-
-    if (isDraft) {
-      try {
-        execFileSync('gh', ['label', 'create', 'partial', '--description', 'Partial workflow completion', '--color', 'FBCA04'], {
-          cwd: worktree_path, stdio: 'pipe', timeout: 10000,
-        });
-      } catch { /* label already exists — fine */ }
+    const existingUrl = execFileSync(
+      'gh', ['pr', 'view', worktree_branch, '--json', 'url', '-q', '.url'],
+      { cwd: worktree_path, stdio: 'pipe', timeout: 15000 }
+    ).toString().trim();
+    if (existingUrl) {
+      _updateAndEmit(workflow.id, { pr_url: existingUrl });
+      console.log(`[workflow ${workflow.id}] PR already exists: ${existingUrl}`);
+      return { ok: true, url: existingUrl };
     }
+  } catch { /* no existing PR — create one */ }
 
-    // M14/6D: Merge conflict pre-check
-    let conflictWarning = '';
+  const planNote = queries.getNote(`workflow/${workflow.id}/plan`);
+  const body = _buildPrBody(workflow, planNote?.value ?? null, { partial: isDraft });
+  const title = `[Workflow] ${workflow.title}`;
+
+  if (isDraft) {
     try {
-      let mergeBase = '';
-      try {
-        mergeBase = execFileSync('git', ['merge-base', 'HEAD', 'origin/HEAD'], {
-          cwd: worktree_path, stdio: 'pipe', timeout: 10000,
-        }).toString().trim();
-      } catch { /* merge-base not available */ }
-      if (mergeBase) {
-        const mergeTree = execFileSync('git', ['merge-tree', mergeBase, 'origin/HEAD', 'HEAD'], {
-          cwd: worktree_path, stdio: 'pipe', timeout: 10000,
-        }).toString();
-        if (mergeTree.includes('<<<<<<<') || mergeTree.includes('changed in both')) {
-          const conflictFiles = mergeTree
-            .split('\n')
-            .filter(l => l.includes('changed in both'))
-            .map(l => l.replace(/.*changed in both.*'([^']+)'.*/i, '$1'))
-            .filter(l => l !== '');
-          conflictWarning = `\n\n**Warning: Potential merge conflicts detected** with the base branch in: ${conflictFiles.join(', ') || '(unknown files)'}. Manual resolution may be needed.`;
-          console.warn(`[workflow ${workflow.id}] merge conflict pre-check: conflicts in ${conflictFiles.join(', ')}`);
-        }
-      }
-    } catch { /* merge-tree check failed */ }
+      execFileSync('gh', ['label', 'create', 'partial', '--description', 'Partial workflow completion', '--color', 'FBCA04'], {
+        cwd: worktree_path, stdio: 'pipe', timeout: 10000,
+      });
+    } catch { /* label already exists — fine */ }
+  }
 
+  let conflictWarning = '';
+  try {
+    let mergeBase = '';
     try {
-      const existingUrl = execFileSync(
-        'gh', ['pr', 'view', worktree_branch, '--json', 'url', '-q', '.url'],
-        { cwd: worktree_path, stdio: 'pipe', timeout: 15000 }
-      ).toString().trim();
-      if (existingUrl) {
-        _updateAndEmit(workflow.id, { pr_url: existingUrl });
-        console.log(`[workflow ${workflow.id}] PR already exists: ${existingUrl}`);
-        return existingUrl;
+      mergeBase = execFileSync('git', ['merge-base', 'HEAD', 'origin/HEAD'], {
+        cwd: worktree_path, stdio: 'pipe', timeout: 10000,
+      }).toString().trim();
+    } catch { /* merge-base not available */ }
+    if (mergeBase) {
+      const mergeTree = execFileSync('git', ['merge-tree', mergeBase, 'origin/HEAD', 'HEAD'], {
+        cwd: worktree_path, stdio: 'pipe', timeout: 10000,
+      }).toString();
+      if (mergeTree.includes('<<<<<<<') || mergeTree.includes('changed in both')) {
+        const conflictFiles = mergeTree
+          .split('\n')
+          .filter(l => l.includes('changed in both'))
+          .map(l => l.replace(/.*changed in both.*'([^']+)'.*/i, '$1'))
+          .filter(l => l !== '');
+        conflictWarning = `\n\n**Warning: Potential merge conflicts detected** with the base branch in: ${conflictFiles.join(', ') || '(unknown files)'}. Manual resolution may be needed.`;
+        console.warn(`[workflow ${workflow.id}] merge conflict pre-check: conflicts in ${conflictFiles.join(', ')}`);
       }
-    } catch { /* no existing PR — create one */ }
-
-    const finalBody = conflictWarning ? body + conflictWarning : body;
-    const prArgs = ['pr', 'create', '--title', title, '--body', finalBody, '--head', worktree_branch];
-    if (isDraft) {
-      prArgs.push('--draft', '--label', 'partial');
     }
+  } catch { /* merge-tree check failed */ }
+
+  const finalBody = conflictWarning ? body + conflictWarning : body;
+  const prArgs = ['pr', 'create', '--title', title, '--body', finalBody, '--head', worktree_branch];
+  if (isDraft) {
+    prArgs.push('--draft', '--label', 'partial');
+  }
+
+  try {
     const prUrl = execFileSync('gh', prArgs, {
       cwd: worktree_path, stdio: 'pipe', timeout: 30000,
     }).toString().trim();
 
+    if (!prUrl) {
+      return { ok: false, error: 'gh pr create exited 0 but returned empty stdout' };
+    }
+
     _updateAndEmit(workflow.id, { pr_url: prUrl });
     console.log(`[workflow ${workflow.id}] ${isDraft ? 'draft ' : ''}PR created: ${prUrl}`);
-    return prUrl;
+    return { ok: true, url: prUrl };
   } catch (err) {
     const stderr = execErrMsg(err);
     if (stderr.includes('already exists')) {
@@ -228,13 +484,72 @@ export function pushAndCreatePr(
         if (existing) {
           _updateAndEmit(workflow.id, { pr_url: existing });
           console.log(`[workflow ${workflow.id}] PR already exists: ${existing}`);
-          return existing;
+          return { ok: true, url: existing };
         }
       } catch { /* can't find existing PR */ }
     }
-    console.warn(`[workflow ${workflow.id}] push/PR failed (worktree branch preserved locally):`, stderr);
+    return { ok: false, error: stderr };
+  }
+}
+
+/**
+ * Legacy combined push + PR create. Used by finalizeWorkflow, reconcileBlockedPRs,
+ * and the max-cycles partial PR path. The wrap-up handler calls pushBranch and
+ * createWorkflowPr separately for attributed error reporting.
+ */
+export function pushAndCreatePr(
+  workflow: Workflow,
+  isDraft: boolean,
+  updateAndEmit?: (id: string, fields: Parameters<typeof queries.updateWorkflow>[1]) => void,
+): string | null {
+  const { worktree_path, worktree_branch, work_dir } = workflow;
+  if (!worktree_path || !work_dir) return null;
+
+  if (!existsSync(worktree_path)) {
+    workflowLogger(workflow.id).warn({ worktreePath: worktree_path }, 'worktree directory missing — cannot create PR');
     return null;
   }
+
+  if (!worktree_branch) {
+    console.log(`[workflow ${workflow.id}] no worktree_branch — skipping PR`);
+    return null;
+  }
+
+  // Verify the worktree is on the workflow branch BEFORE counting commits.
+  // If it has drifted to a different (clean) branch, countBranchCommits would
+  // count zero on the wrong branch and incorrectly skip PR creation, even
+  // though the workflow branch has recoverable commits ahead of origin.
+  const branchCheck = ensureWorktreeBranch(worktree_path, worktree_branch);
+  if (!branchCheck.ok) {
+    console.warn(`[workflow ${workflow.id}] branch check failed:`, branchCheck.error);
+  }
+
+  let hasCommits = false;
+  try {
+    hasCommits = countBranchCommits(worktree_path) > 0;
+  } catch (err) {
+    console.warn(`[workflow ${workflow.id}] rev-list failed, assuming commits exist:`, err);
+    hasCommits = true;
+  }
+
+  if (!hasCommits) {
+    console.log(`[workflow ${workflow.id}] no commits on branch — skipping PR`);
+    return null;
+  }
+
+  const pushResult = pushBranch(workflow);
+  if (!pushResult.ok) {
+    console.warn(`[workflow ${workflow.id}] push failed (worktree branch preserved locally):`, pushResult.error);
+    return null;
+  }
+
+  const prResult = createWorkflowPr(workflow, { isDraft, updateAndEmit });
+  if (!prResult.ok) {
+    console.warn(`[workflow ${workflow.id}] PR creation failed after push:`, prResult.error);
+    return null;
+  }
+
+  return prResult.url ?? null;
 }
 
 export function getPrCreationOutcome(workflow: Workflow, prUrl: string | null): WorkflowPrCreationOutcome {
@@ -323,6 +638,15 @@ export async function finalizeWorkflow(
   }
 }
 
+function isReconcilablePrBlockedReason(reason: string): boolean {
+  if (reason.includes('PR creation failed')) return true;
+  if (reason.includes('gh pr create failed')) return true;
+  if (reason.includes('unknown PR-creation failure')) return true;
+  // Push failures that are auth-related won't fix themselves on retry
+  if (reason.includes('branch push failed') && !isAuthFailure(reason)) return true;
+  return false;
+}
+
 /**
  * On startup, find workflows blocked due to PR creation failure and retry.
  */
@@ -332,7 +656,7 @@ export async function reconcileBlockedPRs(
   const blocked = queries.listWorkflows().filter(
     wf => wf.status === 'blocked'
       && typeof wf.blocked_reason === 'string'
-      && wf.blocked_reason.includes('PR creation failed'),
+      && isReconcilablePrBlockedReason(wf.blocked_reason),
   );
 
   if (blocked.length === 0) return;

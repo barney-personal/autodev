@@ -132,6 +132,7 @@ Workflows self-heal from common transient failures. Key mechanisms:
 - **Worktree namespacing** — worktrees are created under `.orchestrator-worktrees/<repoName>/wf-<shortId>` to avoid mixing worktrees from different repos
 - **Uncommitted work preservation** — on worktree cleanup (cancel/completion), uncommitted changes are auto-committed and best-effort pushed before removal
 - **PR detection** — before creating a PR, checks if one already exists on the branch; uses existing PR URL instead of failing
+- **Wrap-up safety contract** — `POST /api/workflows/:id/wrap-up` never deletes a worktree with local commits ahead of `origin/<base>`. Push and PR-create are split (`pushBranch` + `createWorkflowPr`); push has bounded retry with auth/rate-limit classification; failures produce structured `blocked_reason` prefixes (`branch push failed`, `branch pushed but gh pr create failed`, `unknown PR-creation failure`). See `docs/wrap-up.md` for the four operator-visible outcomes and manual recovery steps.
 - **Resume safety** — `force=true` re-reads workflow from DB to avoid stale objects; branch check runs before status change; API returns 500 JSON on error
 - **Inline context** — plan/contract/worklogs pre-loaded into prompts (capped at 50k chars via `capText`)
 - **reconcileRunningWorkflows** — on startup, detects idle phases and respawns them
