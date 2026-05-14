@@ -1,3 +1,5 @@
+import type { WorkflowPhase } from './types.js';
+
 /**
  * Model option descriptor shared between server and client.
  */
@@ -18,15 +20,148 @@ export const DEFAULT_DEBATE_CODEX_MODEL = DEFAULT_CODEX_MODEL;
 export const DEFAULT_VERIFY_MODEL = DEFAULT_CLAUDE_OPUS_MODEL;
 export const DEFAULT_EYE_MODEL = DEFAULT_CLAUDE_OPUS_MODEL;
 export const DEFAULT_CLAUDE_EFFORT = 'xhigh';
-export const DEFAULT_CODEX_REASONING_EFFORT = 'xhigh';
 
-export function getClaudeEffort(model: string | null): string | null {
-  if (model === DEFAULT_CLAUDE_OPUS_MODEL || model === DEFAULT_CLAUDE_OPUS_MODEL_1M) return DEFAULT_CLAUDE_EFFORT;
+/** Phases with dedicated effort/thinking-budget defaults. */
+export type EffortPhase = 'assess' | 'review' | 'implement' | 'verify';
+
+/**
+ * Effort defaults by workflow phase. Tuned so judgment-heavy phases keep
+ * max thinking budget and execution-heavy phases drop down. Reviewers run
+ * at `high` rather than `xhigh` because they're paired with the `fast`
+ * service tier (see `PHASE_SERVICE_TIER_DEFAULTS`) — together they trade a
+ * small amount of reviewer reasoning depth for ~1.5x throughput. Non-workflow
+ * jobs and phases not listed here fall back to `DEFAULT_CLAUDE_EFFORT`.
+ */
+const PHASE_EFFORT_DEFAULTS: Record<EffortPhase, string> = {
+  assess: 'xhigh',
+  review: 'high',
+  implement: 'medium',
+  verify: 'xhigh',
+};
+
+/**
+ * Codex `service_tier` defaults by phase. `fast` gives ~1.5x throughput on
+ * the priority lane at slightly higher cost — appropriate for the review
+ * phase, which is judgment-heavy and benefits from faster turnaround. Other
+ * phases fall through to whatever the user has in `~/.codex/config.toml`
+ * (no override).
+ */
+const PHASE_SERVICE_TIER_DEFAULTS: Partial<Record<EffortPhase, string>> = {
+  review: 'fast',
+};
+
+const KNOWN_SERVICE_TIERS = new Set(['default', 'flex', 'priority', 'fast', 'auto']);
+const _warnedUnknownServiceTier = new Set<string>();
+
+/**
+ * Effort levels accepted by Claude `--effort` and Codex `model_reasoning_effort`.
+ * Used to surface a typo warning when an env-var override doesn't match —
+ * the CLIs would otherwise reject the value at spawn time with a confusing
+ * downstream error.
+ */
+const KNOWN_EFFORT_LEVELS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh']);
+
+/** Track unknown env-var values we've already warned about (warn-once). */
+const _warnedUnknownEffort = new Set<string>();
+
+/**
+ * Phases that should be treated as "no phase" — they aren't real dispatch
+ * phases, just workflow states. `'idle'` is the workflow's terminal/initial
+ * state; jobs shouldn't be spawned in it, but if one ever is, we route to
+ * `EFFORT_DEFAULT` rather than minting an undocumented `EFFORT_IDLE` key.
+ */
+function isDispatchPhase(phase: WorkflowPhase | null | undefined): phase is EffortPhase {
+  return phase != null && phase !== 'idle';
+}
+
+/**
+ * Resolve effort/reasoning budget for a phase, with env-var overrides:
+ *   EFFORT_ASSESS, EFFORT_REVIEW, EFFORT_IMPLEMENT, EFFORT_VERIFY,
+ *   EFFORT_DEFAULT (for jobs without a workflow_phase, or in `'idle'`).
+ *
+ * Set an env var to the empty string to disable the flag for that phase
+ * (the agent CLI is spawned without `--effort` / `model_reasoning_effort`).
+ * Unknown effort values are **rejected** (treated as "no flag" + a one-time
+ * warning) rather than passed through, because the value reaches a shell
+ * command string in `AgentSpawner.ts` — `JSON.stringify` escapes JSON
+ * metachars but not shell metachars like `$()` or backticks. Strict
+ * allowlisting closes that vector. New CLI effort levels need to be added
+ * to `KNOWN_EFFORT_LEVELS` here.
+ */
+function resolveEffort(phase: WorkflowPhase | null | undefined): string | null {
+  const envKey = isDispatchPhase(phase) ? `EFFORT_${phase.toUpperCase()}` : 'EFFORT_DEFAULT';
+  const fromEnv = process.env[envKey];
+  if (fromEnv !== undefined) {
+    if (fromEnv === '') return null;
+    if (KNOWN_EFFORT_LEVELS.has(fromEnv)) return fromEnv;
+    const seenKey = `${envKey}=${fromEnv}`;
+    if (!_warnedUnknownEffort.has(seenKey)) {
+      _warnedUnknownEffort.add(seenKey);
+      console.warn(
+        `[models] ${envKey}="${fromEnv}" is not a recognised effort level ` +
+        `(expected one of: ${[...KNOWN_EFFORT_LEVELS].join(', ')}). ` +
+        `Ignoring — the CLI will run without an effort flag.`,
+      );
+    }
+    return null;
+  }
+  if (isDispatchPhase(phase) && phase in PHASE_EFFORT_DEFAULTS) {
+    return PHASE_EFFORT_DEFAULTS[phase];
+  }
+  return DEFAULT_CLAUDE_EFFORT;
+}
+
+/** @internal — test seam to reset the warn-once memos between specs. */
+export function _resetEffortWarningsForTest(): void {
+  _warnedUnknownEffort.clear();
+  _warnedUnknownServiceTier.clear();
+}
+
+export function getClaudeEffort(model: string | null, phase?: WorkflowPhase | null): string | null {
+  if (model === DEFAULT_CLAUDE_OPUS_MODEL || model === DEFAULT_CLAUDE_OPUS_MODEL_1M) {
+    return resolveEffort(phase);
+  }
   return null;
 }
 
-export function getCodexReasoningEffort(model: string | null): string | null {
-  if (model === 'codex' || (model != null && model.startsWith('codex-'))) return DEFAULT_CODEX_REASONING_EFFORT;
+export function getCodexReasoningEffort(model: string | null, phase?: WorkflowPhase | null): string | null {
+  if (model === 'codex' || (model != null && model.startsWith('codex-'))) {
+    return resolveEffort(phase);
+  }
+  return null;
+}
+
+/**
+ * Resolve Codex `service_tier` for a phase. Returns `null` when no override
+ * should be passed (the user's `~/.codex/config.toml` value takes effect).
+ *
+ * Env-var overrides: `CODEX_SERVICE_TIER_ASSESS`, `_REVIEW`, `_IMPLEMENT`,
+ * `_VERIFY`, and `_DEFAULT` (for non-workflow jobs). Empty string disables
+ * the per-phase default so the config.toml value is used.
+ */
+export function getCodexServiceTier(model: string | null, phase?: WorkflowPhase | null): string | null {
+  if (!(model === 'codex' || (model != null && model.startsWith('codex-')))) return null;
+  const envKey = isDispatchPhase(phase) ? `CODEX_SERVICE_TIER_${phase.toUpperCase()}` : 'CODEX_SERVICE_TIER_DEFAULT';
+  const fromEnv = process.env[envKey];
+  if (fromEnv !== undefined) {
+    if (fromEnv === '') return null;
+    if (KNOWN_SERVICE_TIERS.has(fromEnv)) return fromEnv;
+    // Unknown tier — reject rather than pass through, same reasoning as
+    // resolveEffort: value reaches a shell string in AgentSpawner.ts.
+    const seenKey = `${envKey}=${fromEnv}`;
+    if (!_warnedUnknownServiceTier.has(seenKey)) {
+      _warnedUnknownServiceTier.add(seenKey);
+      console.warn(
+        `[models] ${envKey}="${fromEnv}" is not a recognised Codex service tier ` +
+        `(expected one of: ${[...KNOWN_SERVICE_TIERS].join(', ')}). ` +
+        `Ignoring — config.toml value will be used instead.`,
+      );
+    }
+    return null;
+  }
+  if (isDispatchPhase(phase) && phase in PHASE_SERVICE_TIER_DEFAULTS) {
+    return PHASE_SERVICE_TIER_DEFAULTS[phase] ?? null;
+  }
   return null;
 }
 

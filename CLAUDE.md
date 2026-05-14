@@ -251,3 +251,10 @@ data/
 | `ORCHESTRATOR_API_URL` | `http://localhost:3456` | Base URL for lock verification |
 | `ANTHROPIC_API_KEY` | — | Required for model auto-classification |
 | `SENTRY_DSN` | — | Optional error tracking |
+| `EFFORT_ASSESS` | `xhigh` | Effort/reasoning budget for the assess phase (Claude `--effort` / Codex `model_reasoning_effort`). Set to empty string to omit the flag. |
+| `EFFORT_REVIEW` | `high` | Effort budget for the review phase. Paired with the `fast` service tier — together they trade a small amount of reviewer depth for ~1.5x throughput. |
+| `EFFORT_IMPLEMENT` | `medium` | Effort budget for the implement phase. Lowered from `xhigh` because plan and judgment already happened in assess/review — most implement turns are tool execution that doesn't benefit from extended thinking. |
+| `EFFORT_VERIFY` | `xhigh` | Effort budget for the verify phase. |
+| `EFFORT_DEFAULT` | `xhigh` | Effort budget for one-shot (non-workflow) jobs. |
+| `CODEX_SERVICE_TIER_REVIEW` | `fast` | Codex `service_tier` override for the review phase. `fast` gives ~1.5x throughput on the priority lane (slightly higher cost). Other tiers: `default`, `flex`, `priority`, `auto`. Set to empty string to fall back to `~/.codex/config.toml`. |
+| `CODEX_SERVICE_TIER_ASSESS` / `_IMPLEMENT` / `_VERIFY` / `_DEFAULT` | *(unset)* | Codex `service_tier` overrides for the other phases. No default — the user's `~/.codex/config.toml` value is used. |
