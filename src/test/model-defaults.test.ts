@@ -132,10 +132,11 @@ describe('effort typo detection', () => {
     warnSpy.mockRestore();
   });
 
-  it('warns once when an env var has an unrecognised value', () => {
+  it('rejects unknown effort values (returns null) and warns once', () => {
     process.env.EFFORT_IMPLEMENT = 'medum'; // intentional typo
-    // Returns the value verbatim so the CLI surfaces the error
-    expect(getClaudeEffort('claude-opus-4-7[1m]', 'implement')).toBe('medum');
+    // Unknown values are not passed to the CLI — they'd reach a shell string
+    // in AgentSpawner.ts where JSON.stringify doesn't escape `$()`/backticks.
+    expect(getClaudeEffort('claude-opus-4-7[1m]', 'implement')).toBeNull();
     expect(warnSpy).toHaveBeenCalledTimes(1);
     expect(warnSpy.mock.calls[0][0]).toContain('EFFORT_IMPLEMENT="medum"');
     expect(warnSpy.mock.calls[0][0]).toContain('not a recognised effort level');
@@ -144,6 +145,12 @@ describe('effort typo detection', () => {
     getClaudeEffort('claude-opus-4-7[1m]', 'implement');
     getCodexReasoningEffort('codex', 'implement');
     expect(warnSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects shell-metachar payloads (defence-in-depth for AgentSpawner shell path)', () => {
+    process.env.EFFORT_IMPLEMENT = 'high$(rm -rf /)';
+    expect(getClaudeEffort('claude-opus-4-7[1m]', 'implement')).toBeNull();
+    expect(getCodexReasoningEffort('codex', 'implement')).toBeNull();
   });
 
   it('does not warn for known effort levels', () => {
@@ -223,15 +230,22 @@ describe('codex service tier typo detection', () => {
     warnSpy.mockRestore();
   });
 
-  it('warns once when an unrecognised tier is passed via env', () => {
+  it('rejects unknown tiers (returns null) and warns once', () => {
     process.env.CODEX_SERVICE_TIER_REVIEW = 'turbo'; // not a real tier
-    expect(getCodexServiceTier('codex', 'review')).toBe('turbo');
+    // Same rationale as the effort path: tier value reaches a shell string
+    // in AgentSpawner.ts, so unknown/typo values must not pass through.
+    expect(getCodexServiceTier('codex', 'review')).toBeNull();
     expect(warnSpy).toHaveBeenCalledTimes(1);
     expect(warnSpy.mock.calls[0][0]).toContain('CODEX_SERVICE_TIER_REVIEW="turbo"');
     expect(warnSpy.mock.calls[0][0]).toContain('not a recognised Codex service tier');
 
     getCodexServiceTier('codex', 'review');
     expect(warnSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects shell-metachar payloads', () => {
+    process.env.CODEX_SERVICE_TIER_REVIEW = 'fast$(touch /tmp/pwn)';
+    expect(getCodexServiceTier('codex', 'review')).toBeNull();
   });
 
   it('does not warn for known tiers', () => {

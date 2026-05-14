@@ -81,27 +81,29 @@ function isDispatchPhase(phase: WorkflowPhase | null | undefined): phase is Effo
  *
  * Set an env var to the empty string to disable the flag for that phase
  * (the agent CLI is spawned without `--effort` / `model_reasoning_effort`).
- * Unknown effort values are passed through but log a one-time warning so a
- * typo like `EFFORT_IMPLEMENT=medum` surfaces immediately instead of failing
- * at agent spawn time.
+ * Unknown effort values are **rejected** (treated as "no flag" + a one-time
+ * warning) rather than passed through, because the value reaches a shell
+ * command string in `AgentSpawner.ts` — `JSON.stringify` escapes JSON
+ * metachars but not shell metachars like `$()` or backticks. Strict
+ * allowlisting closes that vector. New CLI effort levels need to be added
+ * to `KNOWN_EFFORT_LEVELS` here.
  */
 function resolveEffort(phase: WorkflowPhase | null | undefined): string | null {
   const envKey = isDispatchPhase(phase) ? `EFFORT_${phase.toUpperCase()}` : 'EFFORT_DEFAULT';
   const fromEnv = process.env[envKey];
   if (fromEnv !== undefined) {
     if (fromEnv === '') return null;
-    if (!KNOWN_EFFORT_LEVELS.has(fromEnv)) {
-      const seenKey = `${envKey}=${fromEnv}`;
-      if (!_warnedUnknownEffort.has(seenKey)) {
-        _warnedUnknownEffort.add(seenKey);
-        console.warn(
-          `[models] ${envKey}="${fromEnv}" is not a recognised effort level ` +
-          `(expected one of: ${[...KNOWN_EFFORT_LEVELS].join(', ')}). ` +
-          `Passing through to the CLI — typo? Spawn will likely fail.`,
-        );
-      }
+    if (KNOWN_EFFORT_LEVELS.has(fromEnv)) return fromEnv;
+    const seenKey = `${envKey}=${fromEnv}`;
+    if (!_warnedUnknownEffort.has(seenKey)) {
+      _warnedUnknownEffort.add(seenKey);
+      console.warn(
+        `[models] ${envKey}="${fromEnv}" is not a recognised effort level ` +
+        `(expected one of: ${[...KNOWN_EFFORT_LEVELS].join(', ')}). ` +
+        `Ignoring — the CLI will run without an effort flag.`,
+      );
     }
-    return fromEnv;
+    return null;
   }
   if (isDispatchPhase(phase) && phase in PHASE_EFFORT_DEFAULTS) {
     return PHASE_EFFORT_DEFAULTS[phase];
@@ -143,18 +145,19 @@ export function getCodexServiceTier(model: string | null, phase?: WorkflowPhase 
   const fromEnv = process.env[envKey];
   if (fromEnv !== undefined) {
     if (fromEnv === '') return null;
-    if (!KNOWN_SERVICE_TIERS.has(fromEnv)) {
-      const seenKey = `${envKey}=${fromEnv}`;
-      if (!_warnedUnknownServiceTier.has(seenKey)) {
-        _warnedUnknownServiceTier.add(seenKey);
-        console.warn(
-          `[models] ${envKey}="${fromEnv}" is not a recognised Codex service tier ` +
-          `(expected one of: ${[...KNOWN_SERVICE_TIERS].join(', ')}). ` +
-          `Passing through to the CLI — typo? Spawn may fail.`,
-        );
-      }
+    if (KNOWN_SERVICE_TIERS.has(fromEnv)) return fromEnv;
+    // Unknown tier — reject rather than pass through, same reasoning as
+    // resolveEffort: value reaches a shell string in AgentSpawner.ts.
+    const seenKey = `${envKey}=${fromEnv}`;
+    if (!_warnedUnknownServiceTier.has(seenKey)) {
+      _warnedUnknownServiceTier.add(seenKey);
+      console.warn(
+        `[models] ${envKey}="${fromEnv}" is not a recognised Codex service tier ` +
+        `(expected one of: ${[...KNOWN_SERVICE_TIERS].join(', ')}). ` +
+        `Ignoring — config.toml value will be used instead.`,
+      );
     }
-    return fromEnv;
+    return null;
   }
   if (isDispatchPhase(phase) && phase in PHASE_SERVICE_TIER_DEFAULTS) {
     return PHASE_SERVICE_TIER_DEFAULTS[phase] ?? null;
