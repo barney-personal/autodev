@@ -276,13 +276,38 @@ export function removeWorktree(workflow: Workflow): void {
       }
     }
   } catch { /* status/commit failed — proceed with removal anyway */ }
+
+  // If the worktree directory is already gone (concurrent cleanup,
+  // manual rm, crashed cancel that removed the dir before recording
+  // status), the git remove call will fail with "is not a working
+  // tree" even though the desired end state is already reached. Treat
+  // that as success and prune stale registrations. Suppresses
+  // HURLICANE-SF.
+  if (!existsSync(worktree_path)) {
+    pruneWorktreeRegistrations(work_dir);
+    console.log(`[workflow ${workflow.id}] worktree already removed — pruned registrations`);
+    return;
+  }
+
   try {
     execSync(`git worktree remove --force ${JSON.stringify(worktree_path)}`, {
       cwd: work_dir, stdio: 'pipe', timeout: 15000,
     });
-    execSync('git worktree prune', { cwd: work_dir, stdio: 'pipe', timeout: 10000 });
+    pruneWorktreeRegistrations(work_dir);
     console.log(`[workflow ${workflow.id}] worktree removed`);
   } catch (err) {
-    console.warn(`[workflow ${workflow.id}] worktree removal failed:`, errMsg(err));
+    const message = errMsg(err);
+    if (/is not a working tree/i.test(message)) {
+      pruneWorktreeRegistrations(work_dir);
+      console.log(`[workflow ${workflow.id}] worktree already removed — pruned registrations`);
+      return;
+    }
+    console.warn(`[workflow ${workflow.id}] worktree removal failed:`, message);
   }
+}
+
+function pruneWorktreeRegistrations(workDir: string): void {
+  try {
+    execSync('git worktree prune', { cwd: workDir, stdio: 'pipe', timeout: 10000 });
+  } catch { /* prune is best-effort */ }
 }
