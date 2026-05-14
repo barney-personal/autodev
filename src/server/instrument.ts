@@ -159,8 +159,14 @@ if (dsn) {
       // and runs `git checkout` to recover. Same pattern fires from
       // PrCreator. The checkout failure (if any) is captured
       // separately via the workflow_blocked path. Suppresses
-      // HURLICANE-S7 and pr-creator variants.
-      if (msg.includes(' instead of ') && msg.includes(' — switching')) {
+      // HURLICANE-S7 and pr-creator variants. Scoped to the
+      // [worktree] / [pr-creator] log prefixes so generic English
+      // 'X instead of Y' messages from elsewhere stay visible.
+      if (
+        (msg.includes('[worktree]') || msg.includes('[pr-creator]'))
+        && msg.includes(' instead of ')
+        && msg.includes(' — switching')
+      ) {
         return null;
       }
 
