@@ -1,10 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   DEFAULT_CODEX_MODEL,
   DEFAULT_WORKFLOW_IMPLEMENTER_MODEL,
   DEFAULT_WORKFLOW_REVIEWER_MODEL,
   getClaudeEffort,
   getCodexReasoningEffort,
+  _resetEffortWarningsForTest,
 } from '../shared/models.js';
 
 // Save/restore any EFFORT_* env vars the developer may have set locally so
@@ -96,5 +97,48 @@ describe('phase-aware effort', () => {
     expect(getClaudeEffort('claude-sonnet-4-6[1m]', 'implement')).toBeNull();
     expect(getClaudeEffort('claude-opus-4-6', 'assess')).toBeNull();
     expect(getCodexReasoningEffort('claude-opus-4-7', 'implement')).toBeNull();
+  });
+});
+
+describe('effort typo detection', () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    clearEffortEnv();
+    _resetEffortWarningsForTest();
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    restoreEffortEnv();
+    warnSpy.mockRestore();
+  });
+
+  it('warns once when an env var has an unrecognised value', () => {
+    process.env.EFFORT_IMPLEMENT = 'medum'; // intentional typo
+    // Returns the value verbatim so the CLI surfaces the error
+    expect(getClaudeEffort('claude-opus-4-7[1m]', 'implement')).toBe('medum');
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0][0]).toContain('EFFORT_IMPLEMENT="medum"');
+    expect(warnSpy.mock.calls[0][0]).toContain('not a recognised effort level');
+
+    // Repeat calls for the same value don't re-warn
+    getClaudeEffort('claude-opus-4-7[1m]', 'implement');
+    getCodexReasoningEffort('codex', 'implement');
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not warn for known effort levels', () => {
+    process.env.EFFORT_IMPLEMENT = 'low';
+    process.env.EFFORT_ASSESS = 'minimal';
+    process.env.EFFORT_REVIEW = 'xhigh';
+    getClaudeEffort('claude-opus-4-7', 'implement');
+    getClaudeEffort('claude-opus-4-7', 'assess');
+    getClaudeEffort('claude-opus-4-7', 'review');
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('does not warn for the empty-string opt-out', () => {
+    process.env.EFFORT_IMPLEMENT = '';
+    expect(getClaudeEffort('claude-opus-4-7[1m]', 'implement')).toBeNull();
+    expect(warnSpy).not.toHaveBeenCalled();
   });
 });

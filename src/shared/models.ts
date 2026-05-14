@@ -1,3 +1,5 @@
+import type { WorkflowPhase } from './types.js';
+
 /**
  * Model option descriptor shared between server and client.
  */
@@ -38,18 +40,44 @@ const PHASE_EFFORT_DEFAULTS: Record<EffortPhase, string> = {
 };
 
 /**
+ * Effort levels accepted by Claude `--effort` and Codex `model_reasoning_effort`.
+ * Used to surface a typo warning when an env-var override doesn't match —
+ * the CLIs would otherwise reject the value at spawn time with a confusing
+ * downstream error.
+ */
+const KNOWN_EFFORT_LEVELS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh']);
+
+/** Track unknown env-var values we've already warned about (warn-once). */
+const _warnedUnknownEffort = new Set<string>();
+
+/**
  * Resolve effort/reasoning budget for a phase, with env-var overrides:
  *   EFFORT_ASSESS, EFFORT_REVIEW, EFFORT_IMPLEMENT, EFFORT_VERIFY,
  *   EFFORT_DEFAULT (for jobs without a workflow_phase).
  *
  * Set an env var to the empty string to disable the flag for that phase
  * (the agent CLI is spawned without `--effort` / `model_reasoning_effort`).
+ * Unknown effort values are passed through but log a one-time warning so a
+ * typo like `EFFORT_IMPLEMENT=medum` surfaces immediately instead of failing
+ * at agent spawn time.
  */
-function resolveEffort(phase: string | null | undefined): string | null {
+function resolveEffort(phase: WorkflowPhase | null | undefined): string | null {
   const envKey = phase ? `EFFORT_${phase.toUpperCase()}` : 'EFFORT_DEFAULT';
   const fromEnv = process.env[envKey];
   if (fromEnv !== undefined) {
-    return fromEnv === '' ? null : fromEnv;
+    if (fromEnv === '') return null;
+    if (!KNOWN_EFFORT_LEVELS.has(fromEnv)) {
+      const seenKey = `${envKey}=${fromEnv}`;
+      if (!_warnedUnknownEffort.has(seenKey)) {
+        _warnedUnknownEffort.add(seenKey);
+        console.warn(
+          `[models] ${envKey}="${fromEnv}" is not a recognised effort level ` +
+          `(expected one of: ${[...KNOWN_EFFORT_LEVELS].join(', ')}). ` +
+          `Passing through to the CLI — typo? Spawn will likely fail.`,
+        );
+      }
+    }
+    return fromEnv;
   }
   if (phase && phase in PHASE_EFFORT_DEFAULTS) {
     return PHASE_EFFORT_DEFAULTS[phase as EffortPhase];
@@ -57,14 +85,19 @@ function resolveEffort(phase: string | null | undefined): string | null {
   return DEFAULT_CLAUDE_EFFORT;
 }
 
-export function getClaudeEffort(model: string | null, phase?: string | null): string | null {
+/** @internal — test seam to reset the warn-once memo between specs. */
+export function _resetEffortWarningsForTest(): void {
+  _warnedUnknownEffort.clear();
+}
+
+export function getClaudeEffort(model: string | null, phase?: WorkflowPhase | null): string | null {
   if (model === DEFAULT_CLAUDE_OPUS_MODEL || model === DEFAULT_CLAUDE_OPUS_MODEL_1M) {
     return resolveEffort(phase);
   }
   return null;
 }
 
-export function getCodexReasoningEffort(model: string | null, phase?: string | null): string | null {
+export function getCodexReasoningEffort(model: string | null, phase?: WorkflowPhase | null): string | null {
   if (model === 'codex' || (model != null && model.startsWith('codex-'))) {
     return resolveEffort(phase);
   }
