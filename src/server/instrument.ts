@@ -135,6 +135,44 @@ if (dsn) {
         return null;
       }
 
+      // Watchdog stuck-agent restart logs — the watchdog detected a
+      // wedged agent (rate_limit / provider_overload / auth_failure /
+      // launch_environment etc.) and routed the work to a fallback
+      // model or provider. The restart itself is the recovery action,
+      // not a bug. Suppresses HURLICANE-S3, -S4, -S8, -SA, -SB, -SC,
+      // -SD, -SE and future variants. Real failures (no candidate left
+      // to fall back to) escalate through other paths.
+      if (msg.includes('[watchdog] agent ') && msg.includes('→ restarting')) {
+        return null;
+      }
+
+      // KB consolidator transient retry logs — the Anthropic API
+      // occasionally 5xxs and the consolidator retries with backoff
+      // (3 attempts). The retry log fires once per attempt; only a
+      // terminal failure is interesting. Suppresses HURLICANE-S9.
+      if (msg.includes('[kb-consolidator]') && msg.includes('retrying in')) {
+        return null;
+      }
+
+      // Worktree branch auto-switch — when a worktree's HEAD has
+      // drifted from the expected branch, ensureWorktreeBranch logs
+      // and runs `git checkout` to recover. Same pattern fires from
+      // PrCreator. The checkout failure (if any) is captured
+      // separately via the workflow_blocked path. Suppresses
+      // HURLICANE-S7 and pr-creator variants.
+      if (msg.includes(' instead of ') && msg.includes(' — switching')) {
+        return null;
+      }
+
+      // Startup worktree health-check warn — the WorkflowManager
+      // reconciler logs and then marks the workflow blocked. The
+      // resulting WorkflowBlocked exception is captured with full
+      // context via captureWithContext (HURLICANE-S5), so this
+      // console.warn is redundant. Suppresses HURLICANE-S6.
+      if (msg.includes('Startup worktree health check failed') && msg.includes('marking blocked')) {
+        return null;
+      }
+
       return event;
     },
   });
