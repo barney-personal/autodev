@@ -1,0 +1,146 @@
+/**
+ * Tests for POST /api/webhooks/sync — the sync-failure auto-remediation entry point.
+ *
+ * Bug: sync-webhook-handler-missing
+ * The endpoint didn't exist; sync worker failures (e.g. "Worker lease expired")
+ * had no way to dispatch remediation jobs. These tests fail on main (404) and
+ * pass after the implementation.
+ *
+ * Dispatch id: fdacbe7e-743a-4021-9dd2-fee37391f72f
+ */
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import request from 'supertest';
+import { setupTestDb, cleanupTestDb, createSocketMock } from '../helpers.js';
+import { createTestApp } from '../api-helpers.js';
+import type express from 'express';
+
+vi.mock('../../server/socket/SocketManager.js', () => createSocketMock());
+vi.mock('../../server/orchestrator/WorkQueueManager.js', () => ({
+  nudgeQueue: vi.fn(),
+  startWorkQueue: vi.fn(),
+  stopWorkQueue: vi.fn(),
+}));
+vi.mock('../../server/orchestrator/DebateManager.js', () => ({
+  spawnInitialRoundJobs: vi.fn(() => []),
+  resolvePreDebateTerminal: vi.fn(),
+}));
+vi.mock('@anthropic-ai/sdk', () => ({
+  default: class {
+    messages = { create: vi.fn().mockResolvedValue({ content: [{ type: 'text', text: 'Fix Sync Issue' }] }) };
+  },
+}));
+
+const SYNC_FAILURE_PAYLOAD = {
+  syncLogId: 1118,
+  source: 'github',
+  status: 'error',
+  startedAt: '2026-05-15T14:01:05.808Z',
+  completedAt: '2026-05-15T14:18:58.218Z',
+  errorMessage: 'Worker lease expired before the sync completed.',
+  lastSuccessAt: '2026-05-06T06:11:58.147Z',
+  consecutiveFailureCount: 1,
+  failedPhases: [
+    {
+      name: 'github-fetch-commits',
+      status: 'error',
+      error: 'Phase interrupted — worker lease expired before completion',
+    },
+  ],
+};
+
+let app: express.Express;
+
+describe('POST /api/webhooks/sync — sync-webhook-handler-missing', () => {
+  beforeEach(async () => {
+    await setupTestDb();
+    vi.clearAllMocks();
+    app = createTestApp();
+  });
+  afterEach(async () => { await cleanupTestDb(); });
+
+  it('returns 201 and creates a remediation job for a valid sync failure', async () => {
+    const res = await request(app)
+      .post('/api/webhooks/sync')
+      .send(SYNC_FAILURE_PAYLOAD);
+
+    expect(res.status).toBe(201);
+    expect(res.body.dispatchId).toBeTruthy();
+    expect(res.body.jobId).toBeTruthy();
+    expect(res.body.status).toBe('queued');
+  });
+
+  it('stores source and error message in the created job', async () => {
+    const res = await request(app)
+      .post('/api/webhooks/sync')
+      .send(SYNC_FAILURE_PAYLOAD);
+
+    expect(res.status).toBe(201);
+
+    const { getJobById } = await import('../../server/db/queries.js');
+    const job = getJobById(res.body.jobId);
+    expect(job).not.toBeNull();
+    expect(job!.description).toContain('github');
+    expect(job!.description).toContain('Worker lease expired before the sync completed.');
+  });
+
+  it('includes the failed phase name in the job description', async () => {
+    const res = await request(app)
+      .post('/api/webhooks/sync')
+      .send(SYNC_FAILURE_PAYLOAD);
+
+    const { getJobById } = await import('../../server/db/queries.js');
+    const job = getJobById(res.body.jobId);
+    expect(job!.description).toContain('github-fetch-commits');
+  });
+
+  it('includes dispatch instructions in the job description', async () => {
+    const res = await request(app)
+      .post('/api/webhooks/sync')
+      .send(SYNC_FAILURE_PAYLOAD);
+
+    const { getJobById } = await import('../../server/db/queries.js');
+    const job = getJobById(res.body.jobId);
+    expect(job!.description).toContain('failing test');
+  });
+
+  it('tags the job context with sync trigger metadata', async () => {
+    const res = await request(app)
+      .post('/api/webhooks/sync')
+      .send(SYNC_FAILURE_PAYLOAD);
+
+    const { getJobById } = await import('../../server/db/queries.js');
+    const job = getJobById(res.body.jobId);
+    const context = JSON.parse(job!.context!);
+    expect(context.trigger).toBe('sync');
+    expect(context.syncSource).toBe('github');
+    expect(context.syncLogId).toBe(1118);
+    expect(context.dispatchId).toBe(res.body.dispatchId);
+  });
+
+  it('returns 400 when status is not "error"', async () => {
+    const res = await request(app)
+      .post('/api/webhooks/sync')
+      .send({ ...SYNC_FAILURE_PAYLOAD, status: 'success' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/error/i);
+  });
+
+  it('returns 400 when required fields are missing', async () => {
+    const res = await request(app)
+      .post('/api/webhooks/sync')
+      .send({ status: 'error' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBeTruthy();
+  });
+
+  it('returns 400 when source is missing', async () => {
+    const { source: _source, ...withoutSource } = SYNC_FAILURE_PAYLOAD;
+    const res = await request(app)
+      .post('/api/webhooks/sync')
+      .send(withoutSource);
+
+    expect(res.status).toBe(400);
+  });
+});
