@@ -430,26 +430,42 @@ describe('finalizeWorkflow: worktree preservation on PR failure', () => {
     expect(removeCall).toBeDefined();
   });
 
-  it('removes worktree when no publishable commits exist', async () => {
+  it('quarantines worktree (does not remove) when no publishable commits exist (M2)', async () => {
     const mockedExecSync = vi.mocked(execSync);
     mockedExecSync.mockImplementation((cmd: any, opts?: any) => {
       execSyncCalls.push({ cmd, opts });
       if (typeof cmd === 'string') {
         if (cmd.includes('rev-parse --abbrev-ref HEAD')) return Buffer.from('workflow/test-branch\n');
-        // No commits
+        // No commits (verified empty: count === 0 against a real base ref)
         if (cmd.includes('rev-list --count')) return Buffer.from('0\n');
       }
       return Buffer.from('');
     });
 
+    // Insert workflow so quarantine's updateWorkflow call has a row to update.
+    const { updateWorkflow, getWorkflowById } = await import('../server/db/queries.js');
+    const dbWf = await insertTestWorkflow({
+      id: 'wf-quarantine-noop',
+      status: 'running',
+      use_worktree: 1,
+    });
+    updateWorkflow(dbWf.id, {
+      worktree_path: '/tmp/wt',
+      worktree_branch: 'workflow/test-branch',
+    });
+
     const { finalizeWorkflow } = await import('../server/orchestrator/WorkflowManager.js');
-    const wf = makeWorkflow();
+    const wf = makeWorkflow({ id: 'wf-quarantine-noop' });
 
     await finalizeWorkflow(wf);
 
-    // Worktree removal SHOULD have been called (no commits to preserve)
+    // Per M2/Goal A.4: never delete worktree on the no-commits path — quarantine.
     const removeCall = execSyncCalls.find(c => typeof c.cmd === 'string' && c.cmd.includes('git worktree remove'));
-    expect(removeCall).toBeDefined();
+    expect(removeCall).toBeUndefined();
+
+    // Quarantine sets a descriptive blocked_reason (success or quarantine-failed).
+    const updated = getWorkflowById('wf-quarantine-noop');
+    expect(updated!.blocked_reason).toContain('no_publishable_commits');
   });
 });
 
@@ -887,7 +903,7 @@ describe('countBranchCommits: safe fallback chain (Fix-C4b)', () => {
     ]);
   });
 
-  it('returns 0 when raw string "not a valid object name" is thrown (Fix-C21a)', async () => {
+  it('returns null when raw string "not a valid object name" is thrown for all fallback refs (Fix-C21a)', async () => {
     vi.mocked(execSync).mockImplementation((cmd: any, opts?: any) => {
       execSyncCalls.push({ cmd, opts });
       if (typeof cmd !== 'string') return Buffer.from('');
@@ -901,17 +917,23 @@ describe('countBranchCommits: safe fallback chain (Fix-C4b)', () => {
       if (cmd === 'git rev-parse --verify origin/HEAD') {
         throw 'fatal: not a valid object name origin/HEAD';
       }
+      if (cmd === 'git rev-parse --verify origin/master') {
+        throw 'fatal: not a valid object name origin/master';
+      }
       return Buffer.from('');
     });
 
     const { countBranchCommits } = await import('../server/orchestrator/WorkflowManager.js');
 
-    // Without the ?? err fallback, this would throw because the classifier sees ''
-    expect(countBranchCommits('/tmp/wt')).toBe(0);
+    // Without the ?? err fallback, this would throw because the classifier sees ''.
+    // Post-M2: every fallback ref is missing → unknown base metadata → null
+    // (callers preserve work on null rather than treating as verified-empty).
+    expect(countBranchCommits('/tmp/wt')).toBeNull();
     expect(execSyncCalls.map(c => c.cmd)).toEqual([
       'git symbolic-ref refs/remotes/origin/HEAD',
       'git rev-parse --verify origin/main',
       'git rev-parse --verify origin/HEAD',
+      'git rev-parse --verify origin/master',
     ]);
   });
 });

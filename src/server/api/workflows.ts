@@ -235,16 +235,20 @@ router.post('/:id/wrap-up', (req, res) => {
       blocked_reason: null,
       pr_url: null,
     });
-    const finalWorkflow = queries.getWorkflowById(workflow.id);
-    if (finalWorkflow) socket.emitWorkflowUpdate(finalWorkflow);
+    const preQuarantineWorkflow = queries.getWorkflowById(workflow.id);
     console.log(`[workflow ${workflow.id}] no commits on branch — skipping PR (quarantining worktree)`);
-    if (finalWorkflow) {
-      const quarantined = quarantineWorktree(finalWorkflow, 'wrap-up: no_publishable_commits');
+    if (preQuarantineWorkflow) {
+      const quarantined = quarantineWorktree(preQuarantineWorkflow, 'wrap-up: no_publishable_commits');
       if (!quarantined.ok) {
         console.warn(`[workflow ${workflow.id}] quarantine failed: ${quarantined.error}`);
       }
     }
-    res.json({ workflow: finalWorkflow, pr_url: null, outcome: 'no_publishable_commits' });
+    // Re-read after quarantine so the response/socket event reflect the
+    // cleared worktree_path (Goal A.4 / M3): emitting the pre-quarantine row
+    // would leave the dashboard pointing at a path that no longer exists.
+    const refreshedWorkflow = queries.getWorkflowById(workflow.id);
+    if (refreshedWorkflow) socket.emitWorkflowUpdate(refreshedWorkflow);
+    res.json({ workflow: refreshedWorkflow, pr_url: null, outcome: 'no_publishable_commits' });
     return;
   }
 

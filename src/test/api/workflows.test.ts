@@ -52,6 +52,7 @@ vi.mock('../../server/orchestrator/WorkflowManager.js', () => ({
   createWorkflowPr: vi.fn(() => ({ ok: false, error: 'mock' })),
   probeRecoverableWorkflowWork: vi.fn(() => ({ status: 'clean', detail: 'no commits ahead of origin/main', baseRef: 'origin/main' })),
   cleanupWorktree: vi.fn(),
+  quarantineWorktree: vi.fn(() => ({ ok: true, path: '/tmp/.orchestrator-quarantine/wf-test' })),
   parseMilestones: vi.fn(() => ({ total: 0, done: 0 })),
   _resetForTest: vi.fn(),
 }));
@@ -430,8 +431,8 @@ describe('POST /api/workflows/:id/wrap-up', () => {
     expect(vi.mocked(cleanupWorktree)).not.toHaveBeenCalled();
   });
 
-  it('cancels wrap-up explicitly when there are no publishable commits', async () => {
-    const { probeRecoverableWorkflowWork, cleanupWorktree } = await import('../../server/orchestrator/WorkflowManager.js');
+  it('quarantines worktree (no cleanupWorktree) when there are no publishable commits', async () => {
+    const { probeRecoverableWorkflowWork, cleanupWorktree, quarantineWorktree } = await import('../../server/orchestrator/WorkflowManager.js');
     vi.mocked(probeRecoverableWorkflowWork).mockReturnValue({ status: 'clean', detail: 'no commits ahead of origin/main', baseRef: 'origin/main' });
 
     const project = await insertTestProject();
@@ -452,7 +453,9 @@ describe('POST /api/workflows/:id/wrap-up', () => {
     expect(res.body.outcome).toBe('no_publishable_commits');
     expect(res.body.pr_url).toBeNull();
     expect(res.body.workflow.status).toBe('cancelled');
-    expect(vi.mocked(cleanupWorktree)).toHaveBeenCalledTimes(1);
+    // Per M2/Goal A.4: never delete worktree on no-commits path — quarantine.
+    expect(vi.mocked(quarantineWorktree)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(cleanupWorktree)).not.toHaveBeenCalled();
   });
 
   it('cancels running agents with pid, tmux, snapshot, lock cleanup, and emitAgentUpdate during wrap-up (Fix-C17b)', async () => {
