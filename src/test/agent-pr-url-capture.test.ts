@@ -16,6 +16,7 @@ import {
   findAgentCreatedPrUrl,
   captureAgentCreatedPrUrl,
   getWorkflowOriginOwnerRepo,
+  resolveWorkflowRepoDir,
   type ExecFn,
   type ParsedPrUrl,
 } from '../server/orchestrator/AgentPrUrlCapture.js';
@@ -119,21 +120,59 @@ describe('parseOwnerRepoFromOriginUrl', () => {
 
 describe('getWorkflowOriginOwnerRepo', () => {
   it('reads `git remote get-url origin` from the worktree', () => {
-    const exec: ExecFn = (cmd, args) => {
-      expect(cmd).toBe('git');
-      expect(args).toEqual(['remote', 'get-url', 'origin']);
-      return 'git@github.com:openclaw/autodev.git\n';
+    const calls: Array<{ cmd: string; args: string[]; cwd: string }> = [];
+    const exec: ExecFn = (cmd, args, cwd) => {
+      calls.push({ cmd, args, cwd });
+      if (cmd === 'git' && args[0] === 'rev-parse') return '.git\n';
+      if (cmd === 'git' && args[0] === 'remote') return 'git@github.com:openclaw/autodev.git\n';
+      throw new Error(`unexpected exec: ${cmd} ${args.join(' ')}`);
     };
     expect(getWorkflowOriginOwnerRepo(makeWorkflow(), exec)).toEqual({ owner: 'openclaw', repo: 'autodev' });
+    // First probe is rev-parse against worktree_path, then get-url against the
+    // same resolved repo dir.
+    expect(calls[0].cwd).toBe('/tmp/work/.wt/wf-test');
+    expect(calls[0].args).toEqual(['rev-parse', '--git-dir']);
   });
 
-  it('returns null when worktree_path is missing', () => {
-    expect(getWorkflowOriginOwnerRepo(makeWorkflow({ worktree_path: null }))).toBeNull();
+  it('returns null when both worktree_path and work_dir are missing', () => {
+    expect(getWorkflowOriginOwnerRepo(makeWorkflow({ worktree_path: null, work_dir: null }))).toBeNull();
   });
 
   it('returns null when origin url is unparseable', () => {
-    const exec: ExecFn = () => 'not-a-url';
+    const exec: ExecFn = (cmd, args) => {
+      if (cmd === 'git' && args[0] === 'rev-parse') return '.git\n';
+      return 'not-a-url';
+    };
     expect(getWorkflowOriginOwnerRepo(makeWorkflow(), exec)).toBeNull();
+  });
+});
+
+describe('resolveWorkflowRepoDir (M6: work_dir fallback for removed worktrees)', () => {
+  it('returns worktree_path when it is a valid repo', () => {
+    const exec: ExecFn = (cmd, args, cwd) => {
+      if (cwd === '/tmp/work/.wt/wf-test' && args[0] === 'rev-parse') return '.git\n';
+      throw new Error('boom');
+    };
+    expect(resolveWorkflowRepoDir(makeWorkflow(), exec)).toBe('/tmp/work/.wt/wf-test');
+  });
+
+  it('falls back to work_dir when worktree_path no longer resolves', () => {
+    const exec: ExecFn = (cmd, args, cwd) => {
+      if (cwd === '/tmp/work/.wt/wf-test') throw new Error('ENOENT: not a git repo');
+      if (cwd === '/tmp/work' && args[0] === 'rev-parse') return '.git\n';
+      throw new Error('unexpected');
+    };
+    expect(resolveWorkflowRepoDir(makeWorkflow(), exec)).toBe('/tmp/work');
+  });
+
+  it('returns null when neither path resolves', () => {
+    const exec: ExecFn = () => { throw new Error('not a git repo'); };
+    expect(resolveWorkflowRepoDir(makeWorkflow(), exec)).toBeNull();
+  });
+
+  it('returns null when both paths are missing', () => {
+    const exec: ExecFn = () => { throw new Error('unreachable'); };
+    expect(resolveWorkflowRepoDir(makeWorkflow({ worktree_path: null, work_dir: null }), exec)).toBeNull();
   });
 });
 
@@ -147,6 +186,7 @@ describe('validateAgentCreatedPrUrl', () => {
 
   function execStub(prJson: object | null, opts: { originUrl?: string; ghThrows?: boolean } = {}): ExecFn {
     return (cmd, args) => {
+      if (cmd === 'git' && args[0] === 'rev-parse') return '.git\n';
       if (cmd === 'git' && args[0] === 'remote') {
         return opts.originUrl ?? 'https://github.com/openclaw/autodev.git';
       }
@@ -208,6 +248,33 @@ describe('validateAgentCreatedPrUrl', () => {
   it('rejects when workflow has no worktree_branch', () => {
     const got = validateAgentCreatedPrUrl(makeWorkflow({ worktree_branch: null }), candidate);
     expect(got.ok).toBe(false);
+  });
+
+  it('validates via work_dir fallback when worktree_path lacks origin (M6 backfill path)', () => {
+    // Simulates the 2026-05-17 polymarket-agent incident shape: worktree_path
+    // still exists on disk but its local git config has no `origin` remote
+    // (quarantined or stripped); work_dir parent checkout still has origin.
+    const exec: ExecFn = (cmd, args, cwd) => {
+      if (cmd === 'git' && args[0] === 'remote' && cwd === '/tmp/work/.wt/wf-test') {
+        throw new Error("error: No such remote 'origin'");
+      }
+      if (cmd === 'git' && args[0] === 'remote' && cwd === '/tmp/work') {
+        return 'https://github.com/openclaw/autodev.git';
+      }
+      if (cmd === 'gh' && args[0] === 'pr' && cwd === '/tmp/work') {
+        return JSON.stringify({ state: 'OPEN', headRefName: 'workflow/feat-x' });
+      }
+      throw new Error(`unexpected exec: ${cmd} ${args.join(' ')} in ${cwd}`);
+    };
+    const got = validateAgentCreatedPrUrl(makeWorkflow(), candidate, { exec });
+    expect(got.ok).toBe(true);
+  });
+
+  it('rejects when neither worktree_path nor work_dir resolves (M6)', () => {
+    const exec: ExecFn = () => { throw new Error('no repo here'); };
+    const got = validateAgentCreatedPrUrl(makeWorkflow(), candidate, { exec });
+    expect(got.ok).toBe(false);
+    if (!got.ok) expect(got.reason).toMatch(/cannot resolve workflow repo dir/);
   });
 });
 

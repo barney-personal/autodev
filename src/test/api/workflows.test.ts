@@ -320,7 +320,17 @@ describe('POST /api/workflows/:id/resume', () => {
 });
 
 describe('POST /api/workflows/:id/wrap-up', () => {
-  beforeEach(async () => { await setupTestDb(); vi.clearAllMocks(); app = createTestApp(); });
+  beforeEach(async () => {
+    await setupTestDb();
+    vi.clearAllMocks();
+    // Explicitly restore the default no-capture implementation. vi.clearAllMocks
+    // clears call history but not persistent mock implementations set via
+    // mockReturnValue/mockImplementation in earlier tests, so reset the capture
+    // mock here defensively (Cycle 7 review M6 finding).
+    const { captureAgentCreatedPrUrl } = await import('../../server/orchestrator/WorkflowManager.js');
+    vi.mocked(captureAgentCreatedPrUrl).mockImplementation(() => ({ found: false }));
+    app = createTestApp();
+  });
   afterEach(async () => { await cleanupTestDb(); });
 
   it('completes and cleans up when a draft PR is created', async () => {
@@ -434,9 +444,12 @@ describe('POST /api/workflows/:id/wrap-up', () => {
 
   it('returns captured agent-created PR URL in the clean wrap-up response (M5)', async () => {
     const { probeRecoverableWorkflowWork, cleanupWorktree, quarantineWorktree, captureAgentCreatedPrUrl } = await import('../../server/orchestrator/WorkflowManager.js');
-    vi.mocked(probeRecoverableWorkflowWork).mockReturnValue({ status: 'clean', detail: 'no commits ahead of origin/main', baseRef: 'origin/main' });
+    // Use mockReturnValueOnce so the captured-URL implementation does not leak
+    // into the next wrap-up test (vi.clearAllMocks() clears call history but
+    // not persistent implementations set via mockReturnValue).
+    vi.mocked(probeRecoverableWorkflowWork).mockReturnValueOnce({ status: 'clean', detail: 'no commits ahead of origin/main', baseRef: 'origin/main' });
     const capturedUrl = 'https://github.com/test/repo/pull/123';
-    vi.mocked(captureAgentCreatedPrUrl).mockReturnValue({
+    vi.mocked(captureAgentCreatedPrUrl).mockReturnValueOnce({
       found: true,
       url: capturedUrl,
       stored: true,

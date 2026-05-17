@@ -74,19 +74,78 @@ export function parseOwnerRepoFromOriginUrl(url: string): { owner: string; repo:
   return null;
 }
 
-/** Resolve the workflow's GitHub owner/repo by reading `origin` in the worktree. */
+/**
+ * Resolve a usable git working directory for the workflow.
+ *
+ * Backfill rows on already-completed workflows often have `worktree_path` set
+ * to a directory that has been removed or quarantined. In that case fall back
+ * to the parent `work_dir` (the original checkout) so origin/gh validation can
+ * still run for the M6 backfill script. Returns `null` if neither path
+ * resolves to a usable directory containing a git repository.
+ */
+/** Enumerate candidate repo dirs in priority order. */
+function candidateRepoDirs(workflow: Workflow): string[] {
+  const out: string[] = [];
+  if (workflow.worktree_path) out.push(workflow.worktree_path);
+  if (workflow.work_dir && workflow.work_dir !== workflow.worktree_path) {
+    out.push(workflow.work_dir);
+  }
+  return out;
+}
+
+/**
+ * Return the first candidate repo dir whose `git rev-parse --git-dir` succeeds.
+ *
+ * Used by callers that need a working directory for non-origin-sensitive git
+ * commands (e.g. probing reachability). For origin/gh validation prefer
+ * `resolveWorkflowOriginCandidate` which also requires a parseable origin.
+ */
+export function resolveWorkflowRepoDir(
+  workflow: Workflow,
+  exec: ExecFn = defaultExec,
+): string | null {
+  for (const dir of candidateRepoDirs(workflow)) {
+    try {
+      exec('git', ['rev-parse', '--git-dir'], dir);
+      return dir;
+    } catch {
+      // Fall through.
+    }
+  }
+  return null;
+}
+
+/**
+ * Walk candidate repo dirs (worktree_path then work_dir) and return the first
+ * one that yields a parseable GitHub origin URL. Backfill rows on completed
+ * workflows often have a `worktree_path` whose worktree still exists on disk
+ * but whose git config has no `origin` remote — the parent `work_dir`
+ * checkout still has the original origin. Falling through to it lets the M6
+ * backfill validate those PR URLs.
+ */
+function resolveWorkflowOriginCandidate(
+  workflow: Workflow,
+  exec: ExecFn,
+): { dir: string; owner: string; repo: string } | null {
+  for (const dir of candidateRepoDirs(workflow)) {
+    try {
+      const raw = exec('git', ['remote', 'get-url', 'origin'], dir);
+      const parsed = parseOwnerRepoFromOriginUrl(raw);
+      if (parsed) return { dir, ...parsed };
+    } catch {
+      // Try next candidate.
+    }
+  }
+  return null;
+}
+
+/** Resolve the workflow's GitHub owner/repo by reading `origin` in any usable repo dir. */
 export function getWorkflowOriginOwnerRepo(
   workflow: Workflow,
   exec: ExecFn = defaultExec,
 ): { owner: string; repo: string } | null {
-  if (!workflow.worktree_path) return null;
-  let raw: string;
-  try {
-    raw = exec('git', ['remote', 'get-url', 'origin'], workflow.worktree_path);
-  } catch {
-    return null;
-  }
-  return parseOwnerRepoFromOriginUrl(raw);
+  const c = resolveWorkflowOriginCandidate(workflow, exec);
+  return c ? { owner: c.owner, repo: c.repo } : null;
 }
 
 export interface PrViewResult {
@@ -117,10 +176,16 @@ export function validateAgentCreatedPrUrl(
   deps: PrUrlValidationDeps = {},
 ): PrUrlValidationResult {
   const exec = deps.exec ?? defaultExec;
-  if (!workflow.worktree_path) return { ok: false, reason: 'workflow has no worktree_path' };
   if (!workflow.worktree_branch) return { ok: false, reason: 'workflow has no worktree_branch' };
-  const ownerRepo = getWorkflowOriginOwnerRepo(workflow, exec);
-  if (!ownerRepo) return { ok: false, reason: 'cannot resolve workflow origin owner/repo' };
+  // Resolve a usable repo dir from worktree_path OR work_dir. Backfill rows on
+  // completed workflows often have a worktree_path that still exists but whose
+  // local git config no longer has an `origin` remote (worktree quarantined or
+  // remote stripped) — fall through to the parent `work_dir` checkout in that
+  // case. Both dirs are valid hosts for `gh pr view -R owner/repo`.
+  const originCandidate = resolveWorkflowOriginCandidate(workflow, exec);
+  if (!originCandidate) return { ok: false, reason: 'cannot resolve workflow repo dir (no usable worktree_path or work_dir)' };
+  const repoDir = originCandidate.dir;
+  const ownerRepo = { owner: originCandidate.owner, repo: originCandidate.repo };
   if (parsed.owner !== ownerRepo.owner || parsed.repo !== ownerRepo.repo) {
     return {
       ok: false,
@@ -137,7 +202,7 @@ export function validateAgentCreatedPrUrl(
         '-R', `${ownerRepo.owner}/${ownerRepo.repo}`,
         '--json', 'url,state,headRefName,headRepository,baseRepository',
       ],
-      workflow.worktree_path,
+      repoDir,
     );
   } catch (err) {
     return { ok: false, reason: `gh pr view failed: ${errMessage(err)}` };

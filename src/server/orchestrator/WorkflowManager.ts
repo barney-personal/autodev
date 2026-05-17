@@ -41,6 +41,7 @@ export {
   extractGithubPullUrls,
   parseOwnerRepoFromOriginUrl,
   getWorkflowOriginOwnerRepo,
+  resolveWorkflowRepoDir,
 } from './AgentPrUrlCapture.js';
 export type { ParsedPrUrl, PrUrlValidationResult, CaptureResult, CaptureOptions, FindOptions, ExecFn } from './AgentPrUrlCapture.js';
 export type { WorkflowPrCreationOutcome, RecoverableWorkProbe, RecoverableWorkProbeStatus, PushBranchResult, CreatePrResult } from './WorkflowPRCreator.js';
