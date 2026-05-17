@@ -12,6 +12,7 @@ import { errMsg, execErrMsg } from '../../shared/errors.js';
 import { workflowLogger } from '../lib/logger.js';
 import { parseMilestones, CHECKBOX_CHECKED } from './WorkflowMilestoneParser.js';
 import { ensureWorktreeBranch, removeWorktree, quarantineWorktree } from './WorkflowWorktreeManager.js';
+import { captureAgentCreatedPrUrl } from './AgentPrUrlCapture.js';
 
 export type WorkflowPrCreationOutcome = 'created' | 'failed_with_publishable_commits' | 'no_publishable_commits';
 
@@ -678,6 +679,22 @@ export async function finalizeWorkflow(
         console.log(`[workflow ${workflow.id}] found existing PR via fallback lookup: ${existing}`);
       }
     } catch { /* no existing PR found */ }
+  }
+
+  // Safety net: an implementer may have run `gh pr create` itself as part of a
+  // milestone. The branch-name lookup above only finds a PR open on the exact
+  // worktree branch from this repo's perspective — if `gh` auth in the worktree
+  // is degraded, that branch lookup can fail even when the PR exists. Scan the
+  // latest implementer agent's recent output for a URL and validate it.
+  if (!prUrl) {
+    try {
+      const captured = captureAgentCreatedPrUrl(workflow, { updateAndEmit });
+      if (captured.found && captured.url) {
+        prUrl = captured.url;
+      }
+    } catch (err) {
+      console.warn(`[workflow ${workflow.id}] agent PR URL capture errored (non-fatal):`, errMsg(err));
+    }
   }
 
   const prOutcome = getPrCreationOutcome(workflow, prUrl);
