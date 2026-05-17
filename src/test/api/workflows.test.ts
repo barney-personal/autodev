@@ -53,6 +53,7 @@ vi.mock('../../server/orchestrator/WorkflowManager.js', () => ({
   probeRecoverableWorkflowWork: vi.fn(() => ({ status: 'clean', detail: 'no commits ahead of origin/main', baseRef: 'origin/main' })),
   cleanupWorktree: vi.fn(),
   quarantineWorktree: vi.fn(() => ({ ok: true, path: '/tmp/.orchestrator-quarantine/wf-test' })),
+  captureAgentCreatedPrUrl: vi.fn(() => ({ found: false })),
   parseMilestones: vi.fn(() => ({ total: 0, done: 0 })),
   _resetForTest: vi.fn(),
 }));
@@ -428,6 +429,41 @@ describe('POST /api/workflows/:id/wrap-up', () => {
     expect(res.body.workflow.status).toBe('blocked');
     expect(res.body.workflow.blocked_reason).toContain('worktree metadata missing');
     expect(res.body.workflow.blocked_reason).toContain('3/5 milestones');
+    expect(vi.mocked(cleanupWorktree)).not.toHaveBeenCalled();
+  });
+
+  it('returns captured agent-created PR URL in the clean wrap-up response (M5)', async () => {
+    const { probeRecoverableWorkflowWork, cleanupWorktree, quarantineWorktree, captureAgentCreatedPrUrl } = await import('../../server/orchestrator/WorkflowManager.js');
+    vi.mocked(probeRecoverableWorkflowWork).mockReturnValue({ status: 'clean', detail: 'no commits ahead of origin/main', baseRef: 'origin/main' });
+    const capturedUrl = 'https://github.com/test/repo/pull/123';
+    vi.mocked(captureAgentCreatedPrUrl).mockReturnValue({
+      found: true,
+      url: capturedUrl,
+      stored: true,
+      pr: { url: capturedUrl, state: 'OPEN', headRefName: 'workflow/test-branch' },
+    });
+
+    const project = await insertTestProject();
+    const wf = await insertTestWorkflow({
+      project_id: project.id,
+      status: 'running',
+      current_phase: 'implement',
+      use_worktree: 1,
+    });
+    const { updateWorkflow } = await import('../../server/db/queries.js');
+    updateWorkflow(wf.id, {
+      worktree_path: '/tmp/worktree',
+      worktree_branch: 'workflow/test-branch',
+    });
+
+    const res = await request(app).post(`/api/workflows/${wf.id}/wrap-up`);
+    expect(res.status).toBe(200);
+    expect(res.body.pr_url).toBe(capturedUrl);
+    expect(res.body.outcome).toBe('agent_pr_captured');
+    expect(res.body.workflow.pr_url).toBe(capturedUrl);
+    // Defense in depth: even with a captured URL on the clean path, the
+    // worktree is still quarantined (probe said no commits) rather than deleted.
+    expect(vi.mocked(quarantineWorktree)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(cleanupWorktree)).not.toHaveBeenCalled();
   });
 

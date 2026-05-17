@@ -260,7 +260,11 @@ router.post('/:id/wrap-up', (req, res) => {
     // would leave the dashboard pointing at a path that no longer exists.
     const refreshedWorkflow = queries.getWorkflowById(workflow.id);
     if (refreshedWorkflow) socket.emitWorkflowUpdate(refreshedWorkflow);
-    res.json({ workflow: refreshedWorkflow, pr_url: null, outcome: 'no_publishable_commits' });
+    res.json({
+      workflow: refreshedWorkflow,
+      pr_url: agentCapturedUrl,
+      outcome: agentCapturedUrl ? 'agent_pr_captured' : 'no_publishable_commits',
+    });
     return;
   }
 

@@ -149,8 +149,13 @@ export function validateAgentCreatedPrUrl(
     return { ok: false, reason: `gh pr view returned malformed JSON: ${errMessage(err)}` };
   }
 
-  if (pr.state !== 'OPEN' && pr.state !== 'MERGED') {
-    return { ok: false, reason: `PR state is ${pr.state ?? '(unknown)'}, not OPEN or MERGED`, pr };
+  // Brief Goal B.2 — capture must confirm the URL points at a real, OPEN PR.
+  // MERGED/CLOSED PRs are not valid capture targets: if the work has already
+  // been merged the wrap-up is moot, and a separately closed PR is not the
+  // workflow's PR. Backfill scripts that reuse this validator therefore log
+  // MERGED candidates but do not store them.
+  if (pr.state !== 'OPEN') {
+    return { ok: false, reason: `PR state is ${pr.state ?? '(unknown)'}, not OPEN`, pr };
   }
   if (pr.headRefName !== workflow.worktree_branch) {
     return {
@@ -232,16 +237,29 @@ export function findAgentCreatedPrUrl(
 }
 
 function defaultListOutputsForLatestImplementer(workflow: Workflow): string[] {
+  // Sort candidate (agent, job) pairs across ALL done implement jobs by
+  // (workflow_cycle desc, agent.finished_at desc), then walk in that order
+  // and return the first agent that has output rows. Cycle 6 review fix —
+  // previously we picked the highest-cycle job first and returned the first
+  // agent of that job with any output, which could miss the URL when a
+  // same-cycle retry implementer was a different job whose agent finished
+  // later but had no output yet at scan time of an older same-cycle agent.
   const jobs = queries.getJobsForWorkflow(workflow.id);
-  const implementJobs = jobs
-    .filter(j => j.workflow_phase === 'implement' && j.status === 'done')
-    .sort((a, b) => (b.workflow_cycle ?? 0) - (a.workflow_cycle ?? 0));
-  for (const job of implementJobs) {
-    const agents = queries.listAgents()
-      .filter((a) => a.job_id === job.id && a.status === 'done')
-      .sort((a, b) => (b.finished_at ?? 0) - (a.finished_at ?? 0));
-    if (agents.length === 0) continue;
-    const agent = agents[0];
+  const implementJobIdToCycle = new Map<string, number>();
+  for (const j of jobs) {
+    if (j.workflow_phase === 'implement' && j.status === 'done') {
+      implementJobIdToCycle.set(j.id, j.workflow_cycle ?? 0);
+    }
+  }
+  if (implementJobIdToCycle.size === 0) return [];
+  const candidates = queries.listAgents()
+    .filter(a => a.status === 'done' && implementJobIdToCycle.has(a.job_id))
+    .map(a => ({ agent: a, cycle: implementJobIdToCycle.get(a.job_id) ?? 0 }))
+    .sort((x, y) => {
+      if (y.cycle !== x.cycle) return y.cycle - x.cycle;
+      return (y.agent.finished_at ?? 0) - (x.agent.finished_at ?? 0);
+    });
+  for (const { agent } of candidates) {
     const output = queries.getAgentOutput(agent.id, 50);
     if (output.length === 0) continue;
     return output.map(o => o.content);

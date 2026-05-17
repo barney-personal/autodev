@@ -169,10 +169,11 @@ describe('validateAgentCreatedPrUrl', () => {
     expect(got.ok).toBe(true);
   });
 
-  it('returns ok=true when state is MERGED', () => {
+  it('rejects MERGED PRs (M5: brief requires open PR)', () => {
     const exec = execStub({ url: candidate.url, state: 'MERGED', headRefName: 'workflow/feat-x' });
     const got = validateAgentCreatedPrUrl(makeWorkflow(), candidate, { exec });
-    expect(got.ok).toBe(true);
+    expect(got.ok).toBe(false);
+    if (!got.ok) expect(got.reason).toMatch(/MERGED/);
   });
 
   it('rejects CLOSED PRs', () => {
@@ -265,6 +266,48 @@ describe('findAgentCreatedPrUrl', () => {
       listOutputsForLatestImplementer: () => [],
     });
     expect(got).toBeNull();
+  });
+});
+
+describe('defaultListOutputsForLatestImplementer (M5)', () => {
+  // When two implementer agents exist for the same workflow_cycle (e.g. a
+  // first agent that fell over and a retry that actually opened the PR), the
+  // default lister must pick the most recent done agent by finished_at rather
+  // than returning the first job's first agent. We exercise this via the
+  // public `findAgentCreatedPrUrl` entry point, mocking the queries module so
+  // we don't need a real DB.
+  it('selects the most recent done implementer agent across same-cycle retries', async () => {
+    vi.resetModules();
+    vi.doMock('../server/db/queries.js', () => ({
+      getJobsForWorkflow: (_id: string) => ([
+        // Two implement jobs, same workflow_cycle (e.g. a retry of cycle 1).
+        { id: 'job-old', workflow_phase: 'implement', status: 'done', workflow_cycle: 1 },
+        { id: 'job-new', workflow_phase: 'implement', status: 'done', workflow_cycle: 1 },
+        // An assess job that should be ignored entirely.
+        { id: 'job-assess', workflow_phase: 'assess', status: 'done', workflow_cycle: 1 },
+      ]),
+      listAgents: () => ([
+        { id: 'agent-old', job_id: 'job-old', status: 'done', finished_at: 1000 },
+        { id: 'agent-new', job_id: 'job-new', status: 'done', finished_at: 2000 },
+        { id: 'agent-assess', job_id: 'job-assess', status: 'done', finished_at: 3000 },
+      ]),
+      getAgentOutput: (agentId: string) => {
+        if (agentId === 'agent-old') return [{ content: 'older implementer never opened a PR' }];
+        if (agentId === 'agent-new') {
+          return [{ content: 'newer implementer opened https://github.com/openclaw/autodev/pull/42' }];
+        }
+        return [];
+      },
+      updateWorkflow: () => undefined,
+    }));
+    const mod = await import('../server/orchestrator/AgentPrUrlCapture.js');
+    const exec: ExecFn = (cmd) => {
+      if (cmd === 'git') return 'git@github.com:openclaw/autodev.git';
+      return JSON.stringify({ state: 'OPEN', headRefName: 'workflow/feat-x' });
+    };
+    const got = mod.findAgentCreatedPrUrl(makeWorkflow(), { exec });
+    expect(got?.url).toBe('https://github.com/openclaw/autodev/pull/42');
+    vi.doUnmock('../server/db/queries.js');
   });
 });
 
