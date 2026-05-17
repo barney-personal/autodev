@@ -516,7 +516,10 @@ describe('POST /api/workflows/:id/wrap-up — disk-state regression', () => {
   });
 
   // ── Case 6: clean worktree, no commits ahead of origin ───────────────────
-  it('cancels and removes the worktree when the probe proves no commits ahead of origin/main', async () => {
+  it('cancels and quarantines the worktree when the probe proves no commits ahead of origin/main', async () => {
+    // After M2, even a verified-empty branch is quarantined rather than deleted
+    // (Goal A.4 defense-in-depth). The worktree moves to
+    // <work_dir>/.orchestrator-quarantine/<wf-id>/ so a human can inspect.
     const fx = createGitFixture({ branchCommits: 0 });
     const project = await insertTestProject();
     const wf = await insertTestWorkflow({
@@ -540,7 +543,11 @@ describe('POST /api/workflows/:id/wrap-up — disk-state regression', () => {
     const dbAfter = getWorkflowById(wf.id);
     expect(dbAfter!.status).toBe('cancelled');
 
+    // Worktree moved to quarantine dir — original path gone, quarantine dir exists.
     expect(existsSync(fx.worktreePath!)).toBe(false);
+    const quarantineDir = path.join(fx.workDir!, '.orchestrator-quarantine', wf.id);
+    expect(existsSync(quarantineDir)).toBe(true);
+    expect(existsSync(path.join(quarantineDir, 'WHY.md'))).toBe(true);
     // Probe should never have queued a push or PR call.
     expect(mockHandlers.gitPushQueue.length).toBe(0);
     expect(mockHandlers.ghPrCreate).toBeUndefined();

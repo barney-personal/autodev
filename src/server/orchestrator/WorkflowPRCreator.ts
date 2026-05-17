@@ -11,7 +11,8 @@ import type { Workflow } from '../../shared/types.js';
 import { errMsg, execErrMsg } from '../../shared/errors.js';
 import { workflowLogger } from '../lib/logger.js';
 import { parseMilestones, CHECKBOX_CHECKED } from './WorkflowMilestoneParser.js';
-import { ensureWorktreeBranch, removeWorktree } from './WorkflowWorktreeManager.js';
+import { ensureWorktreeBranch, removeWorktree, quarantineWorktree } from './WorkflowWorktreeManager.js';
+import { captureAgentCreatedPrUrl } from './AgentPrUrlCapture.js';
 
 export type WorkflowPrCreationOutcome = 'created' | 'failed_with_publishable_commits' | 'no_publishable_commits';
 
@@ -61,18 +62,39 @@ function countCommitsAgainstBaseRef(cwd: string, baseRef: string): number | null
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-export function countBranchCommits(cwd: string): number {
-  const candidateBaseRefs = new Set<string>();
-  const defaultBranch = getRemoteDefaultBranch(cwd);
-  if (defaultBranch) candidateBaseRefs.add(`origin/${defaultBranch}`);
-  candidateBaseRefs.add('origin/HEAD');
+/**
+ * Count commits on HEAD ahead of a verified origin base ref.
+ *
+ * Returns:
+ *   - a number ≥ 0 when a base ref resolved and `git rev-list --count` succeeded.
+ *     0 means the branch is genuinely empty relative to a verified base.
+ *   - `null` when no candidate origin base ref could be verified. Callers MUST
+ *     treat `null` as uncertainty — preserve the worktree, do not infer "empty".
+ *
+ * This was previously `number` and returned `0` on missing remote metadata,
+ * which caused the wrap-up flow to delete worktrees with real local commits on
+ * branches that were never pushed (the 2026-05-17 polymarket-agent regression).
+ * The fallback chain now matches `probeRecoverableWorkflowWork`.
+ */
+export function countBranchCommits(cwd: string): number | null {
+  const candidates: string[] = [];
+  let defaultBranch: string | null = null;
+  try {
+    defaultBranch = getRemoteDefaultBranch(cwd);
+  } catch {
+    defaultBranch = null;
+  }
+  if (defaultBranch) candidates.push(`origin/${defaultBranch}`);
+  for (const fallback of ['origin/HEAD', 'origin/main', 'origin/master']) {
+    if (!candidates.includes(fallback)) candidates.push(fallback);
+  }
 
-  for (const baseRef of candidateBaseRefs) {
+  for (const baseRef of candidates) {
     const count = countCommitsAgainstBaseRef(cwd, baseRef);
     if (count !== null) return count;
   }
 
-  return 0;
+  return null;
 }
 
 // ─── Recoverable-Work Probe ─────────────────────────────────────────────────
@@ -497,7 +519,33 @@ export function createWorkflowPr(
  * and the max-cycles partial PR path. The wrap-up handler calls pushBranch and
  * createWorkflowPr separately for attributed error reporting.
  */
-export function pushAndCreatePr(
+function defaultSyncSleep(ms: number): void {
+  if (ms <= 0) return;
+  const buf = new Int32Array(new SharedArrayBuffer(4));
+  Atomics.wait(buf, 0, 0, ms);
+}
+
+export interface PushBranchOptions {
+  /** Use --force-with-lease on the first attempt. Retry always uses --force-with-lease. */
+  force?: boolean;
+  /** Delay between attempt 1 and attempt 2 in milliseconds. Defaults to 5000. */
+  retryDelayMs?: number;
+  /** Override the synchronous sleep used between attempts (for tests). */
+  sleep?: (ms: number) => void;
+}
+
+/**
+ * Push the worktree branch to origin with one bounded retry.
+ *
+ * Attempt 1: `git push -u origin <branch>` (or `--force-with-lease` if force=true).
+ * Attempt 2: `git push --force-with-lease -u origin <branch>`, run only if attempt
+ * 1 failed with a non-auth error, after a `retryDelayMs` pause.
+ *
+ * Auth failures (Authentication failed, Permission denied, terminal prompts
+ * disabled, plain 403) fail fast; 403 with rate-limit wording remains
+ * transient and gets the bounded retry.
+ */
+export function pushBranch(
   workflow: Workflow,
   isDraft: boolean,
   updateAndEmit?: (id: string, fields: Parameters<typeof queries.updateWorkflow>[1]) => void,
@@ -526,7 +574,11 @@ export function pushAndCreatePr(
 
   let hasCommits = false;
   try {
-    hasCommits = countBranchCommits(worktree_path) > 0;
+    const count = countBranchCommits(worktree_path);
+    // null = unknown (no base ref verified) → safe default: attempt PR creation.
+    // The downstream push/PR step will surface the real failure, and the
+    // worktree is preserved/quarantined rather than silently deleted.
+    hasCommits = count === null ? true : count > 0;
   } catch (err) {
     console.warn(`[workflow ${workflow.id}] rev-list failed, assuming commits exist:`, err);
     hasCommits = true;
@@ -556,15 +608,19 @@ export function getPrCreationOutcome(workflow: Workflow, prUrl: string | null): 
   if (prUrl) return 'created';
   if (!workflow.worktree_path || !workflow.work_dir) return 'no_publishable_commits';
 
-  let hasPublishableCommits = false;
+  let count: number | null = null;
   try {
-    hasPublishableCommits = countBranchCommits(workflow.worktree_path) > 0;
+    count = countBranchCommits(workflow.worktree_path);
   } catch (err) {
     console.warn(`[workflow ${workflow.id}] getPrCreationOutcome: git error — preserving worktree as safe default:`, errMsg(err));
     return 'failed_with_publishable_commits';
   }
 
-  return hasPublishableCommits ? 'failed_with_publishable_commits' : 'no_publishable_commits';
+  // Uncertainty (no base ref verified) must preserve the worktree — the
+  // wrap-up path then quarantines instead of deleting. Only a positively
+  // verified empty branch (count === 0) is reported as no_publishable_commits.
+  if (count === null) return 'failed_with_publishable_commits';
+  return count > 0 ? 'failed_with_publishable_commits' : 'no_publishable_commits';
 }
 
 // ─── Finalization ────────────────────────────────────────────────────────────
@@ -592,7 +648,9 @@ export async function finalizeWorkflow(
     if (attempt < _FINALIZE_MAX_ATTEMPTS) {
       let hasCommits = true;
       try {
-        hasCommits = countBranchCommits(workflow.worktree_path) > 0;
+        const count = countBranchCommits(workflow.worktree_path);
+        // null (unknown) → keep retrying. Only break when verified empty.
+        hasCommits = count === null ? true : count > 0;
       } catch { /* safe default */ }
 
       if (!hasCommits || !workflow.worktree_branch) break;
@@ -623,6 +681,22 @@ export async function finalizeWorkflow(
     } catch { /* no existing PR found */ }
   }
 
+  // Safety net: an implementer may have run `gh pr create` itself as part of a
+  // milestone. The branch-name lookup above only finds a PR open on the exact
+  // worktree branch from this repo's perspective — if `gh` auth in the worktree
+  // is degraded, that branch lookup can fail even when the PR exists. Scan the
+  // latest implementer agent's recent output for a URL and validate it.
+  if (!prUrl) {
+    try {
+      const captured = captureAgentCreatedPrUrl(workflow, { updateAndEmit });
+      if (captured.found && captured.url) {
+        prUrl = captured.url;
+      }
+    } catch (err) {
+      console.warn(`[workflow ${workflow.id}] agent PR URL capture errored (non-fatal):`, errMsg(err));
+    }
+  }
+
   const prOutcome = getPrCreationOutcome(workflow, prUrl);
 
   if (prOutcome === 'created') {
@@ -634,7 +708,17 @@ export async function finalizeWorkflow(
       blocked_reason: `PR creation failed — worktree preserved for retry at ${workflow.worktree_path}`,
     });
   } else {
-    removeWorktree(workflow);
+    // no_publishable_commits — the orchestrator's commit-detection said the
+    // branch is verifiably empty. Per the brief's Goal A.4 defense-in-depth
+    // rule, never delete the worktree on this path. Quarantine it so a human
+    // operator can rescue any work the orchestrator misclassified.
+    console.log(`[workflow ${workflow.id}] no commits on branch — skipping PR (quarantining worktree)`);
+    const quarantined = quarantineWorktree(workflow, 'finalize: no_publishable_commits');
+    updateAndEmit(workflow.id, {
+      blocked_reason: quarantined.ok
+        ? `no_publishable_commits — worktree quarantined at ${quarantined.path}`
+        : `no_publishable_commits — quarantine failed: ${quarantined.error}`,
+    });
   }
 }
 

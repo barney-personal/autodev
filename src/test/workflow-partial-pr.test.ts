@@ -430,26 +430,42 @@ describe('finalizeWorkflow: worktree preservation on PR failure', () => {
     expect(removeCall).toBeDefined();
   });
 
-  it('removes worktree when no publishable commits exist', async () => {
+  it('quarantines worktree (does not remove) when no publishable commits exist (M2)', async () => {
     const mockedExecSync = vi.mocked(execSync);
     mockedExecSync.mockImplementation((cmd: any, opts?: any) => {
       execSyncCalls.push({ cmd, opts });
       if (typeof cmd === 'string') {
         if (cmd.includes('rev-parse --abbrev-ref HEAD')) return Buffer.from('workflow/test-branch\n');
-        // No commits
+        // No commits (verified empty: count === 0 against a real base ref)
         if (cmd.includes('rev-list --count')) return Buffer.from('0\n');
       }
       return Buffer.from('');
     });
 
+    // Insert workflow so quarantine's updateWorkflow call has a row to update.
+    const { updateWorkflow, getWorkflowById } = await import('../server/db/queries.js');
+    const dbWf = await insertTestWorkflow({
+      id: 'wf-quarantine-noop',
+      status: 'running',
+      use_worktree: 1,
+    });
+    updateWorkflow(dbWf.id, {
+      worktree_path: '/tmp/wt',
+      worktree_branch: 'workflow/test-branch',
+    });
+
     const { finalizeWorkflow } = await import('../server/orchestrator/WorkflowManager.js');
-    const wf = makeWorkflow();
+    const wf = makeWorkflow({ id: 'wf-quarantine-noop' });
 
     await finalizeWorkflow(wf);
 
-    // Worktree removal SHOULD have been called (no commits to preserve)
+    // Per M2/Goal A.4: never delete worktree on the no-commits path — quarantine.
     const removeCall = execSyncCalls.find(c => typeof c.cmd === 'string' && c.cmd.includes('git worktree remove'));
-    expect(removeCall).toBeDefined();
+    expect(removeCall).toBeUndefined();
+
+    // Quarantine sets a descriptive blocked_reason (success or quarantine-failed).
+    const updated = getWorkflowById('wf-quarantine-noop');
+    expect(updated!.blocked_reason).toContain('no_publishable_commits');
   });
 });
 
@@ -698,15 +714,17 @@ describe('countBranchCommits: safe fallback chain (Fix-C4b)', () => {
     vi.restoreAllMocks();
   });
 
-  it('returns 0 when origin default-branch metadata and origin/HEAD are both missing', async () => {
+  it('returns null (unknown) when origin default-branch metadata and all fallback refs are missing', async () => {
+    // After the M2 fix, missing remote metadata is reported as `unknown` (null)
+    // rather than `0`, so the wrap-up path preserves/quarantines the worktree
+    // instead of treating "we could not verify a base" as "branch is empty".
     vi.mocked(execSync).mockImplementation((cmd: any, opts?: any) => {
       execSyncCalls.push({ cmd, opts });
       if (typeof cmd !== 'string') return Buffer.from('');
       if (cmd === 'git symbolic-ref refs/remotes/origin/HEAD') {
         throw new Error('fatal: ref refs/remotes/origin/HEAD is not a symbolic ref');
       }
-      // rev-parse --verify for origin/HEAD fails (ref doesn't exist)
-      if (cmd === 'git rev-parse --verify origin/HEAD') {
+      if (cmd.startsWith('git rev-parse --verify origin/')) {
         throw new Error('fatal: Needed a single revision');
       }
       return Buffer.from('');
@@ -714,25 +732,23 @@ describe('countBranchCommits: safe fallback chain (Fix-C4b)', () => {
 
     const { countBranchCommits } = await import('../server/orchestrator/WorkflowManager.js');
 
-    expect(countBranchCommits('/tmp/wt')).toBe(0);
+    expect(countBranchCommits('/tmp/wt')).toBeNull();
     expect(execSyncCalls.map(c => c.cmd)).toEqual([
       'git symbolic-ref refs/remotes/origin/HEAD',
       'git rev-parse --verify origin/HEAD',
+      'git rev-parse --verify origin/main',
+      'git rev-parse --verify origin/master',
     ]);
   });
 
-  it('returns 0 when origin/main is missing and origin/HEAD is also unavailable', async () => {
+  it('returns null when origin/main, origin/HEAD, and origin/master are all unavailable', async () => {
     vi.mocked(execSync).mockImplementation((cmd: any, opts?: any) => {
       execSyncCalls.push({ cmd, opts });
       if (typeof cmd !== 'string') return Buffer.from('');
       if (cmd === 'git symbolic-ref refs/remotes/origin/HEAD') {
         return Buffer.from('refs/remotes/origin/main\n');
       }
-      // rev-parse --verify for both candidates fails (refs don't exist)
-      if (cmd === 'git rev-parse --verify origin/main') {
-        throw new Error('fatal: Needed a single revision');
-      }
-      if (cmd === 'git rev-parse --verify origin/HEAD') {
+      if (cmd.startsWith('git rev-parse --verify origin/')) {
         throw new Error('fatal: Needed a single revision');
       }
       return Buffer.from('');
@@ -740,11 +756,12 @@ describe('countBranchCommits: safe fallback chain (Fix-C4b)', () => {
 
     const { countBranchCommits } = await import('../server/orchestrator/WorkflowManager.js');
 
-    expect(countBranchCommits('/tmp/wt')).toBe(0);
+    expect(countBranchCommits('/tmp/wt')).toBeNull();
     expect(execSyncCalls.map(c => c.cmd)).toEqual([
       'git symbolic-ref refs/remotes/origin/HEAD',
       'git rev-parse --verify origin/main',
       'git rev-parse --verify origin/HEAD',
+      'git rev-parse --verify origin/master',
     ]);
   });
 
@@ -774,14 +791,17 @@ describe('countBranchCommits: safe fallback chain (Fix-C4b)', () => {
     ]);
   });
 
-  it('causes getPrCreationOutcome to treat missing remote metadata as no publishable commits', async () => {
+  it('causes getPrCreationOutcome to treat missing remote metadata as failed_with_publishable_commits (uncertainty preserves)', async () => {
+    // After M2: when no origin base ref can be verified, countBranchCommits
+    // returns null (unknown) and getPrCreationOutcome reports
+    // failed_with_publishable_commits so the worktree is preserved/quarantined.
     vi.mocked(execSync).mockImplementation((cmd: any, opts?: any) => {
       execSyncCalls.push({ cmd, opts });
       if (typeof cmd !== 'string') return Buffer.from('');
       if (cmd === 'git symbolic-ref refs/remotes/origin/HEAD') {
         throw new Error('fatal: ref refs/remotes/origin/HEAD is not a symbolic ref');
       }
-      if (cmd === 'git rev-parse --verify origin/HEAD') {
+      if (cmd.startsWith('git rev-parse --verify origin/')) {
         throw new Error('fatal: Needed a single revision');
       }
       return Buffer.from('');
@@ -790,7 +810,7 @@ describe('countBranchCommits: safe fallback chain (Fix-C4b)', () => {
     const { getPrCreationOutcome } = await import('../server/orchestrator/WorkflowManager.js');
     const wf = makeWorkflow({ worktree_path: '/tmp/wt', work_dir: '/tmp/test' });
 
-    expect(getPrCreationOutcome(wf, null)).toBe('no_publishable_commits');
+    expect(getPrCreationOutcome(wf, null)).toBe('failed_with_publishable_commits');
   });
 
   it('re-throws transient rev-parse errors instead of treating them as missing ref (Fix-C20a)', async () => {
@@ -835,43 +855,38 @@ describe('countBranchCommits: safe fallback chain (Fix-C4b)', () => {
     expect(() => countBranchCommits('/tmp/wt')).toThrow('fatal: bad object abc1234');
   });
 
-  it('returns 0 when both candidates throw "not a valid object name" (Fix-C21b)', async () => {
+  it('returns null when all candidates throw "not a valid object name" (Fix-C21b)', async () => {
     vi.mocked(execSync).mockImplementation((cmd: any, opts?: any) => {
       execSyncCalls.push({ cmd, opts });
       if (typeof cmd !== 'string') return Buffer.from('');
       if (cmd === 'git symbolic-ref refs/remotes/origin/HEAD') {
         return Buffer.from('refs/remotes/origin/main\n');
       }
-      if (cmd === 'git rev-parse --verify origin/main') {
-        throw new Error('fatal: not a valid object name origin/main');
-      }
-      if (cmd === 'git rev-parse --verify origin/HEAD') {
-        throw new Error('fatal: not a valid object name origin/HEAD');
+      if (cmd.startsWith('git rev-parse --verify origin/')) {
+        throw new Error('fatal: not a valid object name');
       }
       return Buffer.from('');
     });
 
     const { countBranchCommits } = await import('../server/orchestrator/WorkflowManager.js');
 
-    expect(countBranchCommits('/tmp/wt')).toBe(0);
+    expect(countBranchCommits('/tmp/wt')).toBeNull();
     expect(execSyncCalls.map(c => c.cmd)).toEqual([
       'git symbolic-ref refs/remotes/origin/HEAD',
       'git rev-parse --verify origin/main',
       'git rev-parse --verify origin/HEAD',
+      'git rev-parse --verify origin/master',
     ]);
   });
 
-  it('returns 0 when both candidates throw "unknown revision" (Fix-C21b)', async () => {
+  it('returns null when all candidates throw "unknown revision" (Fix-C21b)', async () => {
     vi.mocked(execSync).mockImplementation((cmd: any, opts?: any) => {
       execSyncCalls.push({ cmd, opts });
       if (typeof cmd !== 'string') return Buffer.from('');
       if (cmd === 'git symbolic-ref refs/remotes/origin/HEAD') {
         return Buffer.from('refs/remotes/origin/main\n');
       }
-      if (cmd === 'git rev-parse --verify origin/main') {
-        throw new Error('fatal: unknown revision or path not in working tree');
-      }
-      if (cmd === 'git rev-parse --verify origin/HEAD') {
+      if (cmd.startsWith('git rev-parse --verify origin/')) {
         throw new Error('fatal: unknown revision or path not in working tree');
       }
       return Buffer.from('');
@@ -879,15 +894,16 @@ describe('countBranchCommits: safe fallback chain (Fix-C4b)', () => {
 
     const { countBranchCommits } = await import('../server/orchestrator/WorkflowManager.js');
 
-    expect(countBranchCommits('/tmp/wt')).toBe(0);
+    expect(countBranchCommits('/tmp/wt')).toBeNull();
     expect(execSyncCalls.map(c => c.cmd)).toEqual([
       'git symbolic-ref refs/remotes/origin/HEAD',
       'git rev-parse --verify origin/main',
       'git rev-parse --verify origin/HEAD',
+      'git rev-parse --verify origin/master',
     ]);
   });
 
-  it('returns 0 when raw string "not a valid object name" is thrown (Fix-C21a)', async () => {
+  it('returns null when raw string "not a valid object name" is thrown for all fallback refs (Fix-C21a)', async () => {
     vi.mocked(execSync).mockImplementation((cmd: any, opts?: any) => {
       execSyncCalls.push({ cmd, opts });
       if (typeof cmd !== 'string') return Buffer.from('');
@@ -901,17 +917,23 @@ describe('countBranchCommits: safe fallback chain (Fix-C4b)', () => {
       if (cmd === 'git rev-parse --verify origin/HEAD') {
         throw 'fatal: not a valid object name origin/HEAD';
       }
+      if (cmd === 'git rev-parse --verify origin/master') {
+        throw 'fatal: not a valid object name origin/master';
+      }
       return Buffer.from('');
     });
 
     const { countBranchCommits } = await import('../server/orchestrator/WorkflowManager.js');
 
-    // Without the ?? err fallback, this would throw because the classifier sees ''
-    expect(countBranchCommits('/tmp/wt')).toBe(0);
+    // Without the ?? err fallback, this would throw because the classifier sees ''.
+    // Post-M2: every fallback ref is missing → unknown base metadata → null
+    // (callers preserve work on null rather than treating as verified-empty).
+    expect(countBranchCommits('/tmp/wt')).toBeNull();
     expect(execSyncCalls.map(c => c.cmd)).toEqual([
       'git symbolic-ref refs/remotes/origin/HEAD',
       'git rev-parse --verify origin/main',
       'git rev-parse --verify origin/HEAD',
+      'git rev-parse --verify origin/master',
     ]);
   });
 });

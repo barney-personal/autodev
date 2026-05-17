@@ -3,7 +3,7 @@ import { execFileSync } from 'child_process';
 import { existsSync } from 'fs';
 import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
-import { resumeWorkflow, cleanupWorktree, pushBranch, createWorkflowPr, probeRecoverableWorkflowWork } from '../orchestrator/WorkflowManager.js';
+import { resumeWorkflow, cleanupWorktree, quarantineWorktree, pushBranch, createWorkflowPr, probeRecoverableWorkflowWork, captureAgentCreatedPrUrl } from '../orchestrator/WorkflowManager.js';
 import { cancelledAgents } from '../orchestrator/AgentRunner.js';
 import { getFileLockRegistry } from '../orchestrator/FileLockRegistry.js';
 import { disconnectAgent, isTmuxSessionAlive, saveSnapshot } from '../orchestrator/PtyManager.js';
@@ -224,18 +224,47 @@ router.post('/:id/wrap-up', (req, res) => {
   const probe = probeRecoverableWorkflowWork(workflow);
   const preservedAt = workflow.worktree_path ?? '(unknown path)';
 
-  // If the probe proves no recoverable work, skip push/PR and cancel cleanly.
+  // If the probe proves no recoverable work, skip push/PR and cancel.
+  // Per the brief's Goal A.4 defense-in-depth rule, quarantine the worktree
+  // instead of deleting it — even when the probe positively confirms no commits.
   if (probe.status === 'clean') {
+    // Safety net before we declare "no commits and quarantine": maybe the
+    // implementer agent already opened a PR via `gh pr create`. Capture that
+    // URL onto the workflow row before quarantining so the operator dashboard
+    // and any backfill sweep can find it.
+    let agentCapturedUrl: string | null = null;
+    try {
+      const captured = captureAgentCreatedPrUrl(workflow);
+      if (captured.found && captured.url) agentCapturedUrl = captured.url;
+    } catch (err) {
+      console.warn(`[workflow ${workflow.id}] wrap-up agent PR URL capture errored (non-fatal):`, err);
+    }
+
+    queries.releaseWorkflowClaims(workflow.id);
     queries.updateWorkflow(workflow.id, {
       status: 'cancelled',
       current_phase: 'idle' as WorkflowPhase,
       blocked_reason: null,
-      pr_url: null,
+      pr_url: agentCapturedUrl,
     });
-    const finalWorkflow = queries.getWorkflowById(workflow.id);
-    if (finalWorkflow) socket.emitWorkflowUpdate(finalWorkflow);
-    if (finalWorkflow) cleanupWorktree(finalWorkflow);
-    res.json({ workflow: finalWorkflow, pr_url: null, outcome: 'no_publishable_commits' });
+    const preQuarantineWorkflow = queries.getWorkflowById(workflow.id);
+    console.log(`[workflow ${workflow.id}] no commits on branch — skipping PR (quarantining worktree)`);
+    if (preQuarantineWorkflow) {
+      const quarantined = quarantineWorktree(preQuarantineWorkflow, 'wrap-up: no_publishable_commits');
+      if (!quarantined.ok) {
+        console.warn(`[workflow ${workflow.id}] quarantine failed: ${quarantined.error}`);
+      }
+    }
+    // Re-read after quarantine so the response/socket event reflect the
+    // cleared worktree_path (Goal A.4 / M3): emitting the pre-quarantine row
+    // would leave the dashboard pointing at a path that no longer exists.
+    const refreshedWorkflow = queries.getWorkflowById(workflow.id);
+    if (refreshedWorkflow) socket.emitWorkflowUpdate(refreshedWorkflow);
+    res.json({
+      workflow: refreshedWorkflow,
+      pr_url: agentCapturedUrl,
+      outcome: agentCapturedUrl ? 'agent_pr_captured' : 'no_publishable_commits',
+    });
     return;
   }
 
@@ -270,6 +299,29 @@ router.post('/:id/wrap-up', (req, res) => {
   // Step 2: Create draft PR (branch is now pushed)
   const prResult = createWorkflowPr(workflow, { isDraft: true });
   if (!prResult.ok || !prResult.url) {
+    // Safety net: maybe the implementer agent already opened a PR via
+    // `gh pr create` before the orchestrator got here. Capture it instead of
+    // leaving pr_url NULL and blocking the workflow.
+    let agentCapturedUrl: string | null = null;
+    try {
+      const captured = captureAgentCreatedPrUrl(workflow);
+      if (captured.found && captured.url) agentCapturedUrl = captured.url;
+    } catch (err) {
+      console.warn(`[workflow ${workflow.id}] wrap-up agent PR URL capture errored (non-fatal):`, err);
+    }
+    if (agentCapturedUrl) {
+      queries.updateWorkflow(workflow.id, {
+        status: 'complete',
+        current_phase: 'idle' as WorkflowPhase,
+        pr_url: agentCapturedUrl,
+        blocked_reason: null,
+      });
+      const finalWorkflow = queries.getWorkflowById(workflow.id);
+      if (finalWorkflow) socket.emitWorkflowUpdate(finalWorkflow);
+      if (finalWorkflow) cleanupWorktree(finalWorkflow);
+      res.json({ workflow: finalWorkflow, pr_url: agentCapturedUrl, outcome: 'agent_pr_captured' });
+      return;
+    }
     const prError = prResult.error ?? 'unknown';
     queries.updateWorkflow(workflow.id, {
       status: 'blocked',

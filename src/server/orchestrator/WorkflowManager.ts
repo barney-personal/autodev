@@ -32,8 +32,18 @@ import { diagnoseWriteNoteInOutput, formatWriteNoteDiagnostic, writeBlockedDiagn
 
 // ─── Re-exports (preserve public API — all import sites continue to work) ──
 export { parseMilestones, meetsCompletionThreshold, recoverPlanFromAgentOutput, extractPlanFromText } from './WorkflowMilestoneParser.js';
-export { ensureWorktreeBranch, verifyWorktreeHealth, cleanupWorktree } from './WorkflowWorktreeManager.js';
+export { ensureWorktreeBranch, verifyWorktreeHealth, cleanupWorktree, quarantineWorktree } from './WorkflowWorktreeManager.js';
 export { countBranchCommits, getPrCreationOutcome, _buildPrBody, probeRecoverableWorkflowWork, pushBranch, createWorkflowPr } from './WorkflowPRCreator.js';
+export {
+  captureAgentCreatedPrUrl,
+  findAgentCreatedPrUrl,
+  validateAgentCreatedPrUrl,
+  extractGithubPullUrls,
+  parseOwnerRepoFromOriginUrl,
+  getWorkflowOriginOwnerRepo,
+  resolveWorkflowRepoDir,
+} from './AgentPrUrlCapture.js';
+export type { ParsedPrUrl, PrUrlValidationResult, CaptureResult, CaptureOptions, FindOptions, ExecFn } from './AgentPrUrlCapture.js';
 export type { WorkflowPrCreationOutcome, RecoverableWorkProbe, RecoverableWorkProbeStatus, PushBranchResult, CreatePrResult } from './WorkflowPRCreator.js';
 export { diagnoseWriteNoteInOutput, writeBlockedDiagnostic, BLOCKED_LOG_DIR } from './WorkflowBlockedDiagnostics.js';
 export type { WriteNoteDiagnostic } from './WorkflowBlockedDiagnostics.js';

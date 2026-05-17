@@ -1,0 +1,368 @@
+/**
+ * Safety-net capture of agent-created PR URLs.
+ *
+ * The orchestrator's primary PR path is `createWorkflowPr` (gh pr create from
+ * the server). But implementers often run `gh pr create` themselves as part of
+ * their final milestone — and on 2026-05-17 three polymarket-agent workflows
+ * landed real PRs that way without `workflows.pr_url` ever being set, because
+ * the wrap-up flow only knows about server-created PRs.
+ *
+ * This module provides four pure-ish helpers used by both `finalizeWorkflow`
+ * and the wrap-up endpoint, plus a `captureAgentCreatedPrUrl` wrapper that
+ * mutates the DB. The pure helpers are dry-run-safe so M5's backfill script
+ * can reuse them without any write paths.
+ */
+
+import { execFileSync } from 'child_process';
+import * as queries from '../db/queries.js';
+import type { Workflow } from '../../shared/types.js';
+
+const PR_URL_REGEX = /https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)\/pull\/(\d+)/g;
+
+export interface ParsedPrUrl {
+  url: string;
+  owner: string;
+  repo: string;
+  number: number;
+}
+
+/** Pull every `https://github.com/<owner>/<repo>/pull/<N>` URL out of free text, deduped in order. */
+export function extractGithubPullUrls(text: string): ParsedPrUrl[] {
+  const out: ParsedPrUrl[] = [];
+  if (!text) return out;
+  const seen = new Set<string>();
+  // Reset regex state between calls (matchAll is fine — we use a fresh regex each call below).
+  const re = new RegExp(PR_URL_REGEX.source, 'g');
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const url = m[0];
+    if (seen.has(url)) continue;
+    seen.add(url);
+    const number = parseInt(m[3], 10);
+    if (!Number.isFinite(number)) continue;
+    out.push({ url, owner: m[1], repo: m[2].replace(/\.git$/, ''), number });
+  }
+  return out;
+}
+
+export type ExecFn = (cmd: string, args: string[], cwd: string) => string;
+
+function defaultExec(cmd: string, args: string[], cwd: string): string {
+  return execFileSync(cmd, args, {
+    cwd,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 15000,
+  }).toString();
+}
+
+function errMessage(err: unknown): string {
+  return String((err as { message?: string } | null)?.message ?? err ?? '');
+}
+
+/** Parse `owner/repo` from a `git remote get-url origin` value. Supports https, ssh, and git@ forms. */
+export function parseOwnerRepoFromOriginUrl(url: string): { owner: string; repo: string } | null {
+  const trimmed = url.trim();
+  // git@github.com:owner/repo(.git)
+  let m = trimmed.match(/^git@github\.com:([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/);
+  if (m) return { owner: m[1], repo: m[2] };
+  // https://github.com/owner/repo(.git)/
+  m = trimmed.match(/^https?:\/\/(?:[^@/]+@)?github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/);
+  if (m) return { owner: m[1], repo: m[2] };
+  // ssh://git@github.com/owner/repo(.git)
+  m = trimmed.match(/^ssh:\/\/git@github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/);
+  if (m) return { owner: m[1], repo: m[2] };
+  return null;
+}
+
+/**
+ * Resolve a usable git working directory for the workflow.
+ *
+ * Backfill rows on already-completed workflows often have `worktree_path` set
+ * to a directory that has been removed or quarantined. In that case fall back
+ * to the parent `work_dir` (the original checkout) so origin/gh validation can
+ * still run for the M6 backfill script. Returns `null` if neither path
+ * resolves to a usable directory containing a git repository.
+ */
+/** Enumerate candidate repo dirs in priority order. */
+function candidateRepoDirs(workflow: Workflow): string[] {
+  const out: string[] = [];
+  if (workflow.worktree_path) out.push(workflow.worktree_path);
+  if (workflow.work_dir && workflow.work_dir !== workflow.worktree_path) {
+    out.push(workflow.work_dir);
+  }
+  return out;
+}
+
+/**
+ * Return the first candidate repo dir whose `git rev-parse --git-dir` succeeds.
+ *
+ * Used by callers that need a working directory for non-origin-sensitive git
+ * commands (e.g. probing reachability). For origin/gh validation prefer
+ * `resolveWorkflowOriginCandidate` which also requires a parseable origin.
+ */
+export function resolveWorkflowRepoDir(
+  workflow: Workflow,
+  exec: ExecFn = defaultExec,
+): string | null {
+  for (const dir of candidateRepoDirs(workflow)) {
+    try {
+      exec('git', ['rev-parse', '--git-dir'], dir);
+      return dir;
+    } catch {
+      // Fall through.
+    }
+  }
+  return null;
+}
+
+/**
+ * Walk candidate repo dirs (worktree_path then work_dir) and return the first
+ * one that yields a parseable GitHub origin URL. Backfill rows on completed
+ * workflows often have a `worktree_path` whose worktree still exists on disk
+ * but whose git config has no `origin` remote — the parent `work_dir`
+ * checkout still has the original origin. Falling through to it lets the M6
+ * backfill validate those PR URLs.
+ */
+function resolveWorkflowOriginCandidate(
+  workflow: Workflow,
+  exec: ExecFn,
+): { dir: string; owner: string; repo: string } | null {
+  for (const dir of candidateRepoDirs(workflow)) {
+    try {
+      const raw = exec('git', ['remote', 'get-url', 'origin'], dir);
+      const parsed = parseOwnerRepoFromOriginUrl(raw);
+      if (parsed) return { dir, ...parsed };
+    } catch {
+      // Try next candidate.
+    }
+  }
+  return null;
+}
+
+/** Resolve the workflow's GitHub owner/repo by reading `origin` in any usable repo dir. */
+export function getWorkflowOriginOwnerRepo(
+  workflow: Workflow,
+  exec: ExecFn = defaultExec,
+): { owner: string; repo: string } | null {
+  const c = resolveWorkflowOriginCandidate(workflow, exec);
+  return c ? { owner: c.owner, repo: c.repo } : null;
+}
+
+export interface PrViewResult {
+  url?: string;
+  state?: string;
+  headRefName?: string;
+  headRepository?: { name?: string; owner?: { login?: string } };
+  baseRepository?: { name?: string; owner?: { login?: string } };
+}
+
+export interface PrUrlValidationDeps {
+  exec?: ExecFn;
+}
+
+export type PrUrlValidationResult =
+  | { ok: true; pr: PrViewResult }
+  | { ok: false; reason: string; pr?: PrViewResult };
+
+/**
+ * Validate a candidate `gh pr view`-style URL belongs to the workflow.
+ *
+ * Pure read-only — never stores anything. Callers wrap this in
+ * `captureAgentCreatedPrUrl` to mutate. Used unchanged by M5's dry-run backfill.
+ */
+export function validateAgentCreatedPrUrl(
+  workflow: Workflow,
+  parsed: ParsedPrUrl,
+  deps: PrUrlValidationDeps = {},
+): PrUrlValidationResult {
+  const exec = deps.exec ?? defaultExec;
+  if (!workflow.worktree_branch) return { ok: false, reason: 'workflow has no worktree_branch' };
+  // Resolve a usable repo dir from worktree_path OR work_dir. Backfill rows on
+  // completed workflows often have a worktree_path that still exists but whose
+  // local git config no longer has an `origin` remote (worktree quarantined or
+  // remote stripped) — fall through to the parent `work_dir` checkout in that
+  // case. Both dirs are valid hosts for `gh pr view -R owner/repo`.
+  const originCandidate = resolveWorkflowOriginCandidate(workflow, exec);
+  if (!originCandidate) return { ok: false, reason: 'cannot resolve workflow repo dir (no usable worktree_path or work_dir)' };
+  const repoDir = originCandidate.dir;
+  const ownerRepo = { owner: originCandidate.owner, repo: originCandidate.repo };
+  if (parsed.owner !== ownerRepo.owner || parsed.repo !== ownerRepo.repo) {
+    return {
+      ok: false,
+      reason: `URL repo ${parsed.owner}/${parsed.repo} does not match workflow origin ${ownerRepo.owner}/${ownerRepo.repo}`,
+    };
+  }
+
+  let raw: string;
+  try {
+    raw = exec(
+      'gh',
+      [
+        'pr', 'view', String(parsed.number),
+        '-R', `${ownerRepo.owner}/${ownerRepo.repo}`,
+        '--json', 'url,state,headRefName,headRepository,baseRepository',
+      ],
+      repoDir,
+    );
+  } catch (err) {
+    return { ok: false, reason: `gh pr view failed: ${errMessage(err)}` };
+  }
+  let pr: PrViewResult;
+  try {
+    pr = JSON.parse(raw);
+  } catch (err) {
+    return { ok: false, reason: `gh pr view returned malformed JSON: ${errMessage(err)}` };
+  }
+
+  // Brief Goal B.2 — capture must confirm the URL points at a real, OPEN PR.
+  // MERGED/CLOSED PRs are not valid capture targets: if the work has already
+  // been merged the wrap-up is moot, and a separately closed PR is not the
+  // workflow's PR. Backfill scripts that reuse this validator therefore log
+  // MERGED candidates but do not store them.
+  if (pr.state !== 'OPEN') {
+    return { ok: false, reason: `PR state is ${pr.state ?? '(unknown)'}, not OPEN`, pr };
+  }
+  if (pr.headRefName !== workflow.worktree_branch) {
+    return {
+      ok: false,
+      reason: `PR head ref '${pr.headRefName ?? '(unknown)'}' does not match workflow branch '${workflow.worktree_branch}'`,
+      pr,
+    };
+  }
+  // headRepository owner sometimes missing in fork PRs; only assert when present.
+  const headOwner = pr.headRepository?.owner?.login;
+  if (headOwner && headOwner !== ownerRepo.owner) {
+    return {
+      ok: false,
+      reason: `PR head repo owner '${headOwner}' does not match origin owner '${ownerRepo.owner}'`,
+      pr,
+    };
+  }
+  return { ok: true, pr };
+}
+
+/** Best-effort extract human-readable text from a stream-json content row. Falls back to raw text on parse failure. */
+function extractTextFromMaybeStreamJson(content: string): string {
+  try {
+    const ev = JSON.parse(content);
+    const parts: string[] = [];
+    // Claude: assistant message with content blocks
+    if (ev && ev.type === 'assistant' && ev.message && Array.isArray(ev.message.content)) {
+      for (const b of ev.message.content) {
+        if (b && b.type === 'text' && typeof b.text === 'string') parts.push(b.text);
+      }
+    }
+    // Claude: final result block
+    if (ev && typeof ev.result === 'string') parts.push(ev.result);
+    // Codex: item.completed agent_message / reasoning
+    if (ev && ev.type === 'item.completed' && ev.item && typeof ev.item.text === 'string') {
+      parts.push(ev.item.text);
+    }
+    const joined = parts.join('\n');
+    return joined.length > 0 ? joined : '';
+  } catch {
+    // Not JSON — treat the whole row as raw text.
+    return content;
+  }
+}
+
+export interface FindOptions extends PrUrlValidationDeps {
+  /** Override which agent output rows the finder scans. Defaults to the latest done implement-phase agent's last 50 rows. */
+  listOutputsForLatestImplementer?: (workflow: Workflow) => string[];
+}
+
+/**
+ * Inspect the latest successful implement-phase agent's recent output for
+ * a `https://github.com/.../pull/N` URL that points at this workflow's branch.
+ *
+ * Returns the first validated candidate, or `null` if nothing checks out.
+ */
+export function findAgentCreatedPrUrl(
+  workflow: Workflow,
+  options: FindOptions = {},
+): { url: string; parsed: ParsedPrUrl; pr: PrViewResult } | null {
+  const lister = options.listOutputsForLatestImplementer ?? defaultListOutputsForLatestImplementer;
+  const rows = lister(workflow);
+  const seen = new Set<string>();
+  const candidates: ParsedPrUrl[] = [];
+  for (const row of rows) {
+    const text = extractTextFromMaybeStreamJson(row);
+    if (!text) continue;
+    for (const parsed of extractGithubPullUrls(text)) {
+      if (seen.has(parsed.url)) continue;
+      seen.add(parsed.url);
+      candidates.push(parsed);
+    }
+  }
+  for (const cand of candidates) {
+    const validation = validateAgentCreatedPrUrl(workflow, cand, options);
+    if (validation.ok) return { url: cand.url, parsed: cand, pr: validation.pr };
+  }
+  return null;
+}
+
+function defaultListOutputsForLatestImplementer(workflow: Workflow): string[] {
+  // Sort candidate (agent, job) pairs across ALL done implement jobs by
+  // (workflow_cycle desc, agent.finished_at desc), then walk in that order
+  // and return the first agent that has output rows. Cycle 6 review fix —
+  // previously we picked the highest-cycle job first and returned the first
+  // agent of that job with any output, which could miss the URL when a
+  // same-cycle retry implementer was a different job whose agent finished
+  // later but had no output yet at scan time of an older same-cycle agent.
+  const jobs = queries.getJobsForWorkflow(workflow.id);
+  const implementJobIdToCycle = new Map<string, number>();
+  for (const j of jobs) {
+    if (j.workflow_phase === 'implement' && j.status === 'done') {
+      implementJobIdToCycle.set(j.id, j.workflow_cycle ?? 0);
+    }
+  }
+  if (implementJobIdToCycle.size === 0) return [];
+  const candidates = queries.listAgents()
+    .filter(a => a.status === 'done' && implementJobIdToCycle.has(a.job_id))
+    .map(a => ({ agent: a, cycle: implementJobIdToCycle.get(a.job_id) ?? 0 }))
+    .sort((x, y) => {
+      if (y.cycle !== x.cycle) return y.cycle - x.cycle;
+      return (y.agent.finished_at ?? 0) - (x.agent.finished_at ?? 0);
+    });
+  for (const { agent } of candidates) {
+    const output = queries.getAgentOutput(agent.id, 50);
+    if (output.length === 0) continue;
+    return output.map(o => o.content);
+  }
+  return [];
+}
+
+export interface CaptureOptions extends FindOptions {
+  /** Skip the DB write (used by the M5 backfill script). */
+  dryRun?: boolean;
+  /** Override updateWorkflow + socket emit (used by callers that already wrap both, e.g. finalizeWorkflow). */
+  updateAndEmit?: (id: string, fields: Parameters<typeof queries.updateWorkflow>[1]) => void;
+}
+
+export type CaptureResult =
+  | { found: false; reason?: string }
+  | { found: true; url: string; stored: boolean; pr: PrViewResult };
+
+/**
+ * Capture an agent-created PR URL onto `workflows.pr_url` when it is still NULL.
+ *
+ * Returns a structured result for logging/backfill use. Idempotent in the
+ * common case — refuses to overwrite an existing `pr_url`.
+ */
+export function captureAgentCreatedPrUrl(
+  workflow: Workflow,
+  options: CaptureOptions = {},
+): CaptureResult {
+  if (workflow.pr_url) {
+    return { found: false, reason: 'workflow already has pr_url' };
+  }
+  const found = findAgentCreatedPrUrl(workflow, options);
+  if (!found) return { found: false };
+  if (options.dryRun) {
+    return { found: true, url: found.url, stored: false, pr: found.pr };
+  }
+  const update = options.updateAndEmit ?? ((id, fields) => { queries.updateWorkflow(id, fields); });
+  update(workflow.id, { pr_url: found.url });
+  console.log(`[workflow ${workflow.id}] agent-created PR URL captured: ${found.url}`);
+  return { found: true, url: found.url, stored: true, pr: found.pr };
+}
