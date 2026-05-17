@@ -519,33 +519,7 @@ export function createWorkflowPr(
  * and the max-cycles partial PR path. The wrap-up handler calls pushBranch and
  * createWorkflowPr separately for attributed error reporting.
  */
-function defaultSyncSleep(ms: number): void {
-  if (ms <= 0) return;
-  const buf = new Int32Array(new SharedArrayBuffer(4));
-  Atomics.wait(buf, 0, 0, ms);
-}
-
-export interface PushBranchOptions {
-  /** Use --force-with-lease on the first attempt. Retry always uses --force-with-lease. */
-  force?: boolean;
-  /** Delay between attempt 1 and attempt 2 in milliseconds. Defaults to 5000. */
-  retryDelayMs?: number;
-  /** Override the synchronous sleep used between attempts (for tests). */
-  sleep?: (ms: number) => void;
-}
-
-/**
- * Push the worktree branch to origin with one bounded retry.
- *
- * Attempt 1: `git push -u origin <branch>` (or `--force-with-lease` if force=true).
- * Attempt 2: `git push --force-with-lease -u origin <branch>`, run only if attempt
- * 1 failed with a non-auth error, after a `retryDelayMs` pause.
- *
- * Auth failures (Authentication failed, Permission denied, terminal prompts
- * disabled, plain 403) fail fast; 403 with rate-limit wording remains
- * transient and gets the bounded retry.
- */
-export function pushBranch(
+export function pushAndCreatePr(
   workflow: Workflow,
   isDraft: boolean,
   updateAndEmit?: (id: string, fields: Parameters<typeof queries.updateWorkflow>[1]) => void,
