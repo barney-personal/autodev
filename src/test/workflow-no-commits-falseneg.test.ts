@@ -28,7 +28,7 @@
  * docs commit). After M2 lands they must pass.
  */
 import { describe, it, expect, beforeEach, afterEach, beforeAll } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { execFileSync as realExecFileSync, execSync as realExecSync } from 'child_process';
@@ -37,6 +37,7 @@ import {
   countBranchCommits,
   getPrCreationOutcome,
 } from '../server/orchestrator/WorkflowPRCreator.js';
+import { quarantineWorktree } from '../server/orchestrator/WorkflowWorktreeManager.js';
 import type { Workflow } from '../shared/types.js';
 
 interface Fixture {
@@ -211,5 +212,107 @@ describe('wrap-up no-commits false-negative (M1)', () => {
     // deletes the worktree. Post-fix: must be `failed_with_publishable_commits`
     // (or `created`) so the worktree is preserved/quarantined.
     expect(outcome).not.toBe('no_publishable_commits');
+  });
+});
+
+// ─── quarantineWorktree — directory move + WHY.md + DB clear ────────────────
+//
+// These tests verify the quarantine function's on-disk and metadata behavior
+// using a minimal real worktree fixture (no full server stack required).
+
+describe('quarantineWorktree (M2)', () => {
+  let tmpRoot: string;
+  let cleanup: () => void;
+
+  beforeEach(() => {
+    tmpRoot = mkdtempSync(path.join(tmpdir(), 'quarantine-test-'));
+    cleanup = () => {
+      try { rmSync(tmpRoot, { recursive: true, force: true, maxRetries: 3 }); } catch { /* best-effort */ }
+    };
+  });
+
+  afterEach(() => cleanup());
+
+  it('moves the worktree directory to .orchestrator-quarantine/<id>/', () => {
+    const worktreePath = path.join(tmpRoot, 'wt');
+    const workDir = path.join(tmpRoot, 'work');
+    realExecSync(`mkdir -p ${JSON.stringify(worktreePath)} ${JSON.stringify(workDir)}`, { stdio: 'pipe' });
+    writeFileSync(path.join(worktreePath, 'some-work.txt'), 'uncommitted work\n');
+
+    const wf = {
+      id: 'qtest-' + Math.random().toString(36).slice(2, 8),
+      work_dir: workDir,
+      worktree_path: worktreePath,
+      worktree_branch: 'workflow/test',
+    } as any;
+
+    const result = quarantineWorktree(wf, 'test: no_publishable_commits');
+
+    expect(result.ok).toBe(true);
+    expect(existsSync(worktreePath)).toBe(false);
+    const quarantineDir = path.join(workDir, '.orchestrator-quarantine', wf.id);
+    expect(existsSync(quarantineDir)).toBe(true);
+    expect(existsSync(path.join(quarantineDir, 'some-work.txt'))).toBe(true);
+  });
+
+  it('writes a WHY.md with workflow id, timestamp, original path, and reason', () => {
+    const worktreePath = path.join(tmpRoot, 'wt2');
+    const workDir = path.join(tmpRoot, 'work2');
+    realExecSync(`mkdir -p ${JSON.stringify(worktreePath)} ${JSON.stringify(workDir)}`, { stdio: 'pipe' });
+
+    const wfId = 'qtest-why-' + Math.random().toString(36).slice(2, 8);
+    const wf = {
+      id: wfId,
+      work_dir: workDir,
+      worktree_path: worktreePath,
+      worktree_branch: 'workflow/why-test',
+    } as any;
+
+    const result = quarantineWorktree(wf, 'finalize: no_publishable_commits');
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const why = readFileSync(path.join(result.path, 'WHY.md'), 'utf8');
+    expect(why).toContain(`workflow_id: ${wfId}`);
+    expect(why).toContain(`original_worktree_path: ${worktreePath}`);
+    expect(why).toContain('finalize: no_publishable_commits');
+    expect(why).toContain('workflow/why-test');
+  });
+
+  it('returns ok:false for a missing worktree_path', () => {
+    const wf = {
+      id: 'qtest-miss',
+      work_dir: tmpRoot,
+      worktree_path: null,
+      worktree_branch: 'workflow/test',
+    } as any;
+    const result = quarantineWorktree(wf, 'test');
+    expect(result.ok).toBe(false);
+  });
+
+  it('uses a timestamp suffix when the quarantine slot already exists', () => {
+    const worktreePath1 = path.join(tmpRoot, 'wt3a');
+    const worktreePath2 = path.join(tmpRoot, 'wt3b');
+    const workDir = path.join(tmpRoot, 'work3');
+    realExecSync(
+      `mkdir -p ${JSON.stringify(worktreePath1)} ${JSON.stringify(worktreePath2)} ${JSON.stringify(workDir)}`,
+      { stdio: 'pipe' },
+    );
+
+    const wfId = 'qtest-dup-' + Math.random().toString(36).slice(2, 8);
+    const wf1 = { id: wfId, work_dir: workDir, worktree_path: worktreePath1, worktree_branch: 'w/a' } as any;
+    const wf2 = { id: wfId, work_dir: workDir, worktree_path: worktreePath2, worktree_branch: 'w/b' } as any;
+
+    const r1 = quarantineWorktree(wf1, 'first');
+    const r2 = quarantineWorktree(wf2, 'second');
+
+    expect(r1.ok).toBe(true);
+    expect(r2.ok).toBe(true);
+    // The second result path must differ from the first (timestamp suffix).
+    if (r1.ok && r2.ok) {
+      expect(r1.path).not.toBe(r2.path);
+      expect(existsSync(r1.path)).toBe(true);
+      expect(existsSync(r2.path)).toBe(true);
+    }
   });
 });

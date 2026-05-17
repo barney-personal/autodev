@@ -3,7 +3,7 @@ import { execFileSync } from 'child_process';
 import { existsSync } from 'fs';
 import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
-import { resumeWorkflow, cleanupWorktree, pushBranch, createWorkflowPr, probeRecoverableWorkflowWork } from '../orchestrator/WorkflowManager.js';
+import { resumeWorkflow, cleanupWorktree, quarantineWorktree, pushBranch, createWorkflowPr, probeRecoverableWorkflowWork } from '../orchestrator/WorkflowManager.js';
 import { cancelledAgents } from '../orchestrator/AgentRunner.js';
 import { getFileLockRegistry } from '../orchestrator/FileLockRegistry.js';
 import { disconnectAgent, isTmuxSessionAlive, saveSnapshot } from '../orchestrator/PtyManager.js';
@@ -224,8 +224,11 @@ router.post('/:id/wrap-up', (req, res) => {
   const probe = probeRecoverableWorkflowWork(workflow);
   const preservedAt = workflow.worktree_path ?? '(unknown path)';
 
-  // If the probe proves no recoverable work, skip push/PR and cancel cleanly.
+  // If the probe proves no recoverable work, skip push/PR and cancel.
+  // Per the brief's Goal A.4 defense-in-depth rule, quarantine the worktree
+  // instead of deleting it — even when the probe positively confirms no commits.
   if (probe.status === 'clean') {
+    queries.releaseWorkflowClaims(workflow.id);
     queries.updateWorkflow(workflow.id, {
       status: 'cancelled',
       current_phase: 'idle' as WorkflowPhase,
@@ -234,7 +237,13 @@ router.post('/:id/wrap-up', (req, res) => {
     });
     const finalWorkflow = queries.getWorkflowById(workflow.id);
     if (finalWorkflow) socket.emitWorkflowUpdate(finalWorkflow);
-    if (finalWorkflow) cleanupWorktree(finalWorkflow);
+    console.log(`[workflow ${workflow.id}] no commits on branch — skipping PR (quarantining worktree)`);
+    if (finalWorkflow) {
+      const quarantined = quarantineWorktree(finalWorkflow, 'wrap-up: no_publishable_commits');
+      if (!quarantined.ok) {
+        console.warn(`[workflow ${workflow.id}] quarantine failed: ${quarantined.error}`);
+      }
+    }
     res.json({ workflow: finalWorkflow, pr_url: null, outcome: 'no_publishable_commits' });
     return;
   }
