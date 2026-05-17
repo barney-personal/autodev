@@ -128,10 +128,11 @@ describe('getWorkflowOriginOwnerRepo', () => {
       throw new Error(`unexpected exec: ${cmd} ${args.join(' ')}`);
     };
     expect(getWorkflowOriginOwnerRepo(makeWorkflow(), exec)).toEqual({ owner: 'openclaw', repo: 'autodev' });
-    // First probe is rev-parse against worktree_path, then get-url against the
-    // same resolved repo dir.
+    // resolveWorkflowOriginCandidate directly calls `git remote get-url origin`
+    // on each candidate dir — it does not run a separate rev-parse probe — so
+    // the first observed exec is `remote get-url origin` against worktree_path.
     expect(calls[0].cwd).toBe('/tmp/work/.wt/wf-test');
-    expect(calls[0].args).toEqual(['rev-parse', '--git-dir']);
+    expect(calls[0].args).toEqual(['remote', 'get-url', 'origin']);
   });
 
   it('returns null when both worktree_path and work_dir are missing', () => {

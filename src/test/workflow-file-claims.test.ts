@@ -62,6 +62,64 @@ describe('workflow file claims (M13/6B)', () => {
     expect(claims).toHaveLength(1);
   });
 
+  // Brief Goal D.1 — updateWorkflow must atomically release file claims when a
+  // workflow transitions into a terminal status (complete/cancelled/failed).
+  // Non-terminal transitions must leave claims intact so an in-flight workflow
+  // that briefly enters `blocked` does not lose its claims.
+  describe('auto-release on terminal status transition (M7)', () => {
+    for (const status of ['complete', 'cancelled', 'failed'] as const) {
+      it(`releases active claims when status transitions to ${status}`, async () => {
+        const { claimFiles, getActiveClaimsForWorkflow, updateWorkflow } = await import('../server/db/queries.js');
+
+        const project = await insertTestProject();
+        const wf = await insertTestWorkflow({ project_id: project.id });
+        claimFiles(wf.id, ['foo.py', 'bar.py']);
+        expect(getActiveClaimsForWorkflow(wf.id)).toHaveLength(2);
+
+        const updated = updateWorkflow(wf.id, { status });
+        expect(updated?.status).toBe(status);
+        expect(getActiveClaimsForWorkflow(wf.id)).toHaveLength(0);
+      });
+    }
+
+    it('keeps active claims when status transitions to a non-terminal value', async () => {
+      const { claimFiles, getActiveClaimsForWorkflow, updateWorkflow } = await import('../server/db/queries.js');
+
+      const project = await insertTestProject();
+      const wf = await insertTestWorkflow({ project_id: project.id });
+      claimFiles(wf.id, ['foo.py']);
+
+      updateWorkflow(wf.id, { status: 'blocked' as any });
+      expect(getActiveClaimsForWorkflow(wf.id)).toHaveLength(1);
+    });
+
+    it('applies pr_url and releases claims atomically when status update bundles both', async () => {
+      // Atomicity check: status + other fields go through together; claims are
+      // released as part of the same transaction.
+      const { claimFiles, getActiveClaimsForWorkflow, updateWorkflow, getWorkflowById } = await import('../server/db/queries.js');
+
+      const project = await insertTestProject();
+      const wf = await insertTestWorkflow({ project_id: project.id });
+      claimFiles(wf.id, ['foo.py']);
+
+      updateWorkflow(wf.id, { status: 'complete', pr_url: 'https://github.com/o/r/pull/1', blocked_reason: null });
+      const refreshed = getWorkflowById(wf.id);
+      expect(refreshed?.status).toBe('complete');
+      expect(refreshed?.pr_url).toBe('https://github.com/o/r/pull/1');
+      expect(getActiveClaimsForWorkflow(wf.id)).toHaveLength(0);
+    });
+
+    it('terminal update without prior claims is a no-op for claims', async () => {
+      const { updateWorkflow, getActiveClaimsForWorkflow } = await import('../server/db/queries.js');
+
+      const project = await insertTestProject();
+      const wf = await insertTestWorkflow({ project_id: project.id });
+
+      updateWorkflow(wf.id, { status: 'complete' });
+      expect(getActiveClaimsForWorkflow(wf.id)).toHaveLength(0);
+    });
+  });
+
   it('releaseWorkflowClaims releases all active claims', async () => {
     const { claimFiles, releaseWorkflowClaims, getActiveClaimsForWorkflow } = await import('../server/db/queries.js');
 
