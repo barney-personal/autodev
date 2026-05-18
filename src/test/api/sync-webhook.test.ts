@@ -202,3 +202,53 @@ describe('POST /api/webhooks/sync — sync-webhook-handler-missing', () => {
     expect(res.status).toBe(400);
   });
 });
+
+/**
+ * Bug: sync-phase-detail-missing
+ * SyncFailurePhase lacked a `detail` field, so diagnostic context like
+ * "Walking block trees for recently edited pages" was silently dropped from
+ * the remediation job description. This meant the downstream agent had no
+ * information about what the sync was doing when the worker lease expired.
+ *
+ * Dispatch id: 3aff6e9d-0fbe-4583-af13-436da7422719 (Notion sync_blocks)
+ */
+describe('sync-phase-detail-missing — notion sync_blocks phase detail dropped from job description', () => {
+  beforeEach(async () => {
+    await setupTestDb();
+    vi.clearAllMocks();
+    app = createTestApp();
+  });
+  afterEach(async () => { await cleanupTestDb(); });
+
+  it('includes phase detail in job description when provided', async () => {
+    const notionPayload = {
+      syncLogId: 1235,
+      source: 'notion',
+      status: 'error',
+      startedAt: '2026-05-18T11:25:28.389Z',
+      completedAt: '2026-05-18T11:58:03.705Z',
+      errorMessage: 'Worker lease expired before the sync completed.',
+      lastSuccessAt: null,
+      consecutiveFailureCount: 1,
+      failedPhases: [
+        {
+          name: 'sync_blocks',
+          status: 'error',
+          error: 'Phase interrupted — worker lease expired before completion',
+          detail: 'Walking block trees for recently edited pages',
+        },
+      ],
+    };
+
+    const res = await request(app)
+      .post('/api/webhooks/sync')
+      .send(notionPayload);
+
+    expect(res.status).toBe(201);
+
+    const { getJobById } = await import('../../server/db/queries.js');
+    const job = getJobById(res.body.jobId);
+    expect(job).not.toBeNull();
+    expect(job!.description).toContain('Walking block trees for recently edited pages');
+  });
+});

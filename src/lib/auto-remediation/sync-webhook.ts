@@ -7,6 +7,7 @@ export interface SyncFailurePhase {
   name: string;
   status: 'error' | 'success' | 'skipped';
   error?: string;
+  detail?: string;
 }
 
 export interface SyncFailurePayload {
@@ -31,7 +32,11 @@ export interface RemediationDispatch {
 export function buildSyncRemediationPrompt(payload: SyncFailurePayload, dispatchId: string): string {
   const failedPhasesText = payload.failedPhases?.length
     ? payload.failedPhases
-        .map(p => `- ${p.name} [${p.status}]${p.error ? `: ${p.error}` : ''}`)
+        .map(p => {
+          let line = `- ${p.name} [${p.status}]${p.error ? `: ${p.error}` : ''}`;
+          if (p.detail) line += `\n    detail: ${p.detail}`;
+          return line;
+        })
         .join('\n')
     : '(none reported)';
 
