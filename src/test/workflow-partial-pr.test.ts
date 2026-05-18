@@ -307,6 +307,58 @@ describe('pushAndCreatePr: partial label', () => {
     expect(prCreateCall).toBeDefined();
     expect(prCreateCall!.cmd).toContain('--label partial');
   });
+
+  // M3 regression: legacy pushAndCreatePr must verify the worktree is on the
+  // workflow branch BEFORE counting commits. If the worktree drifted to a
+  // clean different branch, counting on that wrong-branch HEAD yields 0 and
+  // would incorrectly skip PR creation even though the workflow branch has
+  // recoverable commits ahead of origin. This test fails on commit dd5e374
+  // (branch verification ran AFTER countBranchCommits via pushBranch).
+  it('verifies workflow branch before counting commits when worktree drifted (M3)', async () => {
+    let onCorrectBranch = false;
+    vi.mocked(execSync).mockImplementation((cmd: any, opts?: any) => {
+      execSyncCalls.push({ cmd, opts });
+      if (typeof cmd !== 'string') return Buffer.from('');
+
+      // ensureWorktreeBranch: HEAD on a wrong (clean) branch initially.
+      if (cmd.includes('rev-parse --abbrev-ref HEAD')) {
+        return Buffer.from(onCorrectBranch ? 'workflow/test-branch\n' : 'feature/drifted\n');
+      }
+      // ensureWorktreeBranch performs the checkout: now we're on the correct branch.
+      if (cmd.includes('git checkout')) {
+        onCorrectBranch = true;
+        return Buffer.from('');
+      }
+      // countBranchCommits: zero commits on the drifted branch, three on the workflow branch.
+      // Pre-fix code runs this BEFORE checkout → returns 0 → pushAndCreatePr returns null.
+      // Post-fix code runs ensureWorktreeBranch first → returns 3 → PR is created.
+      if (cmd.includes('rev-list --count')) {
+        return Buffer.from(onCorrectBranch ? '3\n' : '0\n');
+      }
+      if (cmd.startsWith('git push')) return Buffer.from('');
+      if (cmd.includes('gh pr create')) return Buffer.from('https://github.com/test/repo/pull/77\n');
+      return Buffer.from('');
+    });
+
+    const { pushAndCreatePr } = await import('../server/orchestrator/WorkflowManager.js');
+    const wf = makeWorkflow();
+
+    const prUrl = pushAndCreatePr(wf, false);
+
+    expect(prUrl).toBe('https://github.com/test/repo/pull/77');
+
+    const checkoutIdx = execSyncCalls.findIndex(
+      c => typeof c.cmd === 'string' && c.cmd.includes('git checkout')
+    );
+    const revListIdx = execSyncCalls.findIndex(
+      c => typeof c.cmd === 'string' && c.cmd.includes('rev-list --count')
+    );
+    expect(checkoutIdx).toBeGreaterThanOrEqual(0);
+    expect(revListIdx).toBeGreaterThan(checkoutIdx);
+
+    const checkoutCall = execSyncCalls[checkoutIdx]!;
+    expect(typeof checkoutCall.cmd === 'string' && checkoutCall.cmd.includes('workflow/test-branch')).toBe(true);
+  });
 });
 
 describe('finalizeWorkflow: worktree preservation on PR failure', () => {
@@ -378,26 +430,42 @@ describe('finalizeWorkflow: worktree preservation on PR failure', () => {
     expect(removeCall).toBeDefined();
   });
 
-  it('removes worktree when no publishable commits exist', async () => {
+  it('quarantines worktree (does not remove) when no publishable commits exist (M2)', async () => {
     const mockedExecSync = vi.mocked(execSync);
     mockedExecSync.mockImplementation((cmd: any, opts?: any) => {
       execSyncCalls.push({ cmd, opts });
       if (typeof cmd === 'string') {
         if (cmd.includes('rev-parse --abbrev-ref HEAD')) return Buffer.from('workflow/test-branch\n');
-        // No commits
+        // No commits (verified empty: count === 0 against a real base ref)
         if (cmd.includes('rev-list --count')) return Buffer.from('0\n');
       }
       return Buffer.from('');
     });
 
+    // Insert workflow so quarantine's updateWorkflow call has a row to update.
+    const { updateWorkflow, getWorkflowById } = await import('../server/db/queries.js');
+    const dbWf = await insertTestWorkflow({
+      id: 'wf-quarantine-noop',
+      status: 'running',
+      use_worktree: 1,
+    });
+    updateWorkflow(dbWf.id, {
+      worktree_path: '/tmp/wt',
+      worktree_branch: 'workflow/test-branch',
+    });
+
     const { finalizeWorkflow } = await import('../server/orchestrator/WorkflowManager.js');
-    const wf = makeWorkflow();
+    const wf = makeWorkflow({ id: 'wf-quarantine-noop' });
 
     await finalizeWorkflow(wf);
 
-    // Worktree removal SHOULD have been called (no commits to preserve)
+    // Per M2/Goal A.4: never delete worktree on the no-commits path — quarantine.
     const removeCall = execSyncCalls.find(c => typeof c.cmd === 'string' && c.cmd.includes('git worktree remove'));
-    expect(removeCall).toBeDefined();
+    expect(removeCall).toBeUndefined();
+
+    // Quarantine sets a descriptive blocked_reason (success or quarantine-failed).
+    const updated = getWorkflowById('wf-quarantine-noop');
+    expect(updated!.blocked_reason).toContain('no_publishable_commits');
   });
 });
 
@@ -646,15 +714,17 @@ describe('countBranchCommits: safe fallback chain (Fix-C4b)', () => {
     vi.restoreAllMocks();
   });
 
-  it('returns 0 when origin default-branch metadata and origin/HEAD are both missing', async () => {
+  it('returns null (unknown) when origin default-branch metadata and all fallback refs are missing', async () => {
+    // After the M2 fix, missing remote metadata is reported as `unknown` (null)
+    // rather than `0`, so the wrap-up path preserves/quarantines the worktree
+    // instead of treating "we could not verify a base" as "branch is empty".
     vi.mocked(execSync).mockImplementation((cmd: any, opts?: any) => {
       execSyncCalls.push({ cmd, opts });
       if (typeof cmd !== 'string') return Buffer.from('');
       if (cmd === 'git symbolic-ref refs/remotes/origin/HEAD') {
         throw new Error('fatal: ref refs/remotes/origin/HEAD is not a symbolic ref');
       }
-      // rev-parse --verify for origin/HEAD fails (ref doesn't exist)
-      if (cmd === 'git rev-parse --verify origin/HEAD') {
+      if (cmd.startsWith('git rev-parse --verify origin/')) {
         throw new Error('fatal: Needed a single revision');
       }
       return Buffer.from('');
@@ -662,25 +732,23 @@ describe('countBranchCommits: safe fallback chain (Fix-C4b)', () => {
 
     const { countBranchCommits } = await import('../server/orchestrator/WorkflowManager.js');
 
-    expect(countBranchCommits('/tmp/wt')).toBe(0);
+    expect(countBranchCommits('/tmp/wt')).toBeNull();
     expect(execSyncCalls.map(c => c.cmd)).toEqual([
       'git symbolic-ref refs/remotes/origin/HEAD',
       'git rev-parse --verify origin/HEAD',
+      'git rev-parse --verify origin/main',
+      'git rev-parse --verify origin/master',
     ]);
   });
 
-  it('returns 0 when origin/main is missing and origin/HEAD is also unavailable', async () => {
+  it('returns null when origin/main, origin/HEAD, and origin/master are all unavailable', async () => {
     vi.mocked(execSync).mockImplementation((cmd: any, opts?: any) => {
       execSyncCalls.push({ cmd, opts });
       if (typeof cmd !== 'string') return Buffer.from('');
       if (cmd === 'git symbolic-ref refs/remotes/origin/HEAD') {
         return Buffer.from('refs/remotes/origin/main\n');
       }
-      // rev-parse --verify for both candidates fails (refs don't exist)
-      if (cmd === 'git rev-parse --verify origin/main') {
-        throw new Error('fatal: Needed a single revision');
-      }
-      if (cmd === 'git rev-parse --verify origin/HEAD') {
+      if (cmd.startsWith('git rev-parse --verify origin/')) {
         throw new Error('fatal: Needed a single revision');
       }
       return Buffer.from('');
@@ -688,11 +756,12 @@ describe('countBranchCommits: safe fallback chain (Fix-C4b)', () => {
 
     const { countBranchCommits } = await import('../server/orchestrator/WorkflowManager.js');
 
-    expect(countBranchCommits('/tmp/wt')).toBe(0);
+    expect(countBranchCommits('/tmp/wt')).toBeNull();
     expect(execSyncCalls.map(c => c.cmd)).toEqual([
       'git symbolic-ref refs/remotes/origin/HEAD',
       'git rev-parse --verify origin/main',
       'git rev-parse --verify origin/HEAD',
+      'git rev-parse --verify origin/master',
     ]);
   });
 
@@ -722,14 +791,17 @@ describe('countBranchCommits: safe fallback chain (Fix-C4b)', () => {
     ]);
   });
 
-  it('causes getPrCreationOutcome to treat missing remote metadata as no publishable commits', async () => {
+  it('causes getPrCreationOutcome to treat missing remote metadata as failed_with_publishable_commits (uncertainty preserves)', async () => {
+    // After M2: when no origin base ref can be verified, countBranchCommits
+    // returns null (unknown) and getPrCreationOutcome reports
+    // failed_with_publishable_commits so the worktree is preserved/quarantined.
     vi.mocked(execSync).mockImplementation((cmd: any, opts?: any) => {
       execSyncCalls.push({ cmd, opts });
       if (typeof cmd !== 'string') return Buffer.from('');
       if (cmd === 'git symbolic-ref refs/remotes/origin/HEAD') {
         throw new Error('fatal: ref refs/remotes/origin/HEAD is not a symbolic ref');
       }
-      if (cmd === 'git rev-parse --verify origin/HEAD') {
+      if (cmd.startsWith('git rev-parse --verify origin/')) {
         throw new Error('fatal: Needed a single revision');
       }
       return Buffer.from('');
@@ -738,7 +810,7 @@ describe('countBranchCommits: safe fallback chain (Fix-C4b)', () => {
     const { getPrCreationOutcome } = await import('../server/orchestrator/WorkflowManager.js');
     const wf = makeWorkflow({ worktree_path: '/tmp/wt', work_dir: '/tmp/test' });
 
-    expect(getPrCreationOutcome(wf, null)).toBe('no_publishable_commits');
+    expect(getPrCreationOutcome(wf, null)).toBe('failed_with_publishable_commits');
   });
 
   it('re-throws transient rev-parse errors instead of treating them as missing ref (Fix-C20a)', async () => {
@@ -783,43 +855,38 @@ describe('countBranchCommits: safe fallback chain (Fix-C4b)', () => {
     expect(() => countBranchCommits('/tmp/wt')).toThrow('fatal: bad object abc1234');
   });
 
-  it('returns 0 when both candidates throw "not a valid object name" (Fix-C21b)', async () => {
+  it('returns null when all candidates throw "not a valid object name" (Fix-C21b)', async () => {
     vi.mocked(execSync).mockImplementation((cmd: any, opts?: any) => {
       execSyncCalls.push({ cmd, opts });
       if (typeof cmd !== 'string') return Buffer.from('');
       if (cmd === 'git symbolic-ref refs/remotes/origin/HEAD') {
         return Buffer.from('refs/remotes/origin/main\n');
       }
-      if (cmd === 'git rev-parse --verify origin/main') {
-        throw new Error('fatal: not a valid object name origin/main');
-      }
-      if (cmd === 'git rev-parse --verify origin/HEAD') {
-        throw new Error('fatal: not a valid object name origin/HEAD');
+      if (cmd.startsWith('git rev-parse --verify origin/')) {
+        throw new Error('fatal: not a valid object name');
       }
       return Buffer.from('');
     });
 
     const { countBranchCommits } = await import('../server/orchestrator/WorkflowManager.js');
 
-    expect(countBranchCommits('/tmp/wt')).toBe(0);
+    expect(countBranchCommits('/tmp/wt')).toBeNull();
     expect(execSyncCalls.map(c => c.cmd)).toEqual([
       'git symbolic-ref refs/remotes/origin/HEAD',
       'git rev-parse --verify origin/main',
       'git rev-parse --verify origin/HEAD',
+      'git rev-parse --verify origin/master',
     ]);
   });
 
-  it('returns 0 when both candidates throw "unknown revision" (Fix-C21b)', async () => {
+  it('returns null when all candidates throw "unknown revision" (Fix-C21b)', async () => {
     vi.mocked(execSync).mockImplementation((cmd: any, opts?: any) => {
       execSyncCalls.push({ cmd, opts });
       if (typeof cmd !== 'string') return Buffer.from('');
       if (cmd === 'git symbolic-ref refs/remotes/origin/HEAD') {
         return Buffer.from('refs/remotes/origin/main\n');
       }
-      if (cmd === 'git rev-parse --verify origin/main') {
-        throw new Error('fatal: unknown revision or path not in working tree');
-      }
-      if (cmd === 'git rev-parse --verify origin/HEAD') {
+      if (cmd.startsWith('git rev-parse --verify origin/')) {
         throw new Error('fatal: unknown revision or path not in working tree');
       }
       return Buffer.from('');
@@ -827,15 +894,16 @@ describe('countBranchCommits: safe fallback chain (Fix-C4b)', () => {
 
     const { countBranchCommits } = await import('../server/orchestrator/WorkflowManager.js');
 
-    expect(countBranchCommits('/tmp/wt')).toBe(0);
+    expect(countBranchCommits('/tmp/wt')).toBeNull();
     expect(execSyncCalls.map(c => c.cmd)).toEqual([
       'git symbolic-ref refs/remotes/origin/HEAD',
       'git rev-parse --verify origin/main',
       'git rev-parse --verify origin/HEAD',
+      'git rev-parse --verify origin/master',
     ]);
   });
 
-  it('returns 0 when raw string "not a valid object name" is thrown (Fix-C21a)', async () => {
+  it('returns null when raw string "not a valid object name" is thrown for all fallback refs (Fix-C21a)', async () => {
     vi.mocked(execSync).mockImplementation((cmd: any, opts?: any) => {
       execSyncCalls.push({ cmd, opts });
       if (typeof cmd !== 'string') return Buffer.from('');
@@ -849,17 +917,23 @@ describe('countBranchCommits: safe fallback chain (Fix-C4b)', () => {
       if (cmd === 'git rev-parse --verify origin/HEAD') {
         throw 'fatal: not a valid object name origin/HEAD';
       }
+      if (cmd === 'git rev-parse --verify origin/master') {
+        throw 'fatal: not a valid object name origin/master';
+      }
       return Buffer.from('');
     });
 
     const { countBranchCommits } = await import('../server/orchestrator/WorkflowManager.js');
 
-    // Without the ?? err fallback, this would throw because the classifier sees ''
-    expect(countBranchCommits('/tmp/wt')).toBe(0);
+    // Without the ?? err fallback, this would throw because the classifier sees ''.
+    // Post-M2: every fallback ref is missing → unknown base metadata → null
+    // (callers preserve work on null rather than treating as verified-empty).
+    expect(countBranchCommits('/tmp/wt')).toBeNull();
     expect(execSyncCalls.map(c => c.cmd)).toEqual([
       'git symbolic-ref refs/remotes/origin/HEAD',
       'git rev-parse --verify origin/main',
       'git rev-parse --verify origin/HEAD',
+      'git rev-parse --verify origin/master',
     ]);
   });
 });
@@ -1620,5 +1694,391 @@ describe('argv-safety regression: raw execFileSync assertions (M4)', () => {
 
     const shellPrView = execSyncCalls.find(c => typeof c.cmd === 'string' && c.cmd.includes('gh pr view'));
     expect(shellPrView).toBeUndefined();
+  });
+});
+
+// M4 — bounded retry inside pushBranch with auth fail-fast.
+// pushBranch tries `git push -u origin <branch>` once, sleeps a bounded delay
+// on transient failure, then retries once with `--force-with-lease`. Auth
+// failures (Authentication failed, Permission denied, terminal prompts
+// disabled, 403) skip the retry. The result carries { attempts, retried }
+// metadata so tests and operators can see what happened.
+describe('pushBranch: bounded retry with auth fail-fast (M4)', () => {
+  beforeEach(async () => {
+    execSyncCalls.length = 0;
+    execFileSyncCalls.length = 0;
+    vi.restoreAllMocks();
+    await setupTestDb();
+  });
+
+  afterEach(async () => {
+    await cleanupTestDb();
+    vi.restoreAllMocks();
+  });
+
+  it('first attempt succeeds — no retry, attempts=1, retried=false', async () => {
+    const sleepCalls: number[] = [];
+    const sleep = (ms: number) => { sleepCalls.push(ms); };
+
+    const callLog: Array<{ file: string; args: string[] }> = [];
+    vi.mocked(execFileSync).mockImplementation((file: any, args?: any) => {
+      callLog.push({ file, args: args ?? [] });
+      if (file === 'git' && args?.[0] === 'push') return Buffer.from('');
+      return Buffer.from('');
+    });
+    vi.mocked(execSync).mockImplementation((cmd: any) => {
+      if (typeof cmd === 'string' && cmd.includes('rev-parse --abbrev-ref HEAD')) {
+        return Buffer.from('workflow/test-branch\n');
+      }
+      return Buffer.from('');
+    });
+
+    const { pushBranch } = await import('../server/orchestrator/WorkflowManager.js');
+    const result = pushBranch(makeWorkflow(), { sleep, retryDelayMs: 5000 });
+
+    expect(result.ok).toBe(true);
+    expect(result.attempts).toBe(1);
+    expect(result.retried).toBe(false);
+    expect(result.error).toBeUndefined();
+
+    const pushCalls = callLog.filter(c => c.file === 'git' && c.args[0] === 'push');
+    expect(pushCalls.length).toBe(1);
+    // First (and only) attempt is vanilla push, not --force-with-lease.
+    expect(pushCalls[0]!.args).toEqual(['push', '-u', 'origin', 'workflow/test-branch']);
+    // Sleep never called when first attempt succeeded.
+    expect(sleepCalls).toEqual([]);
+  });
+
+  it('first attempt transient failure, retry succeeds — attempts=2, retried=true, --force-with-lease used', async () => {
+    const sleepCalls: number[] = [];
+    const sleep = (ms: number) => { sleepCalls.push(ms); };
+
+    const callLog: Array<{ file: string; args: string[] }> = [];
+    vi.mocked(execFileSync).mockImplementation((file: any, args?: any) => {
+      callLog.push({ file, args: args ?? [] });
+      if (file === 'git' && args?.[0] === 'push') {
+        const pushCount = callLog.filter(c => c.file === 'git' && c.args[0] === 'push').length;
+        if (pushCount === 1) {
+          // Transient error on first attempt — not auth.
+          throw Object.assign(new Error('transient'), {
+            stderr: Buffer.from('error: failed to push some refs (network timeout)'),
+          });
+        }
+        return Buffer.from('');
+      }
+      return Buffer.from('');
+    });
+    vi.mocked(execSync).mockImplementation((cmd: any) => {
+      if (typeof cmd === 'string' && cmd.includes('rev-parse --abbrev-ref HEAD')) {
+        return Buffer.from('workflow/test-branch\n');
+      }
+      return Buffer.from('');
+    });
+
+    const { pushBranch } = await import('../server/orchestrator/WorkflowManager.js');
+    const result = pushBranch(makeWorkflow(), { sleep, retryDelayMs: 5000 });
+
+    expect(result.ok).toBe(true);
+    expect(result.attempts).toBe(2);
+    expect(result.retried).toBe(true);
+    expect(result.error).toBeUndefined();
+
+    const pushCalls = callLog.filter(c => c.file === 'git' && c.args[0] === 'push');
+    expect(pushCalls.length).toBe(2);
+    // Attempt 1: vanilla push.
+    expect(pushCalls[0]!.args).toEqual(['push', '-u', 'origin', 'workflow/test-branch']);
+    // Attempt 2: must include --force-with-lease.
+    expect(pushCalls[1]!.args).toEqual(['push', '--force-with-lease', '-u', 'origin', 'workflow/test-branch']);
+
+    // Sleep called once with the configured delay between the two attempts.
+    expect(sleepCalls).toEqual([5000]);
+  });
+
+  it('auth failure on first attempt fails fast — exactly one push, retried=false, authFailure=true', async () => {
+    const sleepCalls: number[] = [];
+    const sleep = (ms: number) => { sleepCalls.push(ms); };
+
+    const callLog: Array<{ file: string; args: string[] }> = [];
+    vi.mocked(execFileSync).mockImplementation((file: any, args?: any) => {
+      callLog.push({ file, args: args ?? [] });
+      if (file === 'git' && args?.[0] === 'push') {
+        throw Object.assign(new Error('auth fail'), {
+          stderr: Buffer.from('fatal: Authentication failed for https://github.com/test/repo'),
+        });
+      }
+      return Buffer.from('');
+    });
+    vi.mocked(execSync).mockImplementation((cmd: any) => {
+      if (typeof cmd === 'string' && cmd.includes('rev-parse --abbrev-ref HEAD')) {
+        return Buffer.from('workflow/test-branch\n');
+      }
+      return Buffer.from('');
+    });
+
+    const { pushBranch } = await import('../server/orchestrator/WorkflowManager.js');
+    const result = pushBranch(makeWorkflow(), { sleep, retryDelayMs: 5000 });
+
+    expect(result.ok).toBe(false);
+    expect(result.authFailure).toBe(true);
+    expect(result.attempts).toBe(1);
+    expect(result.retried).toBe(false);
+    expect(result.error).toContain('Authentication failed');
+
+    // Hard rule: exactly one git push attempt was made.
+    const pushCalls = callLog.filter(c => c.file === 'git' && c.args[0] === 'push');
+    expect(pushCalls.length).toBe(1);
+    // No sleep happened — auth failure short-circuits.
+    expect(sleepCalls).toEqual([]);
+  });
+
+  it.each([
+    'Authentication failed',
+    'Permission denied (publickey)',
+    'fatal: could not read Username for',
+    'fatal: could not read Password for',
+    'terminal prompts disabled',
+    'The requested URL returned error: 403',
+  ])('treats %s as non-retryable auth failure', async (stderrMessage) => {
+    const sleepCalls: number[] = [];
+    const callLog: Array<{ file: string; args: string[] }> = [];
+    vi.mocked(execFileSync).mockImplementation((file: any, args?: any) => {
+      callLog.push({ file, args: args ?? [] });
+      if (file === 'git' && args?.[0] === 'push') {
+        throw Object.assign(new Error('auth-like'), { stderr: Buffer.from(stderrMessage) });
+      }
+      return Buffer.from('');
+    });
+    vi.mocked(execSync).mockImplementation((cmd: any) => {
+      if (typeof cmd === 'string' && cmd.includes('rev-parse --abbrev-ref HEAD')) {
+        return Buffer.from('workflow/test-branch\n');
+      }
+      return Buffer.from('');
+    });
+
+    const { pushBranch } = await import('../server/orchestrator/WorkflowManager.js');
+    const result = pushBranch(makeWorkflow(), {
+      sleep: (ms: number) => { sleepCalls.push(ms); },
+      retryDelayMs: 5000,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.authFailure).toBe(true);
+    expect(result.attempts).toBe(1);
+    expect(result.retried).toBe(false);
+    const pushCalls = callLog.filter(c => c.file === 'git' && c.args[0] === 'push');
+    expect(pushCalls.length).toBe(1);
+    expect(sleepCalls).toEqual([]);
+  });
+
+  it('both attempts fail transiently — returns second stderr, attempts=2, retried=true', async () => {
+    const sleepCalls: number[] = [];
+    const sleep = (ms: number) => { sleepCalls.push(ms); };
+
+    const callLog: Array<{ file: string; args: string[] }> = [];
+    vi.mocked(execFileSync).mockImplementation((file: any, args?: any) => {
+      callLog.push({ file, args: args ?? [] });
+      if (file === 'git' && args?.[0] === 'push') {
+        const pushCount = callLog.filter(c => c.file === 'git' && c.args[0] === 'push').length;
+        const message = pushCount === 1
+          ? 'error: failed to push some refs (first transient)'
+          : 'error: remote rejected (second transient — distinct details)';
+        throw Object.assign(new Error('transient'), { stderr: Buffer.from(message) });
+      }
+      return Buffer.from('');
+    });
+    vi.mocked(execSync).mockImplementation((cmd: any) => {
+      if (typeof cmd === 'string' && cmd.includes('rev-parse --abbrev-ref HEAD')) {
+        return Buffer.from('workflow/test-branch\n');
+      }
+      return Buffer.from('');
+    });
+
+    const { pushBranch } = await import('../server/orchestrator/WorkflowManager.js');
+    const result = pushBranch(makeWorkflow(), { sleep, retryDelayMs: 5000 });
+
+    expect(result.ok).toBe(false);
+    expect(result.attempts).toBe(2);
+    expect(result.retried).toBe(true);
+    expect(result.authFailure).toBe(false);
+    // The error must come from the SECOND attempt, not the first.
+    expect(result.error).toContain('second transient');
+    expect(result.error).not.toContain('first transient');
+
+    const pushCalls = callLog.filter(c => c.file === 'git' && c.args[0] === 'push');
+    expect(pushCalls.length).toBe(2);
+    expect(pushCalls[0]!.args).toEqual(['push', '-u', 'origin', 'workflow/test-branch']);
+    expect(pushCalls[1]!.args).toEqual(['push', '--force-with-lease', '-u', 'origin', 'workflow/test-branch']);
+    // Sleep called once between attempts.
+    expect(sleepCalls).toEqual([5000]);
+  });
+
+  it('retryDelayMs: 0 skips the sleep entirely', async () => {
+    const sleepCalls: number[] = [];
+    const sleep = (ms: number) => { sleepCalls.push(ms); };
+
+    const callLog: Array<{ file: string; args: string[] }> = [];
+    vi.mocked(execFileSync).mockImplementation((file: any, args?: any) => {
+      callLog.push({ file, args: args ?? [] });
+      if (file === 'git' && args?.[0] === 'push') {
+        const pushCount = callLog.filter(c => c.file === 'git' && c.args[0] === 'push').length;
+        if (pushCount === 1) {
+          throw Object.assign(new Error('transient'), { stderr: Buffer.from('error: try again') });
+        }
+        return Buffer.from('');
+      }
+      return Buffer.from('');
+    });
+    vi.mocked(execSync).mockImplementation((cmd: any) => {
+      if (typeof cmd === 'string' && cmd.includes('rev-parse --abbrev-ref HEAD')) {
+        return Buffer.from('workflow/test-branch\n');
+      }
+      return Buffer.from('');
+    });
+
+    const { pushBranch } = await import('../server/orchestrator/WorkflowManager.js');
+    const result = pushBranch(makeWorkflow(), { sleep, retryDelayMs: 0 });
+
+    expect(result.ok).toBe(true);
+    expect(result.attempts).toBe(2);
+    expect(result.retried).toBe(true);
+    // sleep was never invoked because retryDelayMs <= 0.
+    expect(sleepCalls).toEqual([]);
+  });
+
+  it('returns failure metadata without attempting push when worktree path is missing', async () => {
+    const callLog: Array<{ file: string; args: string[] }> = [];
+    vi.mocked(execFileSync).mockImplementation((file: any, args?: any) => {
+      callLog.push({ file, args: args ?? [] });
+      return Buffer.from('');
+    });
+
+    const { pushBranch } = await import('../server/orchestrator/WorkflowManager.js');
+    const wf = makeWorkflow({ worktree_path: null });
+    const result = pushBranch(wf);
+
+    expect(result.ok).toBe(false);
+    expect(result.attempts).toBe(0);
+    expect(result.retried).toBe(false);
+    const pushCalls = callLog.filter(c => c.file === 'git' && c.args[0] === 'push');
+    expect(pushCalls.length).toBe(0);
+  });
+
+  it.each([
+    ['Retry-After', 'The requested URL returned error: 403\nRetry-After: 60'],
+    ['rate limit', 'remote: error: 403 API rate limit exceeded for token'],
+  ])('403 with %s wording is treated as transient, not auth - retries once and succeeds', async (_label, stderrMessage) => {
+    const sleepCalls: number[] = [];
+    const sleep = (ms: number) => { sleepCalls.push(ms); };
+
+    const callLog: Array<{ file: string; args: string[] }> = [];
+    vi.mocked(execFileSync).mockImplementation((file: any, args?: any) => {
+      callLog.push({ file, args: args ?? [] });
+      if (file === 'git' && args?.[0] === 'push') {
+        const pushCount = callLog.filter(c => c.file === 'git' && c.args[0] === 'push').length;
+        if (pushCount === 1) {
+          throw Object.assign(new Error('rate limited'), {
+            stderr: Buffer.from(stderrMessage),
+          });
+        }
+        return Buffer.from('');
+      }
+      return Buffer.from('');
+    });
+    vi.mocked(execSync).mockImplementation((cmd: any) => {
+      if (typeof cmd === 'string' && cmd.includes('rev-parse --abbrev-ref HEAD')) {
+        return Buffer.from('workflow/test-branch\n');
+      }
+      return Buffer.from('');
+    });
+
+    const { pushBranch } = await import('../server/orchestrator/WorkflowManager.js');
+    const result = pushBranch(makeWorkflow(), { sleep, retryDelayMs: 100 });
+
+    expect(result.ok).toBe(true);
+    expect(result.attempts).toBe(2);
+    expect(result.retried).toBe(true);
+    expect(result.authFailure).toBeUndefined();
+
+    const pushCalls = callLog.filter(c => c.file === 'git' && c.args[0] === 'push');
+    expect(pushCalls.length).toBe(2);
+    expect(sleepCalls).toEqual([100]);
+  });
+
+  it('403 with rate limit wording is transient - returns second stderr when both attempts fail', async () => {
+    const sleepCalls: number[] = [];
+    const sleep = (ms: number) => { sleepCalls.push(ms); };
+
+    const callLog: Array<{ file: string; args: string[] }> = [];
+    vi.mocked(execFileSync).mockImplementation((file: any, args?: any) => {
+      callLog.push({ file, args: args ?? [] });
+      if (file === 'git' && args?.[0] === 'push') {
+        const pushCount = callLog.filter(c => c.file === 'git' && c.args[0] === 'push').length;
+        if (pushCount === 1) {
+          throw Object.assign(new Error('rate limited'), {
+            stderr: Buffer.from('error: 403 secondary rate limit exceeded'),
+          });
+        }
+        throw Object.assign(new Error('rate limited again'), {
+          stderr: Buffer.from('error: 403 secondary rate limit exceeded (attempt 2)'),
+        });
+      }
+      return Buffer.from('');
+    });
+    vi.mocked(execSync).mockImplementation((cmd: any) => {
+      if (typeof cmd === 'string' && cmd.includes('rev-parse --abbrev-ref HEAD')) {
+        return Buffer.from('workflow/test-branch\n');
+      }
+      return Buffer.from('');
+    });
+
+    const { pushBranch } = await import('../server/orchestrator/WorkflowManager.js');
+    const result = pushBranch(makeWorkflow(), { sleep, retryDelayMs: 100 });
+
+    expect(result.ok).toBe(false);
+    expect(result.attempts).toBe(2);
+    expect(result.retried).toBe(true);
+    expect(result.authFailure).toBe(false);
+    expect(result.error).toContain('attempt 2');
+
+    const pushCalls = callLog.filter(c => c.file === 'git' && c.args[0] === 'push');
+    expect(pushCalls.length).toBe(2);
+    expect(sleepCalls).toEqual([100]);
+  });
+
+  it.each([
+    'The requested URL returned error: 403',
+    'remote: Permission denied to repo\nfatal: The requested URL returned error: 403',
+  ])('plain auth/permission 403 without rate-limit wording is still treated as auth - no retry: %s', async (stderrMessage) => {
+    const sleepCalls: number[] = [];
+    const callLog: Array<{ file: string; args: string[] }> = [];
+    vi.mocked(execFileSync).mockImplementation((file: any, args?: any) => {
+      callLog.push({ file, args: args ?? [] });
+      if (file === 'git' && args?.[0] === 'push') {
+        throw Object.assign(new Error('forbidden'), {
+          stderr: Buffer.from(stderrMessage),
+        });
+      }
+      return Buffer.from('');
+    });
+    vi.mocked(execSync).mockImplementation((cmd: any) => {
+      if (typeof cmd === 'string' && cmd.includes('rev-parse --abbrev-ref HEAD')) {
+        return Buffer.from('workflow/test-branch\n');
+      }
+      return Buffer.from('');
+    });
+
+    const { pushBranch } = await import('../server/orchestrator/WorkflowManager.js');
+    const result = pushBranch(makeWorkflow(), {
+      sleep: (ms: number) => { sleepCalls.push(ms); },
+      retryDelayMs: 5000,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.authFailure).toBe(true);
+    expect(result.attempts).toBe(1);
+    expect(result.retried).toBe(false);
+    const pushCalls = callLog.filter(c => c.file === 'git' && c.args[0] === 'push');
+    expect(pushCalls.length).toBe(1);
+    expect(sleepCalls).toEqual([]);
   });
 });

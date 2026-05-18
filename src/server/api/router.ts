@@ -44,6 +44,8 @@ function authMiddleware(req: Request, res: Response, next: NextFunction): void {
 }
 
 router.use('/health', healthRouter);
+// Mounted before the app-wide bearer middleware because Sentry uses its own
+// HMAC verification; sync webhooks enforce AUTH_TOKEN inside the webhooks router.
 router.use('/webhooks', webhooksRouter);
 
 router.use(authMiddleware);

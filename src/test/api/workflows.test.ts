@@ -48,7 +48,12 @@ vi.mock('../../server/orchestrator/WorkflowManager.js', () => ({
   })),
   pushAndCreatePr: vi.fn(() => null),
   getPrCreationOutcome: vi.fn(() => 'no_publishable_commits'),
+  pushBranch: vi.fn(() => ({ ok: true })),
+  createWorkflowPr: vi.fn(() => ({ ok: false, error: 'mock' })),
+  probeRecoverableWorkflowWork: vi.fn(() => ({ status: 'clean', detail: 'no commits ahead of origin/main', baseRef: 'origin/main' })),
   cleanupWorktree: vi.fn(),
+  quarantineWorktree: vi.fn(() => ({ ok: true, path: '/tmp/.orchestrator-quarantine/wf-test' })),
+  captureAgentCreatedPrUrl: vi.fn(() => ({ found: false })),
   parseMilestones: vi.fn(() => ({ total: 0, done: 0 })),
   _resetForTest: vi.fn(),
 }));
@@ -315,13 +320,24 @@ describe('POST /api/workflows/:id/resume', () => {
 });
 
 describe('POST /api/workflows/:id/wrap-up', () => {
-  beforeEach(async () => { await setupTestDb(); vi.clearAllMocks(); app = createTestApp(); });
+  beforeEach(async () => {
+    await setupTestDb();
+    vi.clearAllMocks();
+    // Explicitly restore the default no-capture implementation. vi.clearAllMocks
+    // clears call history but not persistent mock implementations set via
+    // mockReturnValue/mockImplementation in earlier tests, so reset the capture
+    // mock here defensively (Cycle 7 review M6 finding).
+    const { captureAgentCreatedPrUrl } = await import('../../server/orchestrator/WorkflowManager.js');
+    vi.mocked(captureAgentCreatedPrUrl).mockImplementation(() => ({ found: false }));
+    app = createTestApp();
+  });
   afterEach(async () => { await cleanupTestDb(); });
 
   it('completes and cleans up when a draft PR is created', async () => {
-    const { pushAndCreatePr, getPrCreationOutcome, cleanupWorktree } = await import('../../server/orchestrator/WorkflowManager.js');
-    vi.mocked(pushAndCreatePr).mockReturnValue('https://github.com/test/repo/pull/42');
-    vi.mocked(getPrCreationOutcome).mockReturnValue('created');
+    const { pushBranch, createWorkflowPr, probeRecoverableWorkflowWork, cleanupWorktree } = await import('../../server/orchestrator/WorkflowManager.js');
+    vi.mocked(probeRecoverableWorkflowWork).mockReturnValue({ status: 'has_work', detail: '3 commit(s) ahead of origin/main', baseRef: 'origin/main' });
+    vi.mocked(pushBranch).mockReturnValue({ ok: true });
+    vi.mocked(createWorkflowPr).mockReturnValue({ ok: true, url: 'https://github.com/test/repo/pull/42' });
 
     const project = await insertTestProject();
     const wf = await insertTestWorkflow({
@@ -344,10 +360,11 @@ describe('POST /api/workflows/:id/wrap-up', () => {
     expect(vi.mocked(cleanupWorktree)).toHaveBeenCalledTimes(1);
   });
 
-  it('preserves the worktree and blocks the workflow when draft PR creation fails with publishable commits', async () => {
-    const { pushAndCreatePr, getPrCreationOutcome, cleanupWorktree } = await import('../../server/orchestrator/WorkflowManager.js');
-    vi.mocked(pushAndCreatePr).mockReturnValue(null);
-    vi.mocked(getPrCreationOutcome).mockReturnValue('failed_with_publishable_commits');
+  it('preserves the worktree and blocks when push succeeds but PR creation fails', async () => {
+    const { pushBranch, createWorkflowPr, probeRecoverableWorkflowWork, cleanupWorktree } = await import('../../server/orchestrator/WorkflowManager.js');
+    vi.mocked(probeRecoverableWorkflowWork).mockReturnValue({ status: 'has_work', detail: '3 commit(s) ahead of origin/main', baseRef: 'origin/main' });
+    vi.mocked(pushBranch).mockReturnValue({ ok: true });
+    vi.mocked(createWorkflowPr).mockReturnValue({ ok: false, error: 'gh pr create exited 1' });
 
     const project = await insertTestProject();
     const wf = await insertTestWorkflow({
@@ -367,14 +384,42 @@ describe('POST /api/workflows/:id/wrap-up', () => {
     expect(res.body.outcome).toBe('draft_pr_failed_preserved');
     expect(res.body.pr_url).toBeNull();
     expect(res.body.workflow.status).toBe('blocked');
-    expect(res.body.workflow.blocked_reason).toContain('Draft PR creation failed');
+    expect(res.body.workflow.blocked_reason).toContain('gh pr create failed');
     expect(res.body.workflow.blocked_reason).toContain('/tmp/worktree');
     expect(vi.mocked(cleanupWorktree)).not.toHaveBeenCalled();
   });
 
+  it('preserves the worktree and blocks when branch push fails', async () => {
+    const { pushBranch, createWorkflowPr, probeRecoverableWorkflowWork, cleanupWorktree } = await import('../../server/orchestrator/WorkflowManager.js');
+    vi.mocked(probeRecoverableWorkflowWork).mockReturnValue({ status: 'has_work', detail: '3 commit(s) ahead of origin/main', baseRef: 'origin/main' });
+    vi.mocked(pushBranch).mockReturnValue({ ok: false, error: 'fatal: could not read from remote repository' });
+
+    const project = await insertTestProject();
+    const wf = await insertTestWorkflow({
+      project_id: project.id,
+      status: 'running',
+      current_phase: 'implement',
+      use_worktree: 1,
+    });
+    const { updateWorkflow } = await import('../../server/db/queries.js');
+    updateWorkflow(wf.id, {
+      worktree_path: '/tmp/worktree',
+      worktree_branch: 'workflow/test-branch',
+    });
+
+    const res = await request(app).post(`/api/workflows/${wf.id}/wrap-up`);
+    expect(res.status).toBe(409);
+    expect(res.body.outcome).toBe('draft_pr_failed_preserved');
+    expect(res.body.pr_url).toBeNull();
+    expect(res.body.workflow.status).toBe('blocked');
+    expect(res.body.workflow.blocked_reason).toContain('branch push failed');
+    expect(res.body.workflow.blocked_reason).toContain('/tmp/worktree');
+    expect(vi.mocked(cleanupWorktree)).not.toHaveBeenCalled();
+    expect(vi.mocked(createWorkflowPr)).not.toHaveBeenCalled();
+  });
+
   it('blocks with descriptive reason when worktree_path is missing but milestones_done > 0', async () => {
-    const { getPrCreationOutcome, cleanupWorktree } = await import('../../server/orchestrator/WorkflowManager.js');
-    vi.mocked(getPrCreationOutcome).mockReturnValue('no_publishable_commits');
+    const { cleanupWorktree } = await import('../../server/orchestrator/WorkflowManager.js');
 
     const project = await insertTestProject();
     const wf = await insertTestWorkflow({
@@ -397,10 +442,47 @@ describe('POST /api/workflows/:id/wrap-up', () => {
     expect(vi.mocked(cleanupWorktree)).not.toHaveBeenCalled();
   });
 
-  it('cancels wrap-up explicitly when there are no publishable commits', async () => {
-    const { pushAndCreatePr, getPrCreationOutcome, cleanupWorktree } = await import('../../server/orchestrator/WorkflowManager.js');
-    vi.mocked(pushAndCreatePr).mockReturnValue(null);
-    vi.mocked(getPrCreationOutcome).mockReturnValue('no_publishable_commits');
+  it('returns captured agent-created PR URL in the clean wrap-up response (M5)', async () => {
+    const { probeRecoverableWorkflowWork, cleanupWorktree, quarantineWorktree, captureAgentCreatedPrUrl } = await import('../../server/orchestrator/WorkflowManager.js');
+    // Use mockReturnValueOnce so the captured-URL implementation does not leak
+    // into the next wrap-up test (vi.clearAllMocks() clears call history but
+    // not persistent implementations set via mockReturnValue).
+    vi.mocked(probeRecoverableWorkflowWork).mockReturnValueOnce({ status: 'clean', detail: 'no commits ahead of origin/main', baseRef: 'origin/main' });
+    const capturedUrl = 'https://github.com/test/repo/pull/123';
+    vi.mocked(captureAgentCreatedPrUrl).mockReturnValueOnce({
+      found: true,
+      url: capturedUrl,
+      stored: true,
+      pr: { url: capturedUrl, state: 'OPEN', headRefName: 'workflow/test-branch' },
+    });
+
+    const project = await insertTestProject();
+    const wf = await insertTestWorkflow({
+      project_id: project.id,
+      status: 'running',
+      current_phase: 'implement',
+      use_worktree: 1,
+    });
+    const { updateWorkflow } = await import('../../server/db/queries.js');
+    updateWorkflow(wf.id, {
+      worktree_path: '/tmp/worktree',
+      worktree_branch: 'workflow/test-branch',
+    });
+
+    const res = await request(app).post(`/api/workflows/${wf.id}/wrap-up`);
+    expect(res.status).toBe(200);
+    expect(res.body.pr_url).toBe(capturedUrl);
+    expect(res.body.outcome).toBe('agent_pr_captured');
+    expect(res.body.workflow.pr_url).toBe(capturedUrl);
+    // Defense in depth: even with a captured URL on the clean path, the
+    // worktree is still quarantined (probe said no commits) rather than deleted.
+    expect(vi.mocked(quarantineWorktree)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(cleanupWorktree)).not.toHaveBeenCalled();
+  });
+
+  it('quarantines worktree (no cleanupWorktree) when there are no publishable commits', async () => {
+    const { probeRecoverableWorkflowWork, cleanupWorktree, quarantineWorktree } = await import('../../server/orchestrator/WorkflowManager.js');
+    vi.mocked(probeRecoverableWorkflowWork).mockReturnValue({ status: 'clean', detail: 'no commits ahead of origin/main', baseRef: 'origin/main' });
 
     const project = await insertTestProject();
     const wf = await insertTestWorkflow({
@@ -420,11 +502,13 @@ describe('POST /api/workflows/:id/wrap-up', () => {
     expect(res.body.outcome).toBe('no_publishable_commits');
     expect(res.body.pr_url).toBeNull();
     expect(res.body.workflow.status).toBe('cancelled');
-    expect(vi.mocked(cleanupWorktree)).toHaveBeenCalledTimes(1);
+    // Per M2/Goal A.4: never delete worktree on no-commits path — quarantine.
+    expect(vi.mocked(quarantineWorktree)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(cleanupWorktree)).not.toHaveBeenCalled();
   });
 
   it('cancels running agents with pid, tmux, snapshot, lock cleanup, and emitAgentUpdate during wrap-up (Fix-C17b)', async () => {
-    const { pushAndCreatePr, getPrCreationOutcome } = await import('../../server/orchestrator/WorkflowManager.js');
+    const { probeRecoverableWorkflowWork } = await import('../../server/orchestrator/WorkflowManager.js');
     const { cancelledAgents } = await import('../../server/orchestrator/AgentRunner.js');
     const { getFileLockRegistry } = await import('../../server/orchestrator/FileLockRegistry.js');
     const { disconnectAgent, isTmuxSessionAlive, saveSnapshot } = await import('../../server/orchestrator/PtyManager.js');
@@ -432,8 +516,7 @@ describe('POST /api/workflows/:id/wrap-up', () => {
     const queries = await import('../../server/db/queries.js');
     const socket = await import('../../server/socket/SocketManager.js');
 
-    vi.mocked(pushAndCreatePr).mockReturnValue(null);
-    vi.mocked(getPrCreationOutcome).mockReturnValue('no_publishable_commits');
+    vi.mocked(probeRecoverableWorkflowWork).mockReturnValue({ status: 'clean', detail: 'no commits ahead of origin/main', baseRef: 'origin/main' });
     vi.mocked(isTmuxSessionAlive).mockReturnValue(true);
 
     const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true as any);
@@ -503,15 +586,14 @@ describe('POST /api/workflows/:id/wrap-up', () => {
   });
 
   it('cancels waiting_user agents with pending question timeout and emitAgentUpdate during wrap-up (Fix-C16b)', async () => {
-    const { pushAndCreatePr, getPrCreationOutcome } = await import('../../server/orchestrator/WorkflowManager.js');
+    const { probeRecoverableWorkflowWork } = await import('../../server/orchestrator/WorkflowManager.js');
     const { cancelledAgents } = await import('../../server/orchestrator/AgentRunner.js');
     const { getFileLockRegistry } = await import('../../server/orchestrator/FileLockRegistry.js');
     const { execFileSync } = await import('child_process');
     const queries = await import('../../server/db/queries.js');
     const socket = await import('../../server/socket/SocketManager.js');
 
-    vi.mocked(pushAndCreatePr).mockReturnValue(null);
-    vi.mocked(getPrCreationOutcome).mockReturnValue('no_publishable_commits');
+    vi.mocked(probeRecoverableWorkflowWork).mockReturnValue({ status: 'clean', detail: 'no commits ahead of origin/main', baseRef: 'origin/main' });
 
     const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true as any);
     try {
@@ -600,15 +682,14 @@ describe('POST /api/workflows/:id/wrap-up', () => {
   });
 
   it('isolates agent cancellation failures so one throw does not skip remaining agents/jobs (Fix-C11b)', async () => {
-    const { pushAndCreatePr, getPrCreationOutcome } = await import('../../server/orchestrator/WorkflowManager.js');
+    const { probeRecoverableWorkflowWork } = await import('../../server/orchestrator/WorkflowManager.js');
     const { cancelledAgents } = await import('../../server/orchestrator/AgentRunner.js');
     const { getFileLockRegistry } = await import('../../server/orchestrator/FileLockRegistry.js');
     const { disconnectAgent } = await import('../../server/orchestrator/PtyManager.js');
     const queries = await import('../../server/db/queries.js');
     const socket = await import('../../server/socket/SocketManager.js');
 
-    vi.mocked(pushAndCreatePr).mockReturnValue(null);
-    vi.mocked(getPrCreationOutcome).mockReturnValue('no_publishable_commits');
+    vi.mocked(probeRecoverableWorkflowWork).mockReturnValue({ status: 'clean', detail: 'no commits ahead of origin/main', baseRef: 'origin/main' });
 
     const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true as any);
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -714,14 +795,13 @@ describe('POST /api/workflows/:id/wrap-up', () => {
   });
 
   it('removes agent from cancelledAgents when retry DB update also fails, delegating to handleAgentExit (Fix-C25b)', async () => {
-    const { pushAndCreatePr, getPrCreationOutcome } = await import('../../server/orchestrator/WorkflowManager.js');
+    const { probeRecoverableWorkflowWork } = await import('../../server/orchestrator/WorkflowManager.js');
     const { cancelledAgents } = await import('../../server/orchestrator/AgentRunner.js');
     const { getFileLockRegistry } = await import('../../server/orchestrator/FileLockRegistry.js');
     const { disconnectAgent } = await import('../../server/orchestrator/PtyManager.js');
     const queries = await import('../../server/db/queries.js');
 
-    vi.mocked(pushAndCreatePr).mockReturnValue(null);
-    vi.mocked(getPrCreationOutcome).mockReturnValue('no_publishable_commits');
+    vi.mocked(probeRecoverableWorkflowWork).mockReturnValue({ status: 'clean', detail: 'no commits ahead of origin/main', baseRef: 'origin/main' });
 
     const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true as any);
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});

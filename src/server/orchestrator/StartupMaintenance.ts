@@ -33,7 +33,29 @@ interface PruneStats {
   logFilesDeleted: number;
   outputRowsDeleted: number;
   jobsArchived: number;
+  staleClaimsReleased: number;
   vacuumedMb: number;
+}
+
+/**
+ * Idempotent backfill — release active workflow_file_claims rows belonging to
+ * workflows that are already in a terminal status (complete/cancelled/failed).
+ *
+ * Brief Goal D.2: stale claims from completed workflows were blocking new
+ * claims on the same files (e.g. cv.py, run_v2_pipeline.py). M7 added an
+ * in-transaction release on terminal status transitions; this backfill cleans
+ * up legacy rows that pre-date that fix. Safe to re-run: a second invocation
+ * updates 0 rows because every matched claim already has released_at set.
+ */
+export function backfillReleaseStaleClaims(): number {
+  const db = getDb();
+  const info = db.prepare(`
+    UPDATE workflow_file_claims
+       SET released_at = ?
+     WHERE released_at IS NULL
+       AND workflow_id IN (SELECT id FROM workflows WHERE status IN ('complete','cancelled','failed'))
+  `).run(Date.now());
+  return (info.changes ?? 0) as number;
 }
 
 /**
@@ -45,6 +67,7 @@ export function runStartupMaintenance(): PruneStats {
     logFilesDeleted: 0,
     outputRowsDeleted: 0,
     jobsArchived: 0,
+    staleClaimsReleased: 0,
     vacuumedMb: 0,
   };
 
@@ -66,6 +89,16 @@ export function runStartupMaintenance(): PruneStats {
       );
     } catch (err) {
       log.warn({ err }, 'archiveStaleTerminalJobs failed');
+    }
+
+    // Release file claims stranded by terminal workflows (brief Goal D.2).
+    try {
+      stats.staleClaimsReleased = backfillReleaseStaleClaims();
+      if (stats.staleClaimsReleased > 0) {
+        log.info({ released: stats.staleClaimsReleased }, 'released stale workflow file claims');
+      }
+    } catch (err) {
+      log.warn({ err }, 'backfillReleaseStaleClaims failed');
     }
 
     stats.vacuumedMb = maybeVacuum();

@@ -5,7 +5,7 @@
  */
 
 import { execSync } from 'child_process';
-import { existsSync, mkdirSync } from 'fs';
+import { existsSync, mkdirSync, renameSync, writeFileSync } from 'fs';
 import path from 'path';
 import * as queries from '../db/queries.js';
 import type { Workflow } from '../../shared/types.js';
@@ -250,6 +250,83 @@ export function cleanupWorktree(workflow: Workflow): void {
 }
 
 /**
+ * Quarantine a worktree instead of deleting it.
+ *
+ * Used when the orchestrator's commit-detection thinks the branch is empty
+ * (`no_publishable_commits` outcome). Even when the detection is correct,
+ * the brief (Goal A.4) requires preserving the worktree for human rescue —
+ * the 2026-05-17 incident lost work because verified-empty was indistinguishable
+ * from "unverifiable" until the new `countBranchCommits` semantics landed.
+ *
+ * Moves <worktree_path> to <work_dir>/.orchestrator-quarantine/<workflow_id>/
+ * (timestamp-suffixed if a prior quarantine exists), writes a one-line WHY.md
+ * with the workflow id, ISO timestamp, original path, and reason, then prunes
+ * the git worktree registration and clears `worktree_path` on the workflow row.
+ */
+export function quarantineWorktree(
+  workflow: Workflow,
+  reason: string,
+): { ok: true; path: string } | { ok: false; error: string } {
+  const { worktree_path, work_dir, id } = workflow;
+  if (!worktree_path || !work_dir) {
+    return { ok: false, error: 'missing worktree_path or work_dir' };
+  }
+  if (!existsSync(worktree_path)) {
+    return { ok: false, error: `worktree directory missing at ${worktree_path}` };
+  }
+
+  const quarantineRoot = path.join(work_dir, '.orchestrator-quarantine');
+  let destPath = path.join(quarantineRoot, id);
+  if (existsSync(destPath)) {
+    destPath = `${destPath}-${Date.now()}`;
+  }
+
+  try {
+    mkdirSync(quarantineRoot, { recursive: true });
+    renameSync(worktree_path, destPath);
+  } catch (err) {
+    return { ok: false, error: `move failed: ${errMsg(err)}` };
+  }
+
+  try {
+    const why = [
+      `workflow_id: ${id}`,
+      `timestamp_iso: ${new Date().toISOString()}`,
+      `original_worktree_path: ${worktree_path}`,
+      `worktree_branch: ${workflow.worktree_branch ?? ''}`,
+      `reason: ${reason}`,
+      '',
+      'This worktree was preserved by the orchestrator because the wrap-up flow',
+      'classified it as having no publishable commits. The brief (Goal A.4)',
+      'requires preservation rather than deletion on this path; a human operator',
+      'should inspect this directory, push or discard any salvageable work, and',
+      'remove it via `git worktree remove --force` once handled.',
+      '',
+    ].join('\n');
+    writeFileSync(path.join(destPath, 'WHY.md'), why);
+  } catch (err) {
+    console.warn(`[workflow ${id}] quarantine WHY.md write failed: ${errMsg(err)}`);
+  }
+
+  // Prune the git worktree registration so a future `git worktree list` does
+  // not see a stale entry pointing at the now-moved directory.
+  try {
+    execSync('git worktree prune', { cwd: work_dir, stdio: 'pipe', timeout: 10000 });
+  } catch (err) {
+    console.warn(`[workflow ${id}] git worktree prune failed during quarantine: ${errMsg(err)}`);
+  }
+
+  try {
+    queries.updateWorkflow(id, { worktree_path: null });
+  } catch (err) {
+    console.warn(`[workflow ${id}] DB clear of worktree_path failed: ${errMsg(err)}`);
+  }
+
+  console.log(`[workflow ${id}] worktree quarantined at ${destPath} (${reason})`);
+  return { ok: true, path: destPath };
+}
+
+/**
  * Remove a worktree, auto-saving uncommitted work first.
  * Exported for use by WorkflowPRCreator.
  */
@@ -276,13 +353,38 @@ export function removeWorktree(workflow: Workflow): void {
       }
     }
   } catch { /* status/commit failed — proceed with removal anyway */ }
+
+  // If the worktree directory is already gone (concurrent cleanup,
+  // manual rm, crashed cancel that removed the dir before recording
+  // status), the git remove call will fail with "is not a working
+  // tree" even though the desired end state is already reached. Treat
+  // that as success and prune stale registrations. Suppresses
+  // HURLICANE-SF.
+  if (!existsSync(worktree_path)) {
+    pruneWorktreeRegistrations(work_dir);
+    console.log(`[workflow ${workflow.id}] worktree already removed — pruned registrations`);
+    return;
+  }
+
   try {
     execSync(`git worktree remove --force ${JSON.stringify(worktree_path)}`, {
       cwd: work_dir, stdio: 'pipe', timeout: 15000,
     });
-    execSync('git worktree prune', { cwd: work_dir, stdio: 'pipe', timeout: 10000 });
+    pruneWorktreeRegistrations(work_dir);
     console.log(`[workflow ${workflow.id}] worktree removed`);
   } catch (err) {
-    console.warn(`[workflow ${workflow.id}] worktree removal failed:`, errMsg(err));
+    const message = errMsg(err);
+    if (/is not a working tree/i.test(message)) {
+      pruneWorktreeRegistrations(work_dir);
+      console.log(`[workflow ${workflow.id}] worktree already removed — pruned registrations`);
+      return;
+    }
+    console.warn(`[workflow ${workflow.id}] worktree removal failed:`, message);
   }
+}
+
+function pruneWorktreeRegistrations(workDir: string): void {
+  try {
+    execSync('git worktree prune', { cwd: workDir, stdio: 'pipe', timeout: 10000 });
+  } catch { /* prune is best-effort */ }
 }

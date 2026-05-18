@@ -49,14 +49,20 @@ const SYNC_FAILURE_PAYLOAD = {
 };
 
 let app: express.Express;
+const ORIGINAL_AUTH_TOKEN = process.env.AUTH_TOKEN;
 
 describe('POST /api/webhooks/sync — sync-webhook-handler-missing', () => {
   beforeEach(async () => {
+    delete process.env.AUTH_TOKEN;
     await setupTestDb();
     vi.clearAllMocks();
     app = createTestApp();
   });
-  afterEach(async () => { await cleanupTestDb(); });
+  afterEach(async () => {
+    await cleanupTestDb();
+    if (ORIGINAL_AUTH_TOKEN === undefined) delete process.env.AUTH_TOKEN;
+    else process.env.AUTH_TOKEN = ORIGINAL_AUTH_TOKEN;
+  });
 
   it('returns 201 and creates a remediation job for a valid sync failure', async () => {
     const res = await request(app)
@@ -140,6 +146,58 @@ describe('POST /api/webhooks/sync — sync-webhook-handler-missing', () => {
     const res = await request(app)
       .post('/api/webhooks/sync')
       .send(withoutSource);
+
+    expect(res.status).toBe(400);
+  });
+
+  it('requires the configured AUTH_TOKEN when present', async () => {
+    process.env.AUTH_TOKEN = 'sync-webhook-secret';
+
+    const res = await request(app)
+      .post('/api/webhooks/sync')
+      .send(SYNC_FAILURE_PAYLOAD);
+
+    expect(res.status).toBe(401);
+    expect(res.body.error).toMatch(/Authorization/i);
+  });
+
+  it('rejects an invalid AUTH_TOKEN bearer value', async () => {
+    process.env.AUTH_TOKEN = 'sync-webhook-secret';
+
+    const res = await request(app)
+      .post('/api/webhooks/sync')
+      .set('Authorization', 'Bearer wrong-token')
+      .send(SYNC_FAILURE_PAYLOAD);
+
+    expect(res.status).toBe(403);
+  });
+
+  it('accepts the configured AUTH_TOKEN bearer value', async () => {
+    process.env.AUTH_TOKEN = 'sync-webhook-secret';
+
+    const res = await request(app)
+      .post('/api/webhooks/sync')
+      .set('Authorization', 'Bearer sync-webhook-secret')
+      .send(SYNC_FAILURE_PAYLOAD);
+
+    expect(res.status).toBe(201);
+  });
+
+  it('returns 400 when failedPhases is not an array', async () => {
+    const res = await request(app)
+      .post('/api/webhooks/sync')
+      .send({ ...SYNC_FAILURE_PAYLOAD, failedPhases: { length: 1 } });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 400 when failedPhases contains malformed phase entries', async () => {
+    const res = await request(app)
+      .post('/api/webhooks/sync')
+      .send({
+        ...SYNC_FAILURE_PAYLOAD,
+        failedPhases: [{ name: 'github-fetch-commits', status: 'timeout' }],
+      });
 
     expect(res.status).toBe(400);
   });

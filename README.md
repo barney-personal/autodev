@@ -147,6 +147,8 @@ Autonomous agent runs include several mechanisms that detect failures and recove
 
 **Worktree branch verification.** Before spawning any phase job, the workflow verifies the git worktree is on the expected branch. If the checkout fails (e.g., the worktree was deleted or the branch drifted), the workflow blocks immediately rather than writing to the wrong branch. This check also runs on `resume`.
 
+**Wrap-up safety contract.** `POST /api/workflows/:id/wrap-up` never deletes a worktree that has local commits ahead of the origin base ref. Branch push and `gh pr create` are run as separate attributed steps; push is retried once on transient errors, while auth failures fail fast. Push or PR-creation failures preserve the worktree and block the workflow with a structured `blocked_reason` describing exactly which step failed. See [`docs/wrap-up.md`](docs/wrap-up.md) for the full contract, the four operator-visible outcomes (`draft_pr_created`, `no_publishable_commits`, `draft_pr_failed_preserved`, `missing_worktree_with_progress`), and manual recovery procedures.
+
 **Resume error handling.** The resume API validates the workflow state before changing status, so a failed branch check doesn't leave the workflow orphaned in a `running` state. `force=true` re-reads the workflow from the database to avoid acting on stale data. Errors return a 500 JSON response.
 
 **Reconciliation.** On server startup, `reconcileRunningWorkflows` scans for workflows that were `running` when the server last stopped. It detects idle phases (no active job) and respawns them, and blocks workflows whose required artifacts are missing.

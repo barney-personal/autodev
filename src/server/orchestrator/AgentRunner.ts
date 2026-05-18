@@ -42,7 +42,7 @@ import { claimRecovery, clearRecoveryState } from './RecoveryLedger.js';
 import { createPrForJob, pushBranchForFailedJob } from './PrCreator.js';
 import type { Job, ClaudeStreamEvent, CodexStreamEvent } from '../../shared/types.js';
 import { isCodexModel, codexModelName, effectiveMaxTurns } from '../../shared/types.js';
-import { getClaudeEffort, getCodexReasoningEffort } from '../../shared/models.js';
+import { getClaudeEffort, getCodexReasoningEffort, getCodexServiceTier } from '../../shared/models.js';
 import { buildEyePrompt, isEyeJob, computeAdaptiveEyeInterval } from './EyeConfig.js';
 import { getJobIfStatus, markJobRunning } from './JobLifecycle.js';
 import { buildNiceSpawn, isNiceAvailable } from './ProcessPriority.js';
@@ -110,8 +110,9 @@ export function runAgent(options: RunOptions): void {
   const maxTurns = effectiveMaxTurns(stopMode, stopValue);
   const model: string | null = job.model ?? null;
   const useCodex = isCodexModel(model);
-  const codexReasoningEffort = getCodexReasoningEffort(model);
-  const claudeEffort = getClaudeEffort(model);
+  const codexReasoningEffort = getCodexReasoningEffort(model, job.workflow_phase);
+  const codexServiceTier = getCodexServiceTier(model, job.workflow_phase);
+  const claudeEffort = getClaudeEffort(model, job.workflow_phase);
   if (useCodex) ensureCodexTrusted(workDir);
 
   const mcpUrl = `http://localhost:${mcpPort}/mcp/${agentId}`;
@@ -132,6 +133,7 @@ export function runAgent(options: RunOptions): void {
       '-c', `mcp_servers.orchestrator.url="${mcpUrl}"`,
       ...(codexSubModel ? ['-m', codexSubModel] : []),
       ...(codexReasoningEffort ? ['-c', `model_reasoning_effort="${codexReasoningEffort}"`] : []),
+      ...(codexServiceTier ? ['-c', `service_tier="${codexServiceTier}"`] : []),
       // Prompt is delivered via file-backed stdin (see below), not as a
       // positional arg, to avoid E2BIG / spawn failure when workflow
       // prompts grow large with inlined plan/contract/worklog context.

@@ -266,3 +266,108 @@ describe('verifyWorktreeHealth', () => {
     );
   });
 });
+
+describe('removeWorktree (idempotent cleanup)', () => {
+  let removeWorktree: typeof import('../server/orchestrator/WorkflowWorktreeManager.js').removeWorktree;
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+  let logSpy: ReturnType<typeof vi.spyOn>;
+
+  const baseWorkflow = {
+    id: 'wf-test',
+    worktree_path: '/tmp/wt',
+    work_dir: '/repo',
+    worktree_branch: 'workflow/test',
+  } as unknown as import('../shared/types.js').Workflow;
+
+  beforeEach(async () => {
+    await setupTestDb();
+    await resetManagerState();
+    execSyncMock.mockReset();
+    existsSyncMock.mockReset();
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const mod = await import('../server/orchestrator/WorkflowWorktreeManager.js');
+    removeWorktree = mod.removeWorktree;
+  });
+
+  afterEach(async () => {
+    warnSpy.mockRestore();
+    logSpy.mockRestore();
+    await cleanupTestDb();
+  });
+
+  it('skips the remove call when the worktree directory is already gone and just prunes', () => {
+    existsSyncMock.mockReturnValue(false);
+    // Model real execution: with the worktree dir gone, the
+    // `git status --porcelain` call's cwd doesn't exist, so execSync
+    // throws ENOENT. The outer try/catch in removeWorktree swallows
+    // it and falls through to the existsSync probe.
+    execSyncMock.mockImplementation((cmd: string) => {
+      if (cmd.includes('git status --porcelain')) {
+        const err = new Error(`spawn ${cmd} ENOENT`) as NodeJS.ErrnoException;
+        err.code = 'ENOENT';
+        throw err;
+      }
+      return Buffer.from('');
+    });
+
+    removeWorktree(baseWorkflow);
+
+    const commands = execSyncMock.mock.calls.map(c => c[0] as string);
+    expect(commands.some(c => c.includes('worktree remove'))).toBe(false);
+    expect(commands.some(c => c === 'git worktree prune')).toBe(true);
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('worktree already removed'));
+  });
+
+  it('treats "is not a working tree" as success without warning (HURLICANE-SF race)', () => {
+    // existsSync at the probe sees the dir, but the remove call races with
+    // another cleanup and fails.
+    existsSyncMock.mockReturnValue(true);
+    execSyncMock.mockImplementation((cmd: string) => {
+      if (cmd.includes('git status --porcelain')) return Buffer.from('');
+      if (cmd.includes('worktree remove')) {
+        throw new Error("fatal: '/tmp/wt' is not a working tree");
+      }
+      return Buffer.from('');
+    });
+
+    removeWorktree(baseWorkflow);
+
+    const commands = execSyncMock.mock.calls.map(c => c[0] as string);
+    expect(commands.filter(c => c === 'git worktree prune').length).toBeGreaterThanOrEqual(1);
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('worktree already removed'));
+  });
+
+  it('still warns on unrelated removal failures', () => {
+    existsSyncMock.mockReturnValue(true);
+    execSyncMock.mockImplementation((cmd: string) => {
+      if (cmd.includes('git status --porcelain')) return Buffer.from('');
+      if (cmd.includes('worktree remove')) {
+        throw new Error('fatal: file lock held by another process');
+      }
+      return Buffer.from('');
+    });
+
+    removeWorktree(baseWorkflow);
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('worktree removal failed'),
+      expect.stringContaining('file lock'),
+    );
+  });
+
+  it('logs success on the happy path', () => {
+    existsSyncMock.mockReturnValue(true);
+    execSyncMock.mockImplementation((cmd: string) => {
+      if (cmd.includes('git status --porcelain')) return Buffer.from('');
+      return Buffer.from('');
+    });
+
+    removeWorktree(baseWorkflow);
+
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(logSpy).toHaveBeenCalledWith(expect.stringMatching(/worktree removed$/));
+  });
+});

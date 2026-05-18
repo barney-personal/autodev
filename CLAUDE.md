@@ -132,6 +132,7 @@ Workflows self-heal from common transient failures. Key mechanisms:
 - **Worktree namespacing** — worktrees are created under `.orchestrator-worktrees/<repoName>/wf-<shortId>` to avoid mixing worktrees from different repos
 - **Uncommitted work preservation** — on worktree cleanup (cancel/completion), uncommitted changes are auto-committed and best-effort pushed before removal
 - **PR detection** — before creating a PR, checks if one already exists on the branch; uses existing PR URL instead of failing
+- **Wrap-up safety contract** — `POST /api/workflows/:id/wrap-up` never deletes a worktree with local commits ahead of `origin/<base>`. Push and PR-create are split (`pushBranch` + `createWorkflowPr`); push has bounded retry with auth/rate-limit classification; failures produce structured `blocked_reason` prefixes (`branch push failed`, `branch pushed but gh pr create failed`, `unknown PR-creation failure`). See `docs/wrap-up.md` for the four operator-visible outcomes and manual recovery steps.
 - **Resume safety** — `force=true` re-reads workflow from DB to avoid stale objects; branch check runs before status change; API returns 500 JSON on error
 - **Inline context** — plan/contract/worklogs pre-loaded into prompts (capped at 50k chars via `capText`)
 - **reconcileRunningWorkflows** — on startup, detects idle phases and respawns them
@@ -250,3 +251,10 @@ data/
 | `ORCHESTRATOR_API_URL` | `http://localhost:3456` | Base URL for lock verification |
 | `ANTHROPIC_API_KEY` | — | Required for model auto-classification |
 | `SENTRY_DSN` | — | Optional error tracking |
+| `EFFORT_ASSESS` | `xhigh` | Effort/reasoning budget for the assess phase (Claude `--effort` / Codex `model_reasoning_effort`). Set to empty string to omit the flag. |
+| `EFFORT_REVIEW` | `high` | Effort budget for the review phase. Paired with the `fast` service tier — together they trade a small amount of reviewer depth for ~1.5x throughput. |
+| `EFFORT_IMPLEMENT` | `medium` | Effort budget for the implement phase. Lowered from `xhigh` because plan and judgment already happened in assess/review — most implement turns are tool execution that doesn't benefit from extended thinking. |
+| `EFFORT_VERIFY` | `xhigh` | Effort budget for the verify phase. |
+| `EFFORT_DEFAULT` | `xhigh` | Effort budget for one-shot (non-workflow) jobs. |
+| `CODEX_SERVICE_TIER_REVIEW` | `fast` | Codex `service_tier` override for the review phase. `fast` gives ~1.5x throughput on the priority lane (slightly higher cost). Other tiers: `default`, `flex`, `priority`, `auto`. Set to empty string to fall back to `~/.codex/config.toml`. |
+| `CODEX_SERVICE_TIER_ASSESS` / `_IMPLEMENT` / `_VERIFY` / `_DEFAULT` | *(unset)* | Codex `service_tier` overrides for the other phases. No default — the user's `~/.codex/config.toml` value is used. |
