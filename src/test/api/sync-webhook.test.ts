@@ -214,11 +214,16 @@ describe('POST /api/webhooks/sync — sync-webhook-handler-missing', () => {
  */
 describe('sync-phase-detail-missing — notion sync_blocks phase detail dropped from job description', () => {
   beforeEach(async () => {
+    delete process.env.AUTH_TOKEN;
     await setupTestDb();
     vi.clearAllMocks();
     app = createTestApp();
   });
-  afterEach(async () => { await cleanupTestDb(); });
+  afterEach(async () => {
+    await cleanupTestDb();
+    if (ORIGINAL_AUTH_TOKEN === undefined) delete process.env.AUTH_TOKEN;
+    else process.env.AUTH_TOKEN = ORIGINAL_AUTH_TOKEN;
+  });
 
   it('includes phase detail in job description when provided', async () => {
     const notionPayload = {
