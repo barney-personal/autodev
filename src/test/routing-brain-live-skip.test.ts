@@ -315,3 +315,319 @@ describe('routing brain implement-spawn integration: live mode and bypasses', ()
     expect(getRouteDecisionsForWorkflow(workflow.id)).toHaveLength(0);
   });
 });
+
+// ─── Reviewer-skip hook tests ──────────────────────────────────────────────────
+
+async function createImplementDoneWorkflow(opts: {
+  milestonesDone?: number;
+  milestonesTotal?: number;
+  currentCycle?: number;
+  maxCycles?: number;
+} = {}) {
+  const done = opts.milestonesDone ?? 2;
+  const total = opts.milestonesTotal ?? 5;
+  const cycle = opts.currentCycle ?? 2;
+  const project = await insertTestProject();
+  const workflow = await insertTestWorkflow({
+    project_id: project.id,
+    status: 'running',
+    current_phase: 'implement',
+    current_cycle: cycle,
+    max_cycles: opts.maxCycles ?? 10,
+    implementer_model: 'claude-opus-4-7[1m]',
+    reviewer_model: 'codex',
+    milestones_total: total,
+    milestones_done: done,
+    use_worktree: 0,
+  });
+  const { upsertNote } = await import('../server/db/queries.js');
+  const checked = Array(done).fill('- [x] Mx').join('\n');
+  const unchecked = Array(total - done).fill('- [ ] Mx').join('\n');
+  upsertNote(`workflow/${workflow.id}/plan`, `${checked}\n${unchecked}`, null);
+  return workflow;
+}
+
+describe('routing brain live-mode reviewer-skip hook', () => {
+  beforeEach(async () => {
+    routingState.mode = 'live';
+    routingState.rowMode = null;
+    routingState.counter = 0;
+    routingState.decision = makeDecision({ skipReview: true, reviewerModel: null });
+    failureState.kind = 'unknown';
+    failureState.fallbackEligible = false;
+    await setupTestDb();
+    await resetManagerState();
+    vi.clearAllMocks();
+  });
+
+  afterEach(async () => {
+    await cleanupTestDb();
+  });
+
+  it('live skip creates no review job, sets marker note, and advances to next implement', async () => {
+    const workflow = await createImplementDoneWorkflow();
+    const { insertRouteDecision, getJobsForWorkflow, getNote, getWorkflowById } = await import('../server/db/queries.js');
+
+    insertRouteDecision({
+      id: 'route-skip-1',
+      workflow_id: workflow.id,
+      cycle: 2,
+      phase: 'implement',
+      decision: makeDecision({ skipReview: true, reviewerModel: null }),
+      mode: 'live',
+      prompt_version: 'v1',
+      decision_model: 'claude-sonnet-4-6[1m]',
+    });
+
+    const implementJob = await insertTestJob({
+      workflow_id: workflow.id,
+      workflow_cycle: 2,
+      workflow_phase: 'implement',
+      status: 'done',
+    });
+
+    const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    onJobCompleted(implementJob);
+    await flushRouting();
+
+    const jobs = getJobsForWorkflow(workflow.id);
+    const reviewJobs = jobs.filter(j => j.workflow_phase === 'review');
+    expect(reviewJobs).toHaveLength(0);
+
+    const markerNote = getNote(`workflow/${workflow.id}/route/cycle-2/review_status`);
+    expect(markerNote?.value).toBe('auto_skipped');
+
+    const implementJobs = jobs.filter(j => j.workflow_phase === 'implement' && j.id !== implementJob.id);
+    expect(implementJobs).toHaveLength(1);
+    expect(implementJobs[0].workflow_cycle).toBe(3);
+
+    const updatedWf = getWorkflowById(workflow.id)!;
+    expect(updatedWf.current_cycle).toBe(3);
+  });
+
+  it('logs a routing_brain_review_skip resilience event on skip', async () => {
+    const workflow = await createImplementDoneWorkflow();
+    const { insertRouteDecision, listResilienceEvents } = await import('../server/db/queries.js');
+
+    insertRouteDecision({
+      id: 'route-skip-ev',
+      workflow_id: workflow.id,
+      cycle: 2,
+      phase: 'implement',
+      decision: makeDecision({ skipReview: true, reviewerModel: null }),
+      mode: 'live',
+      prompt_version: 'v1',
+      decision_model: 'claude-sonnet-4-6[1m]',
+    });
+
+    const implementJob = await insertTestJob({
+      workflow_id: workflow.id,
+      workflow_cycle: 2,
+      workflow_phase: 'implement',
+      status: 'done',
+    });
+
+    const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    onJobCompleted(implementJob);
+    await flushRouting();
+
+    const events = listResilienceEvents({ type: 'routing_brain_review_skip' });
+    expect(events).toHaveLength(1);
+    expect(events[0].entity_id).toBe(workflow.id);
+    const details = JSON.parse(events[0].details!);
+    expect(details.cycle).toBe(2);
+    expect(details.nextCycle).toBe(3);
+  });
+
+  it('does not skip review when decision has skipReview=false (guardrails forced)', async () => {
+    const workflow = await createImplementDoneWorkflow();
+    const { insertRouteDecision, getJobsForWorkflow, getNote } = await import('../server/db/queries.js');
+
+    insertRouteDecision({
+      id: 'route-no-skip',
+      workflow_id: workflow.id,
+      cycle: 2,
+      phase: 'implement',
+      decision: makeDecision({ skipReview: false, reviewerModel: 'codex' }),
+      mode: 'live',
+      prompt_version: 'v1',
+      decision_model: 'claude-sonnet-4-6[1m]',
+    });
+
+    const implementJob = await insertTestJob({
+      workflow_id: workflow.id,
+      workflow_cycle: 2,
+      workflow_phase: 'implement',
+      status: 'done',
+    });
+
+    const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    onJobCompleted(implementJob);
+    await flushRouting();
+
+    const jobs = getJobsForWorkflow(workflow.id);
+    const reviewJobs = jobs.filter(j => j.workflow_phase === 'review');
+    expect(reviewJobs).toHaveLength(1);
+    expect(reviewJobs[0].workflow_cycle).toBe(3);
+
+    const markerNote = getNote(`workflow/${workflow.id}/route/cycle-2/review_status`);
+    expect(markerNote).toBeNull();
+  });
+
+  it('does not skip review when decision row mode is shadow', async () => {
+    const workflow = await createImplementDoneWorkflow();
+    const { insertRouteDecision, getJobsForWorkflow, getNote } = await import('../server/db/queries.js');
+
+    insertRouteDecision({
+      id: 'route-shadow',
+      workflow_id: workflow.id,
+      cycle: 2,
+      phase: 'implement',
+      decision: makeDecision({ skipReview: true, reviewerModel: null }),
+      mode: 'shadow',
+      prompt_version: 'v1',
+      decision_model: 'claude-sonnet-4-6[1m]',
+    });
+
+    const implementJob = await insertTestJob({
+      workflow_id: workflow.id,
+      workflow_cycle: 2,
+      workflow_phase: 'implement',
+      status: 'done',
+    });
+
+    const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    onJobCompleted(implementJob);
+    await flushRouting();
+
+    const jobs = getJobsForWorkflow(workflow.id);
+    const reviewJobs = jobs.filter(j => j.workflow_phase === 'review');
+    expect(reviewJobs).toHaveLength(1);
+
+    const markerNote = getNote(`workflow/${workflow.id}/route/cycle-2/review_status`);
+    expect(markerNote).toBeNull();
+  });
+
+  it('does not skip review when decision row mode is fallback', async () => {
+    const workflow = await createImplementDoneWorkflow();
+    const { insertRouteDecision, getJobsForWorkflow } = await import('../server/db/queries.js');
+
+    insertRouteDecision({
+      id: 'route-fallback',
+      workflow_id: workflow.id,
+      cycle: 2,
+      phase: 'implement',
+      decision: makeDecision({ skipReview: false }),
+      mode: 'fallback',
+      prompt_version: 'v1',
+      decision_model: 'claude-sonnet-4-6[1m]',
+    });
+
+    const implementJob = await insertTestJob({
+      workflow_id: workflow.id,
+      workflow_cycle: 2,
+      workflow_phase: 'implement',
+      status: 'done',
+    });
+
+    const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    onJobCompleted(implementJob);
+    await flushRouting();
+
+    const reviewJobs = getJobsForWorkflow(workflow.id).filter(j => j.workflow_phase === 'review');
+    expect(reviewJobs).toHaveLength(1);
+  });
+
+  it('does not skip review when no route decision exists', async () => {
+    const workflow = await createImplementDoneWorkflow();
+    const { getJobsForWorkflow, getNote } = await import('../server/db/queries.js');
+
+    const implementJob = await insertTestJob({
+      workflow_id: workflow.id,
+      workflow_cycle: 2,
+      workflow_phase: 'implement',
+      status: 'done',
+    });
+
+    const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    onJobCompleted(implementJob);
+    await flushRouting();
+
+    const reviewJobs = getJobsForWorkflow(workflow.id).filter(j => j.workflow_phase === 'review');
+    expect(reviewJobs).toHaveLength(1);
+
+    const markerNote = getNote(`workflow/${workflow.id}/route/cycle-2/review_status`);
+    expect(markerNote).toBeNull();
+  });
+
+  it('does not skip re-review for zero-progress replan path', async () => {
+    const workflow = await createImplementDoneWorkflow();
+    const { insertRouteDecision, upsertNote, getJobsForWorkflow, getNote } = await import('../server/db/queries.js');
+
+    // Set preImplementMilestones so zero-progress detection triggers
+    upsertNote(`workflow/${workflow.id}/pre-implement-milestones/2`, '2', null);
+
+    insertRouteDecision({
+      id: 'route-skip-replan',
+      workflow_id: workflow.id,
+      cycle: 2,
+      phase: 'implement',
+      decision: makeDecision({ skipReview: true, reviewerModel: null }),
+      mode: 'live',
+      prompt_version: 'v1',
+      decision_model: 'claude-sonnet-4-6[1m]',
+    });
+
+    const implementJob = await insertTestJob({
+      workflow_id: workflow.id,
+      workflow_cycle: 2,
+      workflow_phase: 'implement',
+      status: 'done',
+    });
+
+    const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    onJobCompleted(implementJob);
+    await flushRouting();
+
+    // Zero-progress triggers re-review at current cycle, not skippable
+    const reviewJobs = getJobsForWorkflow(workflow.id).filter(j => j.workflow_phase === 'review');
+    expect(reviewJobs).toHaveLength(1);
+    expect(reviewJobs[0].workflow_cycle).toBe(2);
+
+    const markerNote = getNote(`workflow/${workflow.id}/route/cycle-2/review_status`);
+    expect(markerNote).toBeNull();
+  });
+
+  it('does not skip review for repair jobs', async () => {
+    const workflow = await createImplementDoneWorkflow();
+    const { insertRouteDecision, getJobsForWorkflow } = await import('../server/db/queries.js');
+
+    insertRouteDecision({
+      id: 'route-skip-repair',
+      workflow_id: workflow.id,
+      cycle: 2,
+      phase: 'implement',
+      decision: makeDecision({ skipReview: true, reviewerModel: null }),
+      mode: 'live',
+      prompt_version: 'v1',
+      decision_model: 'claude-sonnet-4-6[1m]',
+    });
+
+    const implementJob = await insertTestJob({
+      workflow_id: workflow.id,
+      workflow_cycle: 2,
+      workflow_phase: 'implement',
+      status: 'done',
+      context: JSON.stringify({ is_repair: true }),
+    });
+
+    const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    onJobCompleted(implementJob);
+    await flushRouting();
+
+    // Repair jobs go through the is_repair path which spawns review, not skippable
+    const reviewJobs = getJobsForWorkflow(workflow.id).filter(j => j.workflow_phase === 'review');
+    expect(reviewJobs).toHaveLength(1);
+    expect(reviewJobs[0].workflow_cycle).toBe(2);
+  });
+});

@@ -496,6 +496,7 @@ function handleZeroProgressAndAdvance(job: Job, workflow: Workflow, updated: Wor
   }
 
   const nextCycle = updated.current_cycle + 1;
+  if (maybeSkipReviewWithRoutingDecision(updated, updated.current_cycle, nextCycle)) return;
   updateAndEmit(workflow.id, { current_cycle: nextCycle });
   spawnPhaseJob(queries.getWorkflowById(workflow.id)!, 'review', nextCycle);
 }
@@ -765,6 +766,44 @@ function ensureWorkflowWorktreeReadyForPhase(
   }
 
   return activeWorkflow;
+}
+
+// ─── Routing brain reviewer-skip hook ───────────────────────────────────────────
+
+/**
+ * Check if the routing brain's latest implement decision allows skipping the reviewer.
+ * Only applies when the persisted decision row is mode='live' and skipReview is true
+ * (guardrails have already run). On skip: writes a marker note, logs a resilience event,
+ * updates current_cycle, and spawns the next implement via routing.
+ * Returns true if review was skipped.
+ */
+function maybeSkipReviewWithRoutingDecision(
+  workflow: Workflow,
+  implementCycle: number,
+  nextCycle: number,
+): boolean {
+  const row = queries.getLatestRouteDecisionForCycle(workflow.id, implementCycle, 'implement');
+  if (!row || row.mode !== 'live' || !row.decision.skipReview) return false;
+
+  queries.upsertNote(
+    `workflow/${workflow.id}/route/cycle-${implementCycle}/review_status`,
+    'auto_skipped',
+    null,
+  );
+
+  logResilienceEvent('routing_brain_review_skip', 'workflow', workflow.id, {
+    cycle: implementCycle,
+    nextCycle,
+    implementerModel: row.decision.implementerModel,
+    confidence: row.decision.confidence,
+    rationale: row.decision.rationale,
+  });
+
+  console.log(`[workflow ${workflow.id}] routing brain skipped review for cycle ${implementCycle} (confidence=${row.decision.confidence}) — advancing to implement cycle ${nextCycle}`);
+
+  updateAndEmit(workflow.id, { current_cycle: nextCycle });
+  void spawnImplementWithRouting(queries.getWorkflowById(workflow.id)!, nextCycle);
+  return true;
 }
 
 // ─── Routing brain integration ──────────────────────────────────────────────────
