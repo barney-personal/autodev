@@ -34,6 +34,7 @@ router.get('/:id', (req, res) => {
   }
 
   const verifyRuns: VerifyRun[] = queries.getVerifyRunsForWorkflow(workflow.id);
+  const routeDecisions = queries.getRouteDecisionsForWorkflow(workflow.id);
 
   res.json({
     ...workflow,
@@ -41,6 +42,7 @@ router.get('/:id', (req, res) => {
     contract: contractNote?.value ?? null,
     worklogs,
     verify_runs: verifyRuns,
+    route_decisions: routeDecisions,
   });
 });
 
