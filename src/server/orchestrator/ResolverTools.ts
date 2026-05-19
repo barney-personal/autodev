@@ -259,11 +259,24 @@ export function execReadAgentLog(run: ResolverRun, input: ReadAgentLogInput): Re
   if (input.kind !== 'ndjson' && input.kind !== 'stderr' && input.kind !== 'snapshot') {
     return failAction(run, 'read_agent_log', input, `invalid kind '${input.kind}'`);
   }
+
+  // Ownership check: the agent must belong to a job in this workflow. Without
+  // this an LLM could ask for any other workflow's agent log by guessing a
+  // UUID, leaking logs from unrelated runs even though the path is safe.
+  const agent = queries.getAgentById(input.agent_id);
+  if (!agent) {
+    return failAction(run, 'read_agent_log', input, `agent ${input.agent_id} not found`);
+  }
+  const job = queries.getJobById(agent.job_id);
+  if (!job || job.workflow_id !== run.workflow_id) {
+    return failAction(run, 'read_agent_log', input, `agent ${input.agent_id} does not belong to workflow ${run.workflow_id}`);
+  }
+
   const max = clamp(input.max_bytes ?? LOG_TAIL_BYTES, 1024, LOG_TAIL_BYTES);
   const file = path.resolve(PTY_LOG_DIR, `${input.agent_id}.${input.kind}`);
-  // Defence-in-depth: even with the UUID guard above, verify the resolved
-  // path stays inside PTY_LOG_DIR. Catches future regressions if the regex
-  // is loosened or PTY_LOG_DIR is moved.
+  // Defence-in-depth: even with the UUID + ownership guards above, verify
+  // the resolved path stays inside PTY_LOG_DIR. Catches future regressions
+  // if either regex is loosened or PTY_LOG_DIR is moved.
   const root = path.resolve(PTY_LOG_DIR) + path.sep;
   if (!file.startsWith(root)) {
     return failAction(run, 'read_agent_log', input, 'resolved path escapes PTY_LOG_DIR');

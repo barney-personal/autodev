@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { execFileSync } from 'child_process';
-import { setupTestDb, cleanupTestDb, createSocketMock, insertTestWorkflow } from './helpers.js';
+import { setupTestDb, cleanupTestDb, createSocketMock, insertTestWorkflow, insertTestJob } from './helpers.js';
 
 vi.mock('../server/socket/SocketManager.js', () => createSocketMock());
 
@@ -108,6 +108,40 @@ describe('ResolverTools — read_agent_log path safety', () => {
     });
     expect(result.ok).toBe(false);
     expect(result.message).toMatch(/invalid kind/);
+  });
+
+  it('rejects agent_ids that belong to a different workflow', async () => {
+    const wfA = await insertTestWorkflow({ title: 'A' });
+    const wfB = await insertTestWorkflow({ title: 'B' });
+    // Insert a job + agent under wfB.
+    const otherJob = await insertTestJob({ workflow_id: wfB.id });
+    const otherAgentId = '11111111-1111-4111-8111-111111111111';
+    queries.insertAgent({ id: otherAgentId, job_id: otherJob.id, status: 'failed' });
+
+    const run = queries.insertResolverRun({
+      id: 'run-cross-1', workflow_id: wfA.id, trigger_reason: 'test', reason_fingerprint: 'fp',
+      attempt: 1, model: 'claude-opus-4-7',
+    });
+    const result = dispatchResolverTool(run, {
+      type: 'tool_use', id: 'u1', name: 'read_agent_log',
+      input: { agent_id: otherAgentId, kind: 'ndjson' },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.message).toMatch(/does not belong to workflow/);
+  });
+
+  it('rejects agent_ids that do not exist at all', async () => {
+    const wf = await insertTestWorkflow();
+    const run = queries.insertResolverRun({
+      id: 'run-cross-2', workflow_id: wf.id, trigger_reason: 'test', reason_fingerprint: 'fp',
+      attempt: 1, model: 'claude-opus-4-7',
+    });
+    const result = dispatchResolverTool(run, {
+      type: 'tool_use', id: 'u1', name: 'read_agent_log',
+      input: { agent_id: '99999999-9999-4999-8999-999999999999', kind: 'ndjson' },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.message).toMatch(/not found/);
   });
 });
 
