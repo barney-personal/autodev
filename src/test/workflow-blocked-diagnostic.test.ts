@@ -19,6 +19,18 @@ import {
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
 
+vi.mock('../server/orchestrator/WorkspaceRepoInference.js', async (importOriginal) => {
+  const actual = await importOriginal() as Record<string, unknown>;
+  return {
+    ...actual,
+    inferWorkspaceRepoFromTitle: vi.fn(() => ({
+      match: null,
+      candidates: [],
+      reason: 'workspace base dir does not exist',
+    })),
+  };
+});
+
 vi.mock('fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('fs')>();
   return {

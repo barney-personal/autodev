@@ -154,7 +154,7 @@ describe('taskNormalization: start command fields', () => {
 
   it('validateTaskRequest accepts startCommand on workflow-routed tasks', async () => {
     const { validateTaskRequest } = await import('../shared/taskNormalization.js');
-    const err = validateTaskRequest({ description: 'task', iterations: 5, startCommand: 'npm run dev' });
+    const err = validateTaskRequest({ description: 'task', iterations: 5, startCommand: 'npm run dev', workDir: '/tmp/test' });
     expect(err).toBeNull();
   });
 
