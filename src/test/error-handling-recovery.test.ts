@@ -72,6 +72,7 @@ vi.mock('../server/orchestrator/FailureClassifier.js', () => ({
 
 vi.mock('child_process', () => ({
   exec: vi.fn(),
+  execFileSync: vi.fn(() => Buffer.from('true\n')),
   execSync: vi.fn((cmd: string) => {
     if (typeof cmd === 'string' && cmd.includes('--is-inside-work-tree')) {
       return Buffer.from('true\n');

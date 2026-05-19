@@ -236,9 +236,9 @@ describe('validateTaskRequest', () => {
   });
 
   it('allows review=true or review=undefined for workflow-routed tasks', () => {
-    expect(validateTaskRequest({ description: 'x', iterations: 5, review: true })).toBeNull();
-    expect(validateTaskRequest({ description: 'x', iterations: 5 })).toBeNull();
-    expect(validateTaskRequest({ description: 'x', preset: 'autonomous' })).toBeNull();
+    expect(validateTaskRequest({ description: 'x', iterations: 5, review: true, useWorktree: false })).toBeNull();
+    expect(validateTaskRequest({ description: 'x', iterations: 5, useWorktree: false })).toBeNull();
+    expect(validateTaskRequest({ description: 'x', preset: 'autonomous', useWorktree: false })).toBeNull();
   });
 
   it('allows review=false for job-routed tasks', () => {
@@ -247,7 +247,7 @@ describe('validateTaskRequest', () => {
   });
 
   it('rejects job-only options on autonomous tasks', () => {
-    const base: CreateTaskRequest = { description: 'x', iterations: 5 };
+    const base: CreateTaskRequest = { description: 'x', iterations: 5, useWorktree: false };
     expect(validateTaskRequest({ ...base, dependsOn: ['abc'] })).toMatch(/dependsOn/);
     expect(validateTaskRequest({ ...base, interactive: true })).toMatch(/interactive/);
     expect(validateTaskRequest({ ...base, debate: true })).toMatch(/debate/);
@@ -256,17 +256,17 @@ describe('validateTaskRequest', () => {
   });
 
   it('rejects repeatIntervalMs: 0 on autonomous tasks (falsey numeric bypass)', () => {
-    expect(validateTaskRequest({ description: 'x', iterations: 3, repeatIntervalMs: 0 }))
+    expect(validateTaskRequest({ description: 'x', iterations: 3, repeatIntervalMs: 0, useWorktree: false }))
       .toMatch(/repeatIntervalMs is not supported/);
   });
 
   it('rejects scheduledAt: 0 on autonomous tasks (falsey numeric bypass)', () => {
-    expect(validateTaskRequest({ description: 'x', iterations: 3, scheduledAt: 0 }))
+    expect(validateTaskRequest({ description: 'x', iterations: 3, scheduledAt: 0, useWorktree: false }))
       .toMatch(/scheduledAt is not supported/);
   });
 
   it('rejects single-pass stop settings on autonomous tasks', () => {
-    const base: CreateTaskRequest = { description: 'x', iterations: 5 };
+    const base: CreateTaskRequest = { description: 'x', iterations: 5, useWorktree: false };
     expect(validateTaskRequest({ ...base, stopMode: 'turns' })).toMatch(/stopMode/);
     expect(validateTaskRequest({ ...base, stopValue: 25 })).toMatch(/stopValue/);
     expect(validateTaskRequest({ ...base, maxTurns: 25 })).toMatch(/maxTurns/);
@@ -277,6 +277,7 @@ describe('validateTaskRequest', () => {
       description: 'x',
       preset: 'autonomous',
       stopMode: 'budget',
+      useWorktree: false,
     })).toMatch(/stopMode/);
 
     expect(validateTaskRequest({
@@ -284,6 +285,7 @@ describe('validateTaskRequest', () => {
       preset: 'quick',
       iterations: 3,
       stopValue: 10,
+      useWorktree: false,
     })).toMatch(/stopValue/);
 
     expect(validateTaskRequest({
@@ -291,48 +293,49 @@ describe('validateTaskRequest', () => {
       preset: 'reviewed',
       iterations: 4,
       maxTurns: 40,
+      useWorktree: false,
     })).toMatch(/maxTurns/);
   });
 
   it('rejects priority on autonomous tasks', () => {
-    expect(validateTaskRequest({ description: 'x', iterations: 5, priority: 10 }))
+    expect(validateTaskRequest({ description: 'x', iterations: 5, priority: 10, useWorktree: false }))
       .toMatch(/priority is not supported/);
-    expect(validateTaskRequest({ description: 'x', preset: 'autonomous', priority: 1 }))
+    expect(validateTaskRequest({ description: 'x', preset: 'autonomous', priority: 1, useWorktree: false }))
       .toMatch(/priority is not supported/);
   });
 
   it('rejects retryPolicy on autonomous tasks', () => {
-    expect(validateTaskRequest({ description: 'x', iterations: 5, retryPolicy: 'analyze' }))
+    expect(validateTaskRequest({ description: 'x', iterations: 5, retryPolicy: 'analyze', useWorktree: false }))
       .toMatch(/retryPolicy is not supported/);
   });
 
   it('rejects maxRetries on autonomous tasks', () => {
-    expect(validateTaskRequest({ description: 'x', iterations: 5, maxRetries: 3 }))
+    expect(validateTaskRequest({ description: 'x', iterations: 5, maxRetries: 3, useWorktree: false }))
       .toMatch(/maxRetries is not supported/);
   });
 
   it('rejects completionChecks on autonomous tasks', () => {
-    expect(validateTaskRequest({ description: 'x', iterations: 5, completionChecks: ['lint'] }))
+    expect(validateTaskRequest({ description: 'x', iterations: 5, completionChecks: ['lint'], useWorktree: false }))
       .toMatch(/completionChecks is not supported/);
     // Empty array should pass (falsy length)
-    expect(validateTaskRequest({ description: 'x', iterations: 5, completionChecks: [] }))
+    expect(validateTaskRequest({ description: 'x', iterations: 5, completionChecks: [], useWorktree: false }))
       .toBeNull();
   });
 
   it('rejects context on autonomous tasks', () => {
-    expect(validateTaskRequest({ description: 'x', iterations: 5, context: { env: 'prod' } }))
+    expect(validateTaskRequest({ description: 'x', iterations: 5, context: { env: 'prod' }, useWorktree: false }))
       .toMatch(/context is not supported/);
   });
 
   it('rejects reviewConfig on autonomous tasks', () => {
-    expect(validateTaskRequest({ description: 'x', iterations: 5, reviewConfig: { models: ['codex-gpt-5.5'], auto: true } }))
+    expect(validateTaskRequest({ description: 'x', iterations: 5, reviewConfig: { models: ['codex-gpt-5.5'], auto: true }, useWorktree: false }))
       .toMatch(/reviewConfig is not supported/);
   });
 
   it('rejects projectId on autonomous tasks', () => {
-    expect(validateTaskRequest({ description: 'x', iterations: 5, projectId: 'proj-1' }))
+    expect(validateTaskRequest({ description: 'x', iterations: 5, projectId: 'proj-1', useWorktree: false }))
       .toMatch(/projectId is not supported/);
-    expect(validateTaskRequest({ description: 'x', preset: 'autonomous', projectId: 'proj-1' }))
+    expect(validateTaskRequest({ description: 'x', preset: 'autonomous', projectId: 'proj-1', useWorktree: false }))
       .toMatch(/projectId is not supported/);
   });
 
@@ -344,13 +347,13 @@ describe('validateTaskRequest', () => {
 
   it('rejects remaining job-only fields on preset override combinations routing to workflow', () => {
     // Quick preset with iterations override
-    expect(validateTaskRequest({ description: 'x', preset: 'quick', iterations: 3, priority: 5 }))
+    expect(validateTaskRequest({ description: 'x', preset: 'quick', iterations: 3, priority: 5, useWorktree: false }))
       .toMatch(/priority is not supported/);
     // Reviewed preset with iterations override
-    expect(validateTaskRequest({ description: 'x', preset: 'reviewed', iterations: 4, retryPolicy: 'same' }))
+    expect(validateTaskRequest({ description: 'x', preset: 'reviewed', iterations: 4, retryPolicy: 'same', useWorktree: false }))
       .toMatch(/retryPolicy is not supported/);
     // Autonomous preset with context
-    expect(validateTaskRequest({ description: 'x', preset: 'autonomous', context: { key: 'val' } }))
+    expect(validateTaskRequest({ description: 'x', preset: 'autonomous', context: { key: 'val' }, useWorktree: false }))
       .toMatch(/context is not supported/);
   });
 
@@ -407,6 +410,7 @@ describe('validateTaskRequest', () => {
     expect(validateTaskRequest({
       description: 'x',
       iterations: 5,
+      useWorktree: false,
       maxTurnsAssess: 10,
       stopModeReview: 'budget',
       stopValueImplement: 80,

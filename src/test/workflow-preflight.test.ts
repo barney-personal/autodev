@@ -14,9 +14,10 @@ import {
   insertTestWorkflow,
 } from './helpers.js';
 
-// Track execSync calls
+// Track execSync/execFileSync calls
 const execSyncCalls: Array<{ cmd: string; opts?: any }> = [];
-let gitStatusShouldFail = false;
+const execFileSyncCalls: Array<{ file: string; args: string[]; opts?: any }> = [];
+let gitShouldFail = false;
 let worktreeAddShouldFail = false;
 let missingPaths = new Set<string>();
 
@@ -32,9 +33,6 @@ vi.mock('child_process', () => ({
   exec: vi.fn(),
   execSync: vi.fn((cmd: string, opts?: any) => {
     execSyncCalls.push({ cmd, opts });
-    if (cmd === 'git status --porcelain' && gitStatusShouldFail) {
-      throw new Error('fatal: not a git repository');
-    }
     if (cmd.includes('git worktree add')) {
       if (worktreeAddShouldFail) {
         throw new Error('fatal: branch already exists');
@@ -43,6 +41,18 @@ vi.mock('child_process', () => ({
     }
     return Buffer.from('');
   }),
+  execFileSync: vi.fn((file: string, args: string[], opts?: any) => {
+    execFileSyncCalls.push({ file, args, opts });
+    if (file === 'git' && args[0] === 'rev-parse' && gitShouldFail) {
+      throw new Error('fatal: not a git repository');
+    }
+    return Buffer.from('');
+  }),
+}));
+
+vi.mock('../server/instrument.js', () => ({
+  captureWithContext: vi.fn(),
+  Sentry: { captureException: vi.fn() },
 }));
 
 vi.mock('../server/socket/SocketManager.js', () => createSocketMock());
@@ -74,6 +84,11 @@ vi.mock('../server/orchestrator/ModelClassifier.js', () => ({
   _resetForTest: vi.fn(),
 }));
 
+vi.mock('../server/orchestrator/WorkQueueManager.js', () => ({
+  nudgeQueue: vi.fn(),
+  _resetForTest: vi.fn(),
+}));
+
 vi.mock('../server/orchestrator/FailureClassifier.js', () => ({
   classifyJobFailure: vi.fn(() => 'unknown'),
   isFallbackEligibleFailure: vi.fn(() => false),
@@ -85,7 +100,8 @@ vi.mock('../server/orchestrator/FailureClassifier.js', () => ({
 describe('startWorkflow: pre-flight validation', () => {
   beforeEach(async () => {
     execSyncCalls.length = 0;
-    gitStatusShouldFail = false;
+    execFileSyncCalls.length = 0;
+    gitShouldFail = false;
     worktreeAddShouldFail = false;
     missingPaths = new Set();
     await setupTestDb();
@@ -117,7 +133,7 @@ describe('startWorkflow: pre-flight validation', () => {
     const { startWorkflow } = await import('../server/orchestrator/WorkflowManager.js');
     const { getWorkflowById } = await import('../server/db/queries.js');
 
-    gitStatusShouldFail = true;
+    gitShouldFail = true;
     const wf = await insertTestWorkflow({ work_dir: '/tmp/valid-but-no-git' });
 
     const result = startWorkflow(wf);
@@ -126,8 +142,8 @@ describe('startWorkflow: pre-flight validation', () => {
 
     const updated = getWorkflowById(wf.id);
     expect(updated?.status).toBe('blocked');
-    expect(updated?.blocked_reason).toContain('git is not functional');
-    expect(updated?.blocked_reason).toContain('fatal: not a git repository');
+    expect(updated?.blocked_reason).toContain('is not a git repository');
+    expect(updated?.blocked_reason).toContain('/tmp/valid-but-no-git');
   });
 
   it('proceeds normally when work_dir exists and git works', async () => {
@@ -141,10 +157,12 @@ describe('startWorkflow: pre-flight validation', () => {
     expect(result!.workflow_phase).toBe('assess');
     expect(result!.workflow_id).toBe(wf.id);
 
-    // Verify git status was called as pre-flight
-    const gitStatusCall = execSyncCalls.find(c => c.cmd === 'git status --porcelain');
-    expect(gitStatusCall).toBeDefined();
-    expect(gitStatusCall!.opts.cwd).toBe('/tmp/valid-repo');
+    // Verify git rev-parse was called as pre-flight via validateGitWorkDir
+    const gitRevParseCall = execFileSyncCalls.find(
+      c => c.file === 'git' && c.args[0] === 'rev-parse',
+    );
+    expect(gitRevParseCall).toBeDefined();
+    expect(gitRevParseCall!.opts.cwd).toBe('/tmp/valid-repo');
   });
 
   it('blocks workflow and avoids creating an assess job when worktree creation fails', async () => {

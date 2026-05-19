@@ -2,6 +2,7 @@
  * Zod validation schemas for API request bodies.
  */
 import { z } from 'zod';
+import { validateGitWorkDir } from '../shared/workDirValidation.js';
 
 export const createJobSchema = z.object({
   title: z.string().max(200).optional(),
@@ -54,6 +55,13 @@ export const createWorkflowSchema = z.object({
   completionThreshold: z.number().min(0).max(1).optional(),
   startCommand: z.string().max(10_000).optional(),
   maxVerifyRetries: z.number().int().min(0).max(10).optional(),
+}).superRefine((data, ctx) => {
+  if (data.useWorktree !== false) {
+    const result = validateGitWorkDir(data.workDir, { requireGit: true });
+    if (!result.ok) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['workDir'], message: result.error });
+    }
+  }
 });
 
 export const resumeWorkflowSchema = z.object({

@@ -25,6 +25,7 @@ vi.mock(import('fs'), async (importOriginal) => {
 // Mock child_process so pre-flight git check passes
 vi.mock('child_process', () => ({
   exec: vi.fn(),
+  execFileSync: vi.fn(() => Buffer.from('')),
   execSync: vi.fn(() => Buffer.from('')),
 }));
 

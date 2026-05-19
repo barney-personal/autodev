@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import * as queries from '../db/queries.js';
 import { startWorkflow } from './WorkflowManager.js';
+import { validateGitWorkDir } from '../shared/workDirValidation.js';
 import type {
   CreateAutonomousAgentRunRequest,
   CreateAutonomousAgentRunResponse,
@@ -17,6 +18,14 @@ export function createAutonomousAgentRun(
 ): CreateAutonomousAgentRunResponse {
   if (!body.task?.trim()) {
     throw new Error('task is required');
+  }
+
+  const useWorktree = body.useWorktree !== false;
+  if (useWorktree) {
+    const workDirCheck = validateGitWorkDir(body.workDir, { requireGit: true });
+    if (!workDirCheck.ok) {
+      throw new Error(workDirCheck.error);
+    }
   }
 
   const workflowId = randomUUID();

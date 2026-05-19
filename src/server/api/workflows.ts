@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { execFileSync } from 'child_process';
-import { existsSync } from 'fs';
 import * as queries from '../db/queries.js';
+import { validateGitWorkDir } from '../shared/workDirValidation.js';
 import * as socket from '../socket/SocketManager.js';
 import { resumeWorkflow, cleanupWorktree, quarantineWorktree, pushBranch, createWorkflowPr, probeRecoverableWorkflowWork, captureAgentCreatedPrUrl } from '../orchestrator/WorkflowManager.js';
 import { cancelledAgents } from '../orchestrator/AgentRunner.js';
@@ -71,10 +71,12 @@ router.post('/', (req, res) => {
   // the API layer avoids creating a workflow + project row that immediately
   // transitions to blocked, which is what caused the WorkflowBlocked cascade
   // when the host was missing a cloned repo.
-  const workDir = body.workDir?.trim();
-  if (workDir && !existsSync(workDir)) {
-    res.status(400).json({ error: `work_dir does not exist: ${workDir}` });
-    return;
+  if (body.useWorktree !== false) {
+    const workDirCheck = validateGitWorkDir(body.workDir, { requireGit: true });
+    if (!workDirCheck.ok) {
+      res.status(400).json({ error: workDirCheck.error });
+      return;
+    }
   }
   try {
     const result = createAutonomousAgentRun(body);
