@@ -30,7 +30,7 @@ import { isTmuxSessionAlive, startInteractiveAgent, saveSnapshot } from './PtyMa
 import { resolveStandalonePrintJobOutcome, reportStandaloneResolutionFailure } from './JobFinalizer.js';
 import { handleRetry } from './RetryManager.js';
 import { orphanedWaits, disconnectedAgents, hasActiveTransport } from '../mcp/McpServer.js';
-import { isAutoExitJob } from '../../shared/types.js';
+import { isAutoExitJob, type WorkflowPhase } from '../../shared/types.js';
 import { markModelRateLimited, getFallbackModel, getModelProvider, markProviderRateLimited } from './ModelClassifier.js';
 import { claimRecovery } from './RecoveryLedger.js';
 import { classifyFailureTextQuietly, isFallbackEligibleFailure, shouldMarkProviderUnavailable, type FailureKind } from './FailureClassifier.js';
@@ -886,19 +886,18 @@ function recoverNullWorkDirWorkflows(): void {
           continue;
         }
 
-        const job = resumeWorkflow(fresh, { phase: 'implement', cycle: fresh.current_cycle });
-        socket.emitJobNew(job);
-        nudgeQueue();
+        const resumePhase: WorkflowPhase = fresh.current_phase === 'idle' ? 'implement' : fresh.current_phase;
+        resumeWorkflow(fresh, { phase: resumePhase, cycle: fresh.current_cycle });
 
         logResilienceEvent('worktree_restore', 'workflow', wf.id, {
           source: 'watchdog_null_workdir',
           workflow_id: wf.id,
           inferred_work_dir: inference.match,
-          phase: 'implement',
+          phase: resumePhase,
           cycle: fresh.current_cycle,
         });
 
-        console.log(`[watchdog] null-work_dir recovery: resumed workflow ${wf.id.slice(0, 8)} at implement/cycle ${fresh.current_cycle}`);
+        console.log(`[watchdog] null-work_dir recovery: resumed workflow ${wf.id.slice(0, 8)} at ${resumePhase}/cycle ${fresh.current_cycle}`);
       } catch (err: any) {
         const errStr = err?.message ?? String(err);
         const failReason = `Null work_dir watchdog recovery failed after inferring ${inference.match}: ${errStr}`;

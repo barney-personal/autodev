@@ -1,6 +1,5 @@
 import { Router } from 'express';
 import { execFileSync } from 'child_process';
-import { existsSync } from 'fs';
 import * as queries from '../db/queries.js';
 import { validateGitWorkDir } from '../shared/workDirValidation.js';
 import * as socket from '../socket/SocketManager.js';

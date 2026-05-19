@@ -123,7 +123,7 @@ describe('POST /api/tasks', () => {
   it('creates an autonomous (workflow-routed) task', async () => {
     const res = await request(app)
       .post('/api/tasks')
-      .send({ description: 'Build new feature', preset: 'autonomous' });
+      .send({ description: 'Build new feature', preset: 'autonomous', useWorktree: false });
     expect(res.status).toBe(201);
     expect(res.body.task_type).toBe('workflow');
     expect(res.body.workflow).toBeTruthy();
@@ -151,7 +151,7 @@ describe('POST /api/tasks', () => {
   it('routes to workflow when iterations > 1 without preset', async () => {
     const res = await request(app)
       .post('/api/tasks')
-      .send({ description: 'Multi-cycle task', iterations: 5 });
+      .send({ description: 'Multi-cycle task', iterations: 5, useWorktree: false });
     expect(res.status).toBe(201);
     expect(res.body.task_type).toBe('workflow');
     expect(mockCreateAutonomousAgentRun).toHaveBeenCalledTimes(1);
@@ -191,7 +191,7 @@ describe('Legacy endpoints still work after TaskForm consolidation', () => {
   it('POST /api/autonomous-agent-runs still creates a workflow', async () => {
     const res = await request(app)
       .post('/api/autonomous-agent-runs')
-      .send({ task: 'Legacy workflow endpoint' });
+      .send({ task: 'Legacy workflow endpoint', useWorktree: false });
     expect(res.status).toBe(201);
     expect(res.body.workflow).toBeTruthy();
   });

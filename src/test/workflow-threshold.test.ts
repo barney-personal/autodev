@@ -30,6 +30,7 @@ vi.mock(import('fs'), async (importOriginal) => {
 // Mock child_process.execSync for branch verification
 vi.mock('child_process', () => ({
   exec: vi.fn(),
+  execFileSync: vi.fn(() => Buffer.from('')),
   execSync: vi.fn((cmd: string) => {
     if (typeof cmd === 'string' && cmd.includes('rev-parse --abbrev-ref HEAD')) {
       return Buffer.from('expected-branch\n');
@@ -232,6 +233,7 @@ describe('WorkflowManager: completion threshold (M10/3C)', () => {
     const result1 = createAutonomousAgentRun({
       task: 'test task',
       completionThreshold: 0.05,
+      useWorktree: false,
     });
     expect(result1.workflow.completion_threshold).toBe(0.1);
 
@@ -239,6 +241,7 @@ describe('WorkflowManager: completion threshold (M10/3C)', () => {
     const result2 = createAutonomousAgentRun({
       task: 'test task 2',
       completionThreshold: 1.5,
+      useWorktree: false,
     });
     expect(result2.workflow.completion_threshold).toBe(1.0);
 
@@ -246,6 +249,7 @@ describe('WorkflowManager: completion threshold (M10/3C)', () => {
     const result3 = createAutonomousAgentRun({
       task: 'test task 3',
       completionThreshold: 0.7,
+      useWorktree: false,
     });
     expect(result3.workflow.completion_threshold).toBe(0.7);
   });

@@ -28,7 +28,7 @@ describe('createAutonomousAgentRunHandler', () => {
     const socket = await import('../server/socket/SocketManager.js');
     const payload = JSON.parse(await createAutonomousAgentRunHandler('agent-1', {
       task: 'Audit and improve the repo',
-      workDir: '/tmp/repo',
+      workDir: process.cwd(),
       useWorktree: true,
     }));
 
