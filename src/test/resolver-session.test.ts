@@ -105,6 +105,35 @@ describe('runResolverSession', () => {
     expect(persisted.turn_count).toBe(2);
   });
 
+  it('finishes as unresolvable (distinct from escalated) when model calls mark_unresolvable', async () => {
+    const wf = await insertTestWorkflow({ status: 'blocked', work_dir: null });
+    queries.updateWorkflow(wf.id, { blocked_reason: 'nothing to do' });
+
+    const stub = new StubAnthropic([
+      {
+        stop_reason: 'tool_use',
+        content: [
+          { type: 'tool_use', id: 'u1', name: 'mark_unresolvable',
+            input: { reason: 'workflow is in an only-human-can-fix state' } } as never,
+        ],
+      },
+    ]);
+    _setResolverAnthropicClient(stub as unknown as Anthropic);
+
+    const fresh = queries.getWorkflowById(wf.id)!;
+    const bundle = buildResolverContext({ workflow: fresh, attemptNumber: 1 });
+    const run = queries.insertResolverRun({
+      id: 'unresolvable-1', workflow_id: wf.id, trigger_reason: 'nothing to do',
+      reason_fingerprint: 'fp-unr', attempt: 1, model: 'claude-opus-4-7',
+    });
+
+    const outcome = await runResolverSession({ run, bundle });
+    expect(outcome.status).toBe('unresolvable');
+    expect(outcome.terminal?.kind).toBe('unresolvable');
+    const persisted = queries.getResolverRunById(run.id)!;
+    expect(persisted.status).toBe('unresolvable');
+  });
+
   it('finishes as escalated when model calls escalate_to_user', async () => {
     const wf = await insertTestWorkflow({ status: 'blocked', work_dir: null });
     queries.updateWorkflow(wf.id, { blocked_reason: 'unknown failure mode' });

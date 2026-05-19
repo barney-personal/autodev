@@ -371,6 +371,55 @@ describe('ResolverTools — git_command in a real worktree', () => {
     expect(result.message).toMatch(/not in the allowlist/);
   });
 
+  it('allows git stash and git stash pop', async () => {
+    const wf = await insertTestWorkflow({ work_dir: tmpDir });
+    const run = queries.insertResolverRun({
+      id: 'run-stash-ok', workflow_id: wf.id, trigger_reason: 'test', reason_fingerprint: 'fp-stash',
+      attempt: 1, model: 'claude-opus-4-7',
+    });
+    // Make a dirty change so stash has something to capture.
+    fs.writeFileSync(path.join(tmpDir, 'dirty.txt'), 'wip\n');
+    execFileSync('git', ['add', 'dirty.txt'], { cwd: tmpDir });
+    const stash = dispatchResolverTool(run, {
+      type: 'tool_use', id: 'u-stash', name: 'git_command',
+      input: { args: ['stash', 'push', '-m', 'wip'], reason: 'stash' },
+    });
+    expect(stash.ok).toBe(true);
+    const pop = dispatchResolverTool(run, {
+      type: 'tool_use', id: 'u-pop', name: 'git_command',
+      input: { args: ['stash', 'pop'], reason: 'pop' },
+    });
+    expect(pop.ok).toBe(true);
+  });
+
+  it('blocks git stash drop', async () => {
+    const wf = await insertTestWorkflow({ work_dir: tmpDir });
+    const run = queries.insertResolverRun({
+      id: 'run-stash-drop', workflow_id: wf.id, trigger_reason: 'test', reason_fingerprint: 'fp-drop',
+      attempt: 1, model: 'claude-opus-4-7',
+    });
+    const r = dispatchResolverTool(run, {
+      type: 'tool_use', id: 'u-drop', name: 'git_command',
+      input: { args: ['stash', 'drop'], reason: 'drop' },
+    });
+    expect(r.ok).toBe(false);
+    expect(r.message).toMatch(/discard stashed work/);
+  });
+
+  it('blocks git stash clear', async () => {
+    const wf = await insertTestWorkflow({ work_dir: tmpDir });
+    const run = queries.insertResolverRun({
+      id: 'run-stash-clear', workflow_id: wf.id, trigger_reason: 'test', reason_fingerprint: 'fp-clear',
+      attempt: 1, model: 'claude-opus-4-7',
+    });
+    const r = dispatchResolverTool(run, {
+      type: 'tool_use', id: 'u-clear', name: 'git_command',
+      input: { args: ['stash', 'clear'], reason: 'clear' },
+    });
+    expect(r.ok).toBe(false);
+    expect(r.message).toMatch(/discard stashed work/);
+  });
+
   it('blocks git commit --amend', async () => {
     const wf = await insertTestWorkflow({ work_dir: tmpDir });
     const run = queries.insertResolverRun({
@@ -403,6 +452,38 @@ describe('ResolverTools — git_command in a real worktree', () => {
       input: { path: '../escape.ts', contents: 'nope', reason: 'try to escape' },
     });
     expect(bad.ok).toBe(false);
+  });
+
+  it('refuses to overwrite a file currently held by an active file lock', async () => {
+    const wf = await insertTestWorkflow({ work_dir: tmpDir });
+    const run = queries.insertResolverRun({
+      id: 'run-lock', workflow_id: wf.id, trigger_reason: 'test', reason_fingerprint: 'fp-lock',
+      attempt: 1, model: 'claude-opus-4-7',
+    });
+
+    // Insert a job + agent so the lock has a valid agent_id reference, then
+    // grab a lock on a file we're about to ask the Resolver to edit.
+    const otherJob = await insertTestJob({ workflow_id: wf.id });
+    const otherAgentId = '22222222-2222-4222-8222-222222222222';
+    queries.insertAgent({ id: otherAgentId, job_id: otherJob.id, status: 'running' });
+    const target = path.join(tmpDir, 'guarded.ts');
+    queries.insertFileLock({
+      id: 'lock-1',
+      agent_id: otherAgentId,
+      file_path: target,
+      reason: 'mid-edit',
+      acquired_at: Date.now(),
+      expires_at: Date.now() + 60_000,
+      released_at: null,
+    });
+
+    const r = dispatchResolverTool(run, {
+      type: 'tool_use', id: 'u-lock', name: 'edit_worktree_file',
+      input: { path: 'guarded.ts', contents: 'export const x = 1;\n', reason: 'try to edit a locked file' },
+    });
+    expect(r.ok).toBe(false);
+    expect(r.message).toMatch(/locked by agent/);
+    expect(fs.existsSync(target)).toBe(false);
   });
 
   it('rejects a write through a symlink that escapes the worktree', async () => {

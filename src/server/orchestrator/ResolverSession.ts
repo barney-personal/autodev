@@ -310,11 +310,15 @@ export async function runResolverSession(input: RunResolverInput): Promise<RunRe
   }
 
   function finalizeTerminal(t: NonNullable<RunResolverOutcome['terminal']>): RunResolverOutcome {
+    // Map terminal-tool kinds to the distinct ResolverStatus values the
+    // dashboard surfaces. 'unresolvable' is its own status so the operator
+    // can distinguish "the Resolver opened a discussion for me" from "the
+    // Resolver gave up cleanly".
     const status: ResolverStatus = t.kind === 'propose_resume'
       ? 'resolved' /* dispatcher decides if it actually resumes */
       : t.kind === 'escalated'
         ? 'escalated'
-        : /* unresolvable */ 'escalated';
+        : 'unresolvable';
     queries.updateResolverRun(run.id, {
       status,
       finished_at: Date.now(),

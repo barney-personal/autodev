@@ -345,6 +345,13 @@ export function execGitCommand(run: ResolverRun, input: GitCommandInput): Resolv
   if (verb === 'commit' && (args.includes('--amend') || args.includes('-a'))) {
     return failAction(run, 'git_command', input, 'git commit --amend / -a not allowed (use explicit add + commit)');
   }
+  // Block destructive stash subcommands. `git stash` and `git stash push` save
+  // work; `git stash pop` / `apply` restore it. `drop` and `clear` permanently
+  // discard stashed entries, which can lose Resolver-pushed work or anything
+  // the workflow already had stashed.
+  if (verb === 'stash' && (args[1] === 'drop' || args[1] === 'clear')) {
+    return failAction(run, 'git_command', input, `git stash ${args[1]} is not allowed (would discard stashed work)`);
+  }
 
   const action = recordAction(run, 'git_command', { args, reason: sanitizeShort(input.reason) }, 'pending', null);
   try {
@@ -378,6 +385,22 @@ export function execEditWorktreeFile(run: ResolverRun, input: EditWorktreeFileIn
   }
   if (input.contents.length > TEXT_CAP_LONG * 4) {
     return failAction(run, 'edit_worktree_file', { path: input.path }, `contents exceeds cap (${TEXT_CAP_LONG * 4} chars)`);
+  }
+
+  // File-lock check. The Resolver only fires on status='blocked' workflows
+  // (which have no running agents in the normal case), but a race at the
+  // moment of transition is possible: an agent's final turn writes the file
+  // while the Resolver also tries to edit it. Yield to any active lock —
+  // the operator can re-dispatch once the lock is released.
+  const activeLocks = queries.getActiveLocksForFile(resolved.absolute);
+  if (activeLocks.length > 0) {
+    const lock = activeLocks[0];
+    return failAction(
+      run,
+      'edit_worktree_file',
+      { path: resolved.relative, conflicting_agent: lock.agent_id },
+      `file is locked by agent ${lock.agent_id.slice(0, 8)}${lock.reason ? ` (${lock.reason})` : ''}`,
+    );
   }
 
   const action = recordAction(run, 'edit_worktree_file', {

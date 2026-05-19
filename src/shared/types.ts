@@ -147,7 +147,8 @@ export type ResolverCircuitState = 'armed' | 'tripped';
 export type ResolverStatus =
   | 'running'
   | 'resolved'
-  | 'escalated'
+  | 'escalated'      // opened a discussion thread for the user
+  | 'unresolvable'   // gave up without escalating (no useful question to ask)
   | 'failed'
   | 'aborted'
   | 'skipped';
