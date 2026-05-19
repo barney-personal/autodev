@@ -664,6 +664,88 @@ describe('RoutingBrain.applyGuardrails', () => {
     expect(result.guardrailOverrides.some((o) => o.includes('critical-path'))).toBe(true);
   });
 
+  it('forces skipReview=false for package.json embedded in milestone prose', () => {
+    const decision = {
+      implementerModel: 'claude-sonnet-4-6',
+      reviewerModel: null,
+      skipReview: true,
+      confidence: 'high' as const,
+      rationale: 'Test',
+      guardrailOverrides: [],
+      llmRawResponse: '',
+      signalsSent: {},
+      promptVersion: 'v1',
+      decisionModel: 'claude-sonnet-4-6[1m]',
+      costEstimateUsd: 0.001,
+      decidedAt: Date.now(),
+    };
+    const wf = mkWorkflow();
+    const milestone = mkMilestone({
+      raw: '- [ ] **M4: Dependency cleanup** [S]\n  - Update package.json and lockfile',
+      bodyBullets: ['Update package.json and lockfile'],
+    });
+
+    const result = applyGuardrails(decision, wf, milestone);
+
+    expect(result.skipReview).toBe(false);
+    expect(result.guardrailOverrides.some((o) => o.includes('critical-path'))).toBe(true);
+  });
+
+  it('forces skipReview=false for config.yaml with punctuation in milestone prose', () => {
+    const decision = {
+      implementerModel: 'claude-sonnet-4-6',
+      reviewerModel: null,
+      skipReview: true,
+      confidence: 'high' as const,
+      rationale: 'Test',
+      guardrailOverrides: [],
+      llmRawResponse: '',
+      signalsSent: {},
+      promptVersion: 'v1',
+      decisionModel: 'claude-sonnet-4-6[1m]',
+      costEstimateUsd: 0.001,
+      decidedAt: Date.now(),
+    };
+    const wf = mkWorkflow();
+    const milestone = mkMilestone({
+      raw: '- [ ] **M4: Config cleanup** [S]\n  - edit config.yaml: tighten defaults',
+      bodyBullets: ['edit config.yaml: tighten defaults'],
+    });
+
+    const result = applyGuardrails(decision, wf, milestone);
+
+    expect(result.skipReview).toBe(false);
+    expect(result.guardrailOverrides.some((o) => o.includes('critical-path'))).toBe(true);
+  });
+
+  it('keeps backtick path critical-file detection working', () => {
+    const decision = {
+      implementerModel: 'claude-sonnet-4-6',
+      reviewerModel: null,
+      skipReview: true,
+      confidence: 'high' as const,
+      rationale: 'Test',
+      guardrailOverrides: [],
+      llmRawResponse: '',
+      signalsSent: {},
+      promptVersion: 'v1',
+      decisionModel: 'claude-sonnet-4-6[1m]',
+      costEstimateUsd: 0.001,
+      decidedAt: Date.now(),
+    };
+    const wf = mkWorkflow();
+    const milestone = mkMilestone({
+      raw: '- [ ] **M4: Config cleanup** [S]\n  - Update `src/app/package.json`.',
+      bodyBullets: ['Update `src/app/package.json`.'],
+      mentionedPaths: ['src/app/package.json'],
+    });
+
+    const result = applyGuardrails(decision, wf, milestone);
+
+    expect(result.skipReview).toBe(false);
+    expect(result.guardrailOverrides.some((o) => o.includes('critical-path'))).toBe(true);
+  });
+
   it('forces skipReview=false when milestone touches DB migrations', () => {
     const decision = {
       implementerModel: 'claude-sonnet-4-6',
@@ -780,9 +862,38 @@ describe('RoutingBrain.applyGuardrails', () => {
 
     const result = applyGuardrails(decision, wf, mkMilestone());
 
-    expect(result.implementerModel).toBe('claude-haiku-4-5');
+    expect(result.implementerModel).toBe('claude-haiku-4-5-20251001');
     expect(result.reviewerModel).toBe('codex-gpt-5.5');
     expect(result.guardrailOverrides).toEqual([]);
+  });
+
+  it('checks haiku prompt-menu alias against canonical rate-limit state', () => {
+    getAvailableModelMock.mockImplementation((model: string) => {
+      if (model === 'claude-haiku-4-5-20251001') return 'codex-gpt-5.5';
+      return model;
+    });
+
+    const decision = {
+      implementerModel: 'claude-haiku-4-5',
+      reviewerModel: 'codex-gpt-5.5',
+      skipReview: false,
+      confidence: 'medium' as const,
+      rationale: 'Use cheap implementer and codex review.',
+      guardrailOverrides: [],
+      llmRawResponse: '',
+      signalsSent: {},
+      promptVersion: 'v1',
+      decisionModel: 'claude-sonnet-4-6[1m]',
+      costEstimateUsd: 0.001,
+      decidedAt: Date.now(),
+    };
+    const wf = mkWorkflow({ milestones_done: 1, milestones_total: 5 });
+
+    const result = applyGuardrails(decision, wf, mkMilestone());
+
+    expect(getAvailableModelMock).toHaveBeenCalledWith('claude-haiku-4-5-20251001');
+    expect(result.implementerModel).toBe('codex-gpt-5.5');
+    expect(result.guardrailOverrides.some((o) => o.includes('claude-haiku-4-5') && o.includes('claude-haiku-4-5-20251001'))).toBe(true);
   });
 
   it('accumulates multiple guardrail overrides', () => {

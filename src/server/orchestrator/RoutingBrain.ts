@@ -89,12 +89,17 @@ function parseDecisionResponse(raw: string): LlmDecisionFields {
 // ─── Guardrails ─────────────────────────────────────────────────────────────
 
 const CRITICAL_PATH_PATTERNS = [
-  /(^|\/)config\.yaml$/,
-  /(^|\/)package\.json$/,
-  /src\/server\/db\/migrations\//,
-  /schema\.ts$/,
-  /schema\.sql$/,
+  /(^|\/)config\.yaml$/i,
+  /(^|\/)package\.json$/i,
+  /src\/server\/db\/migrations\//i,
+  /(^|\/)schema\.ts$/i,
+  /(^|\/)schema\.sql$/i,
 ];
+
+// Map friendly/prompt-menu model aliases to their canonical dispatchable forms
+const MODEL_ALIAS_TO_CANONICAL: Record<string, string> = {
+  'claude-haiku-4-5': 'claude-haiku-4-5-20251001',
+};
 
 const ROUTING_BRAIN_MODEL_IDS = new Set<string>([
   ...KNOWN_MODELS,
@@ -106,13 +111,45 @@ function isFinalMilestone(workflow: Workflow): boolean {
   return workflow.milestones_done >= workflow.milestones_total - 1;
 }
 
+/**
+ * Canonicalize a model ID from the LLM response to a dispatchable form.
+ * Maps aliases like 'claude-haiku-4-5' to their canonical IDs.
+ */
+function canonicalizeModelId(model: string): string {
+  return MODEL_ALIAS_TO_CANONICAL[model] ?? model;
+}
+
+function normalizePathToken(token: string): string {
+  return token
+    .trim()
+    .replace(/^[`"'([{<]+/, '')
+    .replace(/[`"'\])}>.,:;]+$/, '');
+}
+
+function tokenizeMilestoneText(milestone: MilestoneContext): string[] {
+  const sources = [
+    milestone.raw,
+    ...milestone.bodyBullets,
+    ...milestone.mentionedPaths,
+  ];
+  const tokens = new Set<string>();
+  for (const source of sources) {
+    for (const token of source.split(/\s+/)) {
+      const normalized = normalizePathToken(token);
+      if (normalized) tokens.add(normalized);
+    }
+  }
+  return [...tokens];
+}
+
+/**
+ * Check if a milestone mentions any critical files.
+ * Matches both backtick-quoted paths and embedded text mentions.
+ */
 function milestoneMatchesCriticalPath(milestone: MilestoneContext): boolean {
-  const paths = [...milestone.mentionedPaths, ...milestone.bodyBullets];
-  const rawText = milestone.raw;
-  const allText = [...paths, rawText];
-  for (const text of allText) {
+  for (const token of tokenizeMilestoneText(milestone)) {
     for (const pattern of CRITICAL_PATH_PATTERNS) {
-      if (pattern.test(text)) return true;
+      if (pattern.test(token)) return true;
     }
   }
   return false;
@@ -147,21 +184,26 @@ export function applyGuardrails(
     reviewerModel = null;
   }
 
-  // 4. Swap unknown or rate-limited implementer model
+  // 4. Canonicalize and check implementer model
+  const canonicalImpl = canonicalizeModelId(implementerModel);
   if (!isKnownModel(implementerModel)) {
     const fallback = getAvailableModel(workflow.implementer_model) ?? workflow.implementer_model;
     overrides.push(`implementerModel swapped: unknown model "${implementerModel}" -> ${fallback}`);
     implementerModel = fallback;
   } else {
-    const available = getAvailableModel(implementerModel);
-    if (available !== implementerModel) {
+    // Check availability using canonical form
+    const available = getAvailableModel(canonicalImpl);
+    if (available !== canonicalImpl) {
       const resolved = available ?? workflow.implementer_model;
-      overrides.push(`implementerModel swapped: rate-limited "${implementerModel}" -> ${resolved}`);
+      overrides.push(`implementerModel swapped: rate-limited "${implementerModel}" (canonical: ${canonicalImpl}) -> ${resolved}`);
       implementerModel = resolved;
+    } else {
+      // Canonical form is available; use it in the returned decision
+      implementerModel = canonicalImpl;
     }
   }
 
-  // 5. Swap unknown or rate-limited reviewer model (when not skipping)
+  // 5. Canonicalize and check reviewer model (when not skipping)
   if (!skipReview) {
     if (reviewerModel === null || reviewerModel === undefined) {
       const fallback = getAvailableModel(workflow.reviewer_model) ?? workflow.reviewer_model;
@@ -172,11 +214,16 @@ export function applyGuardrails(
       overrides.push(`reviewerModel swapped: unknown model "${reviewerModel}" -> ${fallback}`);
       reviewerModel = fallback;
     } else {
-      const available = getAvailableModel(reviewerModel);
-      if (available !== reviewerModel) {
+      // Check availability using canonical form
+      const canonicalReviewer = canonicalizeModelId(reviewerModel);
+      const available = getAvailableModel(canonicalReviewer);
+      if (available !== canonicalReviewer) {
         const resolved = available ?? workflow.reviewer_model;
-        overrides.push(`reviewerModel swapped: rate-limited "${reviewerModel}" -> ${resolved}`);
+        overrides.push(`reviewerModel swapped: rate-limited "${reviewerModel}" (canonical: ${canonicalReviewer}) -> ${resolved}`);
         reviewerModel = resolved;
+      } else {
+        // Canonical form is available; use it in the returned decision
+        reviewerModel = canonicalReviewer;
       }
     }
   }
