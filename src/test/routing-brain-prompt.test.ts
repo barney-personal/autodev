@@ -9,6 +9,7 @@ import {
 } from '../server/orchestrator/RoutingBrainPrompt.js';
 import type { Workflow } from '../shared/types.js';
 import * as queries from '../server/db/queries.js';
+import * as agentQueries from '../server/db/agentQueries.js';
 
 const classifierState = vi.hoisted(() => {
   const rateLimitedModels = new Set<string>();
@@ -418,12 +419,14 @@ describe('collectCrossWorkflowPriors: repo filtering', () => {
   });
 
   it('should include same-repo workflows', () => {
+    const now = Date.now();
     const currentWorkflow: Workflow = {
       ...mockWorkflow,
       id: 'workflow-1',
       work_dir: '/app/autodev',
       worktree_path: '/app/.orchestrator-worktrees/autodev/wf-1',
-      created_at: Date.now(),
+      project_id: 'project-1',
+      created_at: now,
     };
 
     const sameRepoWorkflow: Workflow = {
@@ -431,27 +434,45 @@ describe('collectCrossWorkflowPriors: repo filtering', () => {
       id: 'workflow-2',
       work_dir: '/app/autodev',
       worktree_path: '/app/.orchestrator-worktrees/autodev/wf-2',
-      created_at: Date.now() - 1000 * 60 * 10, // 10 mins ago
+      project_id: 'project-1',
+      created_at: now - 1000 * 60 * 10,
     };
 
     vi.spyOn(queries, 'getNote').mockReturnValue({ key: '', value: '', updated_at: 0 });
-    vi.spyOn(queries, 'getJobsForWorkflow').mockReturnValue([]);
+    vi.spyOn(queries, 'getJobsForWorkflow').mockReturnValue([{
+      id: 'same-repo-implement-job',
+      workflow_id: sameRepoWorkflow.id,
+      workflow_cycle: 2,
+      workflow_phase: 'implement',
+      title: 'Implement peer milestone [M]',
+      status: 'done',
+      model: 'claude-sonnet-4-6',
+      max_turns: 30,
+    } as any]);
+    vi.spyOn(agentQueries, 'getAgentsForJobIds').mockReturnValue([{
+      job_id: 'same-repo-implement-job',
+      duration_ms: 42000,
+      num_turns: 12,
+      diff: 'diff --git a/src/foo.ts b/src/foo.ts',
+    } as any]);
     vi.spyOn(queries, 'listWorkflows').mockReturnValue([currentWorkflow, sameRepoWorkflow]);
 
     const context = buildRoutingBrainContext(currentWorkflow, 'implement', 1);
 
-    // Same-repo workflow should be considered for priors
-    // (we can't directly test priors inclusion without job data, but listWorkflows is called with proper filtering)
     expect(context.crossWorkflowPriors.repoName).toBe('autodev');
+    expect(context.crossWorkflowPriors.sampleSize).toBe(1);
+    expect(context.crossWorkflowPriors.meanImplementWallClockMsByComplexity).toEqual({ M: 42000 });
   });
 
-  it('should exclude different-repo workflows from priors', () => {
+  it('should ignore same-project workflows from different repos', () => {
+    const now = Date.now();
     const currentWorkflow: Workflow = {
       ...mockWorkflow,
       id: 'workflow-1',
       work_dir: '/app/autodev',
       worktree_path: '/app/.orchestrator-worktrees/autodev/wf-1',
-      created_at: Date.now(),
+      project_id: 'shared-project',
+      created_at: now,
     };
 
     const differentRepoWorkflow: Workflow = {
@@ -459,21 +480,36 @@ describe('collectCrossWorkflowPriors: repo filtering', () => {
       id: 'workflow-2',
       work_dir: '/app/other-project',
       worktree_path: '/app/.orchestrator-worktrees/other-project/wf-2',
-      created_at: Date.now() - 1000 * 60 * 10,
+      project_id: 'shared-project',
+      created_at: now - 1000 * 60 * 10,
     };
 
     vi.spyOn(queries, 'getNote').mockReturnValue({ key: '', value: '', updated_at: 0 });
-    vi.spyOn(queries, 'getJobsForWorkflow').mockReturnValue([]);
-    // Return both workflows from listWorkflows, but the filter should exclude the different-repo one
+    const getJobsSpy = vi.spyOn(queries, 'getJobsForWorkflow').mockReturnValue([{
+      id: 'wrong-repo-implement-job',
+      workflow_id: differentRepoWorkflow.id,
+      workflow_cycle: 1,
+      workflow_phase: 'implement',
+      title: 'Implement unrelated repo milestone [S]',
+      status: 'done',
+      model: 'claude-haiku-4-5',
+      max_turns: 10,
+    } as any]);
+    vi.spyOn(agentQueries, 'getAgentsForJobIds').mockReturnValue([{
+      job_id: 'wrong-repo-implement-job',
+      duration_ms: 1000,
+      num_turns: 1,
+      diff: 'diff --git a/unrelated.ts b/unrelated.ts',
+    } as any]);
     vi.spyOn(queries, 'listWorkflows').mockReturnValue([currentWorkflow, differentRepoWorkflow]);
 
     const context = buildRoutingBrainContext(currentWorkflow, 'implement', 1);
 
-    // Different-repo workflow should not be queried for jobs, so sampleSize should be 0
     expect(context.crossWorkflowPriors.sampleSize).toBe(0);
+    expect(getJobsSpy).not.toHaveBeenCalledWith(differentRepoWorkflow.id);
   });
 
-  it('should degrade gracefully when repo identity is missing', () => {
+  it('should ignore peer workflows with missing repo identity', () => {
     const currentWorkflow: Workflow = {
       ...mockWorkflow,
       id: 'workflow-1',
@@ -500,6 +536,53 @@ describe('collectCrossWorkflowPriors: repo filtering', () => {
     expect(context.crossWorkflowPriors.sampleSize).toBe(0);
     expect(context.crossWorkflowPriors.reviewerNoOpRate).toBe(0);
     expect(Object.keys(context.crossWorkflowPriors.meanImplementWallClockMsByComplexity).length).toBe(0);
+  });
+
+  it('should degrade to empty priors when current workflow repo identity is missing', () => {
+    const now = Date.now();
+    const currentWorkflow: Workflow = {
+      ...mockWorkflow,
+      id: 'workflow-1',
+      work_dir: null,
+      worktree_path: null,
+      project_id: 'project-1',
+      created_at: now,
+    };
+
+    const sameProjectPeer: Workflow = {
+      ...mockWorkflow,
+      id: 'workflow-2',
+      work_dir: '/app/autodev',
+      worktree_path: '/app/.orchestrator-worktrees/autodev/wf-2',
+      project_id: 'project-1',
+      created_at: now - 1000 * 60 * 10,
+    };
+
+    vi.spyOn(queries, 'getNote').mockReturnValue({ key: '', value: '', updated_at: 0 });
+    const getJobsSpy = vi.spyOn(queries, 'getJobsForWorkflow').mockReturnValue([{
+      id: 'same-project-implement-job',
+      workflow_id: sameProjectPeer.id,
+      workflow_cycle: 1,
+      workflow_phase: 'implement',
+      title: 'Implement milestone [M]',
+      status: 'done',
+      model: 'claude-sonnet-4-6',
+      max_turns: 30,
+    } as any]);
+    vi.spyOn(agentQueries, 'getAgentsForJobIds').mockReturnValue([{
+      job_id: 'same-project-implement-job',
+      duration_ms: 42000,
+      num_turns: 12,
+      diff: 'diff --git a/src/foo.ts b/src/foo.ts',
+    } as any]);
+    vi.spyOn(queries, 'listWorkflows').mockReturnValue([currentWorkflow, sameProjectPeer]);
+
+    const context = buildRoutingBrainContext(currentWorkflow, 'implement', 1);
+
+    expect(context.crossWorkflowPriors.sampleSize).toBe(0);
+    expect(context.crossWorkflowPriors.reviewerNoOpRate).toBe(0);
+    expect(context.crossWorkflowPriors.meanImplementWallClockMsByComplexity).toEqual({});
+    expect(getJobsSpy).not.toHaveBeenCalledWith(sameProjectPeer.id);
   });
 
   it('should handle listWorkflows query error gracefully', () => {
