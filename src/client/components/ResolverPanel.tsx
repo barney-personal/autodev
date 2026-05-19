@@ -54,13 +54,17 @@ function relTime(ts: number, now: number): string {
 export function ResolverPanel({ workflow }: Props) {
   const runs = useAppStore(s => s.resolverRunsByWorkflow[workflow.id]) as ResolverRun[] | undefined;
   const setRuns = useAppStore(s => s.setResolverRuns);
-  const [actionsByRun, setActionsByRun] = useState<Record<string, ResolverAction[]>>({});
+  // Actions arrive live via the resolver:action:new socket event; hydrate the
+  // initial set per run on first expand.
+  const actionsByRun = useAppStore(s => s.resolverActionsByRun) as Record<string, ResolverAction[]>;
+  const setStoreActions = useAppStore(s => s.setResolverActions);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
   const fetched = useRef<string | null>(null);
+  const hydratedActionsForRun = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 5_000);
@@ -83,12 +87,13 @@ export function ResolverPanel({ workflow }: Props) {
   const expand = async (runId: string) => {
     if (expanded === runId) { setExpanded(null); return; }
     setExpanded(runId);
-    if (actionsByRun[runId]) return;
+    if (hydratedActionsForRun.current.has(runId)) return;
+    hydratedActionsForRun.current.add(runId);
     try {
       const res = await fetch(`/api/resolver/runs/${runId}/actions`);
       if (res.ok) {
         const actions: ResolverAction[] = await res.json();
-        setActionsByRun(prev => ({ ...prev, [runId]: actions }));
+        setStoreActions(runId, actions);
       }
     } catch { /* swallow */ }
   };

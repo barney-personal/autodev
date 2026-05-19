@@ -45,8 +45,14 @@ const TEXT_CAP_LONG = 16_000;            // file edit contents
 const FILE_TAIL_BYTES = 32 * 1024;
 const LOG_TAIL_BYTES = 64 * 1024;
 
+// Intentionally narrow. `work_dir` is NOT in this set even though the watchdog
+// touches it — there's no safe "stays under the original" constraint we can
+// apply (the legitimate auto-fix case is precisely when the current value is
+// null), and a Resolver that points work_dir at an arbitrary host directory
+// would spawn the next phase's agents into that directory. The watchdog's
+// inferWorkspaceRepoFromTitle path already handles null work_dir recovery;
+// any other case should escalate with the inferred path as a suggestion.
 const ALLOWED_WORKFLOW_FIELDS = new Set([
-  'work_dir',
   'implementer_model',
   'reviewer_model',
   'blocked_reason',
@@ -289,9 +295,9 @@ export function execReadAgentLog(run: ResolverRun, input: ReadAgentLogInput): Re
 
 export function execReadNote(run: ResolverRun, input: ReadNoteInput): ResolverToolResult {
   const key = resolveNoteKey(run.workflow_id, input.key);
-  if (!key) return failAction(run, 'read_workflow_notes', input, `unrecognized note key '${input.key}'`);
+  if (!key) return failAction(run, 'read_workflow_note', input, `unrecognized note key '${input.key}'`);
   const note = queries.getNote(key);
-  recordAction(run, 'read_workflow_notes', { key }, 'applied', null);
+  recordAction(run, 'read_workflow_note', { key }, 'applied', null);
   return note
     ? { ok: true, message: note.value }
     : { ok: false, message: `note '${key}' not found` };
@@ -392,17 +398,11 @@ export function execUpdateWorkflowField(run: ResolverRun, input: UpdateWorkflowF
   if (!ALLOWED_WORKFLOW_FIELDS.has(input.field)) {
     return failAction(run, 'update_workflow_field', input, `field '${input.field}' not allowed`);
   }
+  if (typeof input.value !== 'string') {
+    return failAction(run, 'update_workflow_field', input, 'value must be a string');
+  }
   const wf = queries.getWorkflowById(run.workflow_id);
   if (!wf) return failAction(run, 'update_workflow_field', input, 'workflow not found');
-
-  if (input.field === 'work_dir') {
-    if (typeof input.value !== 'string' || !input.value.startsWith('/')) {
-      return failAction(run, 'update_workflow_field', input, 'work_dir must be an absolute path');
-    }
-    if (!fs.existsSync(input.value)) {
-      return failAction(run, 'update_workflow_field', input, `path does not exist: ${input.value}`);
-    }
-  }
 
   const action = recordAction(run, 'update_workflow_field', {
     field: input.field,
@@ -457,7 +457,7 @@ export function execWriteNote(run: ResolverRun, input: WriteNoteInput): Resolver
 
 export function execSetClassification(run: ResolverRun, input: SetClassificationInput): ResolverToolResult {
   const classification = sanitizeClassification(input.classification);
-  if (!classification) return failAction(run, 'read_workflow_notes', input, `invalid classification '${input.classification}'`);
+  if (!classification) return failAction(run, 'set_classification', input, `invalid classification '${input.classification}'`);
   const diagnosis = capUntrustedText(input.diagnosis, TEXT_CAP_MEDIUM);
   queries.updateResolverRun(run.id, { classification, diagnosis });
   const fresh = queries.getResolverRunById(run.id);

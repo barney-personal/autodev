@@ -193,6 +193,40 @@ describe('ResolverTools — text sanitization', () => {
   });
 });
 
+describe('ResolverTools — update_workflow_field allowlist', () => {
+  beforeEach(() => setupTestDb());
+  afterEach(() => cleanupTestDb());
+
+  it('rejects work_dir updates (removed from allowlist)', async () => {
+    const wf = await insertTestWorkflow({ work_dir: '/tmp/wf-test' });
+    const run = queries.insertResolverRun({
+      id: 'wf-field-1', workflow_id: wf.id, trigger_reason: 'test', reason_fingerprint: 'fp',
+      attempt: 1, model: 'claude-opus-4-7',
+    });
+    const result = dispatchResolverTool(run, {
+      type: 'tool_use', id: 'u1', name: 'update_workflow_field',
+      input: { field: 'work_dir', value: '/etc', reason: 'should be blocked' },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.message).toMatch(/not allowed/);
+  });
+
+  it('accepts implementer_model updates', async () => {
+    const wf = await insertTestWorkflow();
+    const run = queries.insertResolverRun({
+      id: 'wf-field-2', workflow_id: wf.id, trigger_reason: 'test', reason_fingerprint: 'fp',
+      attempt: 1, model: 'claude-opus-4-7',
+    });
+    const result = dispatchResolverTool(run, {
+      type: 'tool_use', id: 'u1', name: 'update_workflow_field',
+      input: { field: 'implementer_model', value: 'claude-sonnet-4-6', reason: 'fall back from rate-limited model' },
+    });
+    expect(result.ok).toBe(true);
+    const refreshed = queries.getWorkflowById(wf.id);
+    expect(refreshed?.implementer_model).toBe('claude-sonnet-4-6');
+  });
+});
+
 describe('ResolverTools — git verb allowlist', () => {
   it('allows safe verbs', () => {
     for (const v of ['add', 'commit', 'restore', 'stash', 'status', 'diff', 'log']) {

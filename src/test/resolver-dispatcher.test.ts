@@ -103,6 +103,36 @@ describe('decideDispatch', () => {
   });
 });
 
+describe('abortStaleRunningResolverRuns', () => {
+  it('marks rows with status=running and old started_at as aborted', async () => {
+    const wf = await insertTestWorkflow({ status: 'blocked' });
+    const fresh = queries.getWorkflowById(wf.id)!;
+    const stale = queries.insertResolverRun({
+      id: 'stale-1', workflow_id: fresh.id, trigger_reason: 'old', reason_fingerprint: 'old',
+      attempt: 1, model: 'claude-opus-4-7',
+    });
+    // Backdate the started_at to simulate a crashed run.
+    const db = (await import('../server/db/database.js')).getDb();
+    db.prepare('UPDATE resolver_runs SET started_at = ? WHERE id = ?').run(Date.now() - 60 * 60 * 1000, stale.id);
+
+    const recent = queries.insertResolverRun({
+      id: 'recent-1', workflow_id: fresh.id, trigger_reason: 'new', reason_fingerprint: 'new',
+      attempt: 2, model: 'claude-opus-4-7',
+    });
+
+    const aborted = queries.abortStaleRunningResolverRuns(30 * 60 * 1000);
+    expect(aborted).toBe(1);
+
+    const reloadedStale = queries.getResolverRunById(stale.id)!;
+    expect(reloadedStale.status).toBe('aborted');
+    expect(reloadedStale.finished_at).not.toBeNull();
+    expect(reloadedStale.error_message).toMatch(/startup reconcile/);
+
+    const reloadedRecent = queries.getResolverRunById(recent.id)!;
+    expect(reloadedRecent.status).toBe('running');
+  });
+});
+
 describe('ResumeOrchestrator — circuit breaker', () => {
   it('resetResolverCircuit clears state and attempt count', async () => {
     const wf = await insertTestWorkflow({ status: 'blocked' });

@@ -170,6 +170,7 @@ export default function App() {
     onWatcherActionNew: (action) => store.getState().appendWatcherAction(action),
     onResolverRunNew: (run) => store.getState().upsertResolverRun(run),
     onResolverRunUpdate: (run) => store.getState().upsertResolverRun(run),
+    onResolverActionNew: (action) => store.getState().appendResolverAction(action),
   });
 
   // Fetch eyeEnabled from settings on mount

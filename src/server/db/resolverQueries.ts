@@ -160,6 +160,26 @@ export function countActiveResolverRuns(): number {
   return row?.c ?? 0;
 }
 
+/**
+ * Mark resolver_runs that have been stuck in 'running' for longer than
+ * `maxAgeMs` as 'aborted'. Called at startup so a crash mid-session doesn't
+ * leak rows that eat concurrency slots forever. Returns the number of rows
+ * updated.
+ */
+export function abortStaleRunningResolverRuns(maxAgeMs: number): number {
+  const db = getDb();
+  const now = Date.now();
+  const cutoff = now - maxAgeMs;
+  const info = db.prepare(`
+    UPDATE resolver_runs
+       SET status = 'aborted',
+           finished_at = ?,
+           error_message = COALESCE(error_message, 'startup reconcile: stale running row')
+     WHERE status = 'running' AND started_at < ?
+  `).run(now, cutoff);
+  return (info.changes ?? 0) as number;
+}
+
 // ─── resolver_actions ────────────────────────────────────────────────────────
 
 export interface InsertResolverActionInput {

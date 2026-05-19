@@ -168,7 +168,7 @@ export type ResolverResumeOutcome =
 export type ResolverActionType =
   | 'read_blocked_diagnostic'
   | 'read_agent_log'
-  | 'read_workflow_notes'
+  | 'read_workflow_note'
   | 'read_resilience_events'
   | 'read_watcher_commentary'
   | 'read_worktree_file'
