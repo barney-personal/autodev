@@ -156,6 +156,39 @@ describe('runResolverSession', () => {
     expect(persisted.error_message).toMatch(/429/);
   });
 
+  it('aborts when per-run cost cap is exceeded', async () => {
+    process.env.RESOLVER_MAX_COST_USD = '0.0001';   // tiny cap; the first turn will blow past it
+    process.env.RESOLVER_MAX_TURNS = '10';
+    const wf = await insertTestWorkflow({ status: 'blocked' });
+    queries.updateWorkflow(wf.id, { blocked_reason: 'expensive turn' });
+
+    const expensiveTurn: ScriptedResponse = {
+      stop_reason: 'tool_use',
+      content: [
+        { type: 'tool_use', id: 'u1', name: 'read_blocked_diagnostic', input: {} } as never,
+      ],
+      // Big enough usage to drive cost over 0.0001 USD on the first turn.
+      usage: { input_tokens: 100_000, output_tokens: 50_000 } as Partial<Anthropic.Messages.Usage>,
+    };
+    const stub = new StubAnthropic([expensiveTurn, expensiveTurn]);
+    _setResolverAnthropicClient(stub as unknown as Anthropic);
+
+    const fresh = queries.getWorkflowById(wf.id)!;
+    const bundle = buildResolverContext({ workflow: fresh, attemptNumber: 1 });
+    const run = queries.insertResolverRun({
+      id: 'cost-cap-1', workflow_id: wf.id, trigger_reason: 'expensive turn',
+      reason_fingerprint: 'fp-cost', attempt: 1, model: 'claude-opus-4-7',
+    });
+
+    const outcome = await runResolverSession({ run, bundle });
+    expect(outcome.status).toBe('aborted');
+    expect(outcome.error).toMatch(/cost cap/);
+    const persisted = queries.getResolverRunById(run.id)!;
+    expect(persisted.status).toBe('aborted');
+    expect(persisted.finished_at).not.toBeNull();
+    expect(persisted.cost_usd).toBeGreaterThan(0);
+  });
+
   it('aborts when turn cap is exhausted with no terminal call', async () => {
     process.env.RESOLVER_MAX_TURNS = '2';
     const wf = await insertTestWorkflow({ status: 'blocked' });

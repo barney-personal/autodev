@@ -11,7 +11,7 @@
 import { Router } from 'express';
 import * as queries from '../db/queries.js';
 import { resetResolverCircuit } from '../orchestrator/ResumeOrchestrator.js';
-import { dispatchResolverForWorkflowAsync } from '../orchestrator/ResolverDispatcher.js';
+import { dispatchResolverForWorkflowAsync, decideDispatch } from '../orchestrator/ResolverDispatcher.js';
 
 const router = Router();
 
@@ -62,6 +62,20 @@ workflowResolverRouter.post('/dispatch', (req, res) => {
   if (!wf) { res.status(404).json({ error: 'workflow not found' }); return; }
   if (wf.status !== 'blocked') {
     res.status(400).json({ error: `workflow status is '${wf.status}', not 'blocked'` });
+    return;
+  }
+  // Pre-flight: surface dispatcher-side skip reasons (circuit tripped,
+  // lifetime attempts exhausted, mode=off, no blocked_reason) as 409 so the
+  // operator sees the cause rather than getting a misleading 202 followed
+  // by a silent no-op.
+  const decision = decideDispatch(wf);
+  if (!decision.shouldRun) {
+    res.status(409).json({
+      error: `Resolver will not run: ${decision.reason}`,
+      reason: decision.reason,
+      circuit_state: wf.resolver_circuit_state,
+      attempts: wf.resolver_attempt_count,
+    });
     return;
   }
   dispatchResolverForWorkflowAsync(workflowId);

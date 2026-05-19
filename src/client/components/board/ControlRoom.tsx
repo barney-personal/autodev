@@ -606,8 +606,12 @@ export function ControlRoom({ workflow, agents, onBack, onWorkflowUpdate }: Cont
         {tab === 'milestones' && <MilestonesTab workflow={workflow} milestones={milestones} worklogs={worklogs} />}
         {tab === 'activity'   && <ActivityTab   jobs={jobs} agents={agents} worklogs={worklogs} />}
         {tab === 'diff'       && <DiffTab       workflow={workflow} />}
-        <ResolverPanel workflow={workflow} />
       </div>
+
+      {/* Resolver panel sits outside cr-main so it's not visually nested inside
+          any one tab's content. It's intentionally always-visible while the
+          workflow has Resolver state — it's a supervisor surface, not a tab. */}
+      <ResolverPanel workflow={workflow} />
 
       <SidePanel
         workflow={workflow}

@@ -669,6 +669,17 @@ function sanitizeShort(s: string | undefined): string {
   return capUntrustedText(s ?? '', TEXT_CAP_SHORT);
 }
 
+/**
+ * Sanitize and cap a string of LLM- or agent-authored text.
+ *
+ * Two steps in one call:
+ *   1. stripControlChars — drop C0/C1 control bytes + bidi marks (matches the
+ *      Watcher's sanitization pipeline).
+ *   2. cap to `max` characters with an ellipsis suffix.
+ *
+ * Used for every persistence + tool-result path the LLM can touch, so the
+ * dashboard + downstream agent prompts never receive un-stripped bytes.
+ */
 export function capUntrustedText(s: string, max: number): string {
   const stripped = stripControlChars(String(s ?? ''));
   return stripped.length > max ? stripped.slice(0, max - 1) + '…' : stripped;

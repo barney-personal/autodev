@@ -200,7 +200,13 @@ export async function runResolverSession(input: RunResolverInput): Promise<RunRe
       } catch (err) {
         log.error({ err, turn }, 'API call failed');
         captureWithContext(err, { resolver_id: run.id, workflow_id: run.workflow_id, component: 'ResolverSession' });
-        return finalize('failed', `api error: ${(err as Error).message?.slice(0, 500) ?? 'unknown'}`);
+        // Sanitize the API error before persisting — error messages can
+        // contain ANSI escapes or non-printable bytes from the SDK's
+        // response body and we want the same control-char hygiene that
+        // every other Resolver-persisted field gets.
+        const rawMsg = (err as Error).message ?? 'unknown';
+        const cleaned = stripControlChars(rawMsg).slice(0, 500);
+        return finalize('failed', `api error: ${cleaned}`);
       }
 
       totalIn += resp.usage.input_tokens ?? 0;

@@ -25,6 +25,7 @@ import { buildResolverContext } from './ResolverContext.js';
 import { runResolverSession, defaultResolverModel } from './ResolverSession.js';
 import { logResilienceEvent } from './ResilienceLogger.js';
 import { handleResolverOutcome } from './ResumeOrchestrator.js';
+import { stripControlChars } from './watcherTools.js';
 import type {
   Workflow,
   ResolverRun,
@@ -194,6 +195,16 @@ export async function dispatchResolverForWorkflow(workflowId: string): Promise<D
       model: defaultResolverModel(),
     });
     socket.emitResolverRunNew(runRow);
+    // null → 'armed' bootstrap. The schema defaults resolver_circuit_state to
+    // NULL for never-dispatched workflows. The first dispatch transitions it
+    // to 'armed' so subsequent re-block events can flip it to 'tripped'.
+    // Existing 'armed' or 'tripped' values are preserved untouched.
+    //
+    // The attempt count is incremented up front so concurrent different-
+    // fingerprint dispatches can't both observe the same pre-increment count
+    // and collectively exceed the lifetime cap. The catch block below
+    // rolls this back if the session never produced cost or turns (i.e.
+    // crashed synchronously before any LLM work happened).
     queries.updateWorkflow(workflowId, {
       resolver_attempt_count: decision.attempt,
       resolver_circuit_state: wf.resolver_circuit_state ?? 'armed',
@@ -232,18 +243,33 @@ export async function dispatchResolverForWorkflow(workflowId: string): Promise<D
   } catch (err) {
     log.error({ err, workflow_id: workflowId, resolver_id: runRow?.id }, 'resolver dispatch crashed');
     captureWithContext(err, { workflow_id: workflowId, resolver_id: runRow?.id, component: 'ResolverDispatcher' });
+    const msg = stripControlChars((err as Error).message ?? String(err)).slice(0, 500);
     if (runRow) {
       try {
         queries.updateResolverRun(runRow.id, {
           status: 'failed',
           finished_at: Date.now(),
-          error_message: ((err as Error).message ?? String(err)).slice(0, 500),
+          error_message: msg,
         });
         const fresh = queries.getResolverRunById(runRow.id);
         if (fresh) socket.emitResolverRunUpdate(fresh);
+
+        // Roll back the attempt count if the session never produced cost
+        // or turns — i.e. crashed in context assembly or before the first
+        // API call. The lifetime cap shouldn't burn an attempt the operator
+        // can't see any output from.
+        if (fresh && (fresh.cost_usd ?? 0) === 0 && (fresh.turn_count ?? 0) === 0) {
+          const rolledBack = Math.max(0, decision.attempt - 1);
+          queries.updateWorkflow(workflowId, { resolver_attempt_count: rolledBack });
+          const rb = queries.getWorkflowById(workflowId);
+          if (rb) socket.emitWorkflowUpdate(rb);
+          logResilienceEvent('resolver_attempt_rolled_back', 'workflow', workflowId, {
+            resolver_id: runRow.id, reason: 'no cost or turns', new_count: rolledBack,
+          });
+        }
       } catch { /* swallow */ }
     }
-    return { dispatched: false, skip_reason: undefined, error: (err as Error).message };
+    return { dispatched: false, skip_reason: undefined, error: msg };
   } finally {
     _inFlight.delete(key);
   }

@@ -6,6 +6,7 @@ vi.mock('../server/socket/SocketManager.js', () => createSocketMock());
 import * as queries from '../server/db/queries.js';
 import {
   decideDispatch,
+  dispatchResolverForWorkflow,
   _resetInFlightForTest,
 } from '../server/orchestrator/ResolverDispatcher.js';
 import {
@@ -100,6 +101,46 @@ describe('decideDispatch', () => {
     });
     const stored = queries.getWorkflowById(wf.id)!;
     expect(decideDispatch(stored).attempt).toBe(3);
+  });
+});
+
+describe('dispatchResolverForWorkflow — daily cost cap', () => {
+  it('skips dispatch when 24h spend ≥ RESOLVER_DAILY_COST_CAP_USD', async () => {
+    process.env.RESOLVER_DAILY_COST_CAP_USD = '5';
+    const wf = await insertTestWorkflow({ status: 'blocked' });
+    queries.updateWorkflow(wf.id, { blocked_reason: 'Phase failed (rate_limit)' });
+
+    // Seed an existing run that already burned more than the cap within
+    // the rolling 24h window.
+    const seeded = queries.insertResolverRun({
+      id: 'seed-cost', workflow_id: wf.id, trigger_reason: 'old', reason_fingerprint: 'oldfp',
+      attempt: 1, model: 'claude-opus-4-7',
+    });
+    // Bump cost manually since insertResolverRun doesn't accept cost_usd.
+    const db = (await import('../server/db/database.js')).getDb();
+    db.prepare('UPDATE resolver_runs SET cost_usd = 10 WHERE id = ?').run(seeded.id);
+
+    const result = await dispatchResolverForWorkflow(wf.id);
+    expect(result.dispatched).toBe(false);
+    expect(result.skip_reason).toBe('daily_cost_cap');
+  });
+
+  it('allows dispatch when 24h spend is below the cap', async () => {
+    process.env.RESOLVER_DAILY_COST_CAP_USD = '100';
+    const wf = await insertTestWorkflow({ status: 'blocked' });
+    queries.updateWorkflow(wf.id, { blocked_reason: 'Phase failed (rate_limit)' });
+
+    const seeded = queries.insertResolverRun({
+      id: 'seed-cheap', workflow_id: wf.id, trigger_reason: 'old', reason_fingerprint: 'oldfp2',
+      attempt: 1, model: 'claude-opus-4-7',
+    });
+    const db = (await import('../server/db/database.js')).getDb();
+    db.prepare('UPDATE resolver_runs SET cost_usd = 1, status = ? WHERE id = ?').run('escalated', seeded.id);
+
+    // The session will fail with no Anthropic client wired in, but that's
+    // after the dispatch fired — which is exactly what we want to check.
+    const result = await dispatchResolverForWorkflow(wf.id);
+    expect(result.skip_reason).not.toBe('daily_cost_cap');
   });
 });
 
