@@ -36,8 +36,9 @@ import { claimRecovery } from './RecoveryLedger.js';
 import { classifyFailureTextQuietly, isFallbackEligibleFailure, shouldMarkProviderUnavailable, type FailureKind } from './FailureClassifier.js';
 import { nudgeQueue } from './WorkQueueManager.js';
 import { getJobIfStatus } from './JobLifecycle.js';
-import { parseMilestones, writeBlockedDiagnostic } from './WorkflowManager.js';
+import { parseMilestones, writeBlockedDiagnostic, resumeWorkflow } from './WorkflowManager.js';
 import { logResilienceEvent } from './ResilienceLogger.js';
+import { inferWorkspaceRepoFromTitle } from './WorkspaceRepoInference.js';
 
 const WATCHDOG_INTERVAL_MS = 30_000;
 const SLOW_PROGRESS_WARN_MS = 15 * 60 * 1000;  // 15 minutes
@@ -46,6 +47,12 @@ const SLOW_PROGRESS_ACTIVE_MS = 5 * 60 * 1000;  // agent must be active within 5
 
 /** Tracks milestone progress snapshots per workflow_id for slow-progress detection. */
 const _milestoneSnapshots = new Map<string, { milestonesDone: number; checkedAt: number }>();
+
+/** Workflows for which a null-work_dir watchdog recovery is in-flight or already succeeded. */
+const _workflowNullWorkDirRestoreInFlight = new Set<string>();
+
+/** Workflows for which a no-match diagnostic has already been appended to blocked_reason. */
+const _workflowNullWorkDirDiagnosedSet = new Set<string>();
 
 export function _seedMilestoneSnapshot(workflowId: string, milestonesDone: number, checkedAt: number): void {
   _milestoneSnapshots.set(workflowId, { milestonesDone, checkedAt });
@@ -831,6 +838,95 @@ function check(): void {
   // This catches leaked child processes that survived agent teardown (e.g. detached
   // subprocesses, orphaned tmux sessions from crashed agents).
   cleanupZombieProcesses();
+
+  // ── Check 9: Null work_dir recovery for blocked worktree workflows ─────────
+  // Attempt to infer the repo from the workflow title and resume blocked workflows
+  // whose work_dir is null (e.g. created before the M1 creation-time guard was added).
+  recoverNullWorkDirWorkflows();
+}
+
+/**
+ * Attempt to infer `work_dir` from the workflow title and resume blocked worktree
+ * workflows whose `work_dir` is null. Only fires when the blocked_reason matches the
+ * known null-work_dir sentinel. Idempotent: each workflow is attempted at most once.
+ */
+function recoverNullWorkDirWorkflows(): void {
+  const NULL_WORK_DIR_PATTERN = /work_dir is unavailable|missing worktree_path and worktree_branch/i;
+
+  let candidates: ReturnType<typeof queries.listWorkflows>;
+  try {
+    candidates = queries.listWorkflows().filter(wf =>
+      wf.status === 'blocked' &&
+      wf.use_worktree === 1 &&
+      wf.work_dir == null &&
+      wf.blocked_reason != null &&
+      NULL_WORK_DIR_PATTERN.test(wf.blocked_reason),
+    );
+  } catch (err) {
+    console.warn('[watchdog] null-work_dir recovery: DB query failed:', err);
+    return;
+  }
+
+  for (const wf of candidates) {
+    if (_workflowNullWorkDirRestoreInFlight.has(wf.id)) continue;
+
+    const inference = inferWorkspaceRepoFromTitle(wf.title);
+
+    if (inference.match) {
+      _workflowNullWorkDirRestoreInFlight.add(wf.id);
+      console.log(`[watchdog] null-work_dir recovery: inferred work_dir=${inference.match} for workflow ${wf.id.slice(0, 8)} ('${wf.title}')`);
+
+      try {
+        const updated = queries.updateWorkflow(wf.id, { work_dir: inference.match });
+        if (updated) socket.emitWorkflowUpdate(updated);
+
+        const fresh = queries.getWorkflowById(wf.id);
+        if (!fresh) {
+          console.warn(`[watchdog] null-work_dir recovery: workflow ${wf.id.slice(0, 8)} not found after update`);
+          continue;
+        }
+
+        const job = resumeWorkflow(fresh, { phase: 'implement', cycle: fresh.current_cycle });
+        socket.emitJobNew(job);
+        nudgeQueue();
+
+        logResilienceEvent('worktree_restore', 'workflow', wf.id, {
+          source: 'watchdog_null_workdir',
+          workflow_id: wf.id,
+          inferred_work_dir: inference.match,
+          phase: 'implement',
+          cycle: fresh.current_cycle,
+        });
+
+        console.log(`[watchdog] null-work_dir recovery: resumed workflow ${wf.id.slice(0, 8)} at implement/cycle ${fresh.current_cycle}`);
+      } catch (err: any) {
+        const errStr = err?.message ?? String(err);
+        const failReason = `Null work_dir watchdog recovery failed after inferring ${inference.match}: ${errStr}`;
+        console.error(`[watchdog] null-work_dir recovery failed for ${wf.id.slice(0, 8)}:`, errStr);
+        try {
+          const failUpdated = queries.updateWorkflow(wf.id, { blocked_reason: failReason });
+          if (failUpdated) socket.emitWorkflowUpdate(failUpdated);
+        } catch (updateErr) {
+          console.warn('[watchdog] could not rewrite blocked_reason after recovery failure:', updateErr);
+        }
+        // Do NOT remove from in-flight — prevents repeated retries on next tick
+      }
+    } else {
+      // No match or ambiguous — emit diagnostic at most once per workflow
+      if (_workflowNullWorkDirDiagnosedSet.has(wf.id)) continue;
+      _workflowNullWorkDirDiagnosedSet.add(wf.id);
+
+      const diagNote = ` [Inference attempted: ${inference.reason}${inference.candidates.length > 0 ? `. Candidates: ${inference.candidates.join(', ')}` : ''}]`;
+      const newReason = (wf.blocked_reason ?? '') + diagNote;
+      console.log(`[watchdog] null-work_dir recovery: no match for workflow ${wf.id.slice(0, 8)} ('${wf.title}'). ${inference.reason}`);
+      try {
+        const diagUpdated = queries.updateWorkflow(wf.id, { blocked_reason: newReason });
+        if (diagUpdated) socket.emitWorkflowUpdate(diagUpdated);
+      } catch (err) {
+        console.warn('[watchdog] could not append null-work_dir diagnostic:', err);
+      }
+    }
+  }
 }
 
 /**
@@ -949,6 +1045,8 @@ export function _invokeWatchdogCheckForTest(): void {
 export function _resetWatchdogStateForTest(): void {
   stopWatchdog();
   _milestoneSnapshots.clear();
+  _workflowNullWorkDirRestoreInFlight.clear();
+  _workflowNullWorkDirDiagnosedSet.clear();
   orphanedWaits.clear();
   disconnectedAgents.clear();
 }
