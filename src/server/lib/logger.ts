@@ -13,3 +13,5 @@ export function workflowLogger(workflowId: string, extra?: Record<string, unknow
 export function recoveryLogger(extra?: Record<string, unknown>) { return logger.child({ component: 'recovery', ...extra }); }
 export function socketLogger(extra?: Record<string, unknown>) { return logger.child({ component: 'socket', ...extra }); }
 export function maintenanceLogger(extra?: Record<string, unknown>) { return logger.child({ component: 'maintenance', ...extra }); }
+export function dispatcherLogger(extra?: Record<string, unknown>) { return logger.child({ component: 'resolver-dispatcher', ...extra }); }
+export function resolverLogger(extra?: Record<string, unknown>) { return logger.child({ component: 'resolver', ...extra }); }

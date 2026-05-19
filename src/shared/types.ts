@@ -134,8 +134,87 @@ export interface Workflow {
   completion_threshold: number;
   start_command: string | null;
   max_verify_retries: number;
+  resolver_circuit_state: ResolverCircuitState | null;
+  resolver_attempt_count: number;
   created_at: number;
   updated_at: number;
+}
+
+// ─── Auto Resolver ──────────────────────────────────────────────────────────
+
+export type ResolverCircuitState = 'armed' | 'tripped';
+
+export type ResolverStatus =
+  | 'running'
+  | 'resolved'
+  | 'escalated'
+  | 'failed'
+  | 'aborted'
+  | 'skipped';
+
+export type ResolverClassification =
+  | 'transient_infra'
+  | 'code_bug'
+  | 'config_drift'
+  | 'model_capability'
+  | 'external_service'
+  | 'unknown';
+
+export type ResolverResumeOutcome =
+  | 'resumed_running'
+  | 'resumed_re_blocked'
+  | 'not_resumed';
+
+export type ResolverActionType =
+  | 'read_blocked_diagnostic'
+  | 'read_agent_log'
+  | 'read_workflow_notes'
+  | 'read_resilience_events'
+  | 'read_watcher_commentary'
+  | 'read_worktree_file'
+  | 'git_command'
+  | 'edit_worktree_file'
+  | 'update_workflow_field'
+  | 'write_note'
+  | 'propose_resume'
+  | 'mark_resolved'
+  | 'escalate_to_user'
+  | 'mark_unresolvable';
+
+export type ResolverActionOutcome = 'pending' | 'applied' | 'rejected' | 'error';
+
+export interface ResolverRun {
+  id: string;
+  workflow_id: string;
+  trigger_reason: string;
+  reason_fingerprint: string;
+  classification: ResolverClassification | null;
+  status: ResolverStatus;
+  diagnosis: string | null;
+  recommended_action: string | null;
+  resume_outcome: ResolverResumeOutcome | null;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_create_tokens: number;
+  cost_usd: number;
+  turn_count: number;
+  attempt: number;
+  model: string;
+  error_message: string | null;
+  started_at: number;
+  finished_at: number | null;
+}
+
+export interface ResolverAction {
+  id: string;
+  resolver_id: string;
+  workflow_id: string;
+  type: ResolverActionType;
+  payload: string;
+  outcome: ResolverActionOutcome;
+  outcome_detail: string | null;
+  created_at: number;
 }
 
 export interface VerifyRun {
@@ -309,6 +388,9 @@ export interface ServerToClientEvents {
   'watcher:session:update': (payload: { watcher: JobWatcher }) => void;
   'watcher:commentary:new': (payload: { commentary: WatcherCommentary }) => void;
   'watcher:action:new': (payload: { action: WatcherAction }) => void;
+  'resolver:run:new': (payload: { run: ResolverRun }) => void;
+  'resolver:run:update': (payload: { run: ResolverRun }) => void;
+  'resolver:action:new': (payload: { action: ResolverAction }) => void;
 }
 
 export interface ClientToServerEvents {

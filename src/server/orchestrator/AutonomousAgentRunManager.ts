@@ -73,6 +73,8 @@ export function createAutonomousAgentRun(
     completion_threshold: Math.min(Math.max(body.completionThreshold ?? 1.0, 0.1), 1.0),
     start_command: body.startCommand?.trim() || null,
     max_verify_retries: Math.min(Math.max(body.maxVerifyRetries ?? 2, 0), 10),
+    resolver_circuit_state: null,
+    resolver_attempt_count: 0,
     created_at: now,
     updated_at: now,
   };

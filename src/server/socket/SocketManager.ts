@@ -1,6 +1,6 @@
 import { Server as HttpServer } from 'http';
 import { Server as SocketIoServer } from 'socket.io';
-import type { ServerToClientEvents, ClientToServerEvents, AgentWithJob, Job, Question, FileLock, AgentOutput, QueueSnapshot, Debate, AgentWarning, Discussion, DiscussionMessage, Proposal, ProposalMessage, Workflow, Pr, PrReview, PrReviewMessage, JobWatcher, WatcherCommentary, WatcherAction } from '../../shared/types.js';
+import type { ServerToClientEvents, ClientToServerEvents, AgentWithJob, Job, Question, FileLock, AgentOutput, QueueSnapshot, Debate, AgentWarning, Discussion, DiscussionMessage, Proposal, ProposalMessage, Workflow, Pr, PrReview, PrReviewMessage, JobWatcher, WatcherCommentary, WatcherAction, ResolverRun, ResolverAction } from '../../shared/types.js';
 import { pushEvent } from '../orchestrator/EventQueue.js';
 
 let _io: SocketIoServer<ClientToServerEvents, ServerToClientEvents> | null = null;
@@ -326,4 +326,34 @@ export function emitWatcherActionNew(action: WatcherAction): void {
     console.warn('[socket] emitWatcherActionNew error:', err);
   }
   pushEvent('watcher:action:new', payload);
+}
+
+export function emitResolverRunNew(run: ResolverRun): void {
+  const payload = { run };
+  try {
+    getIo().emit('resolver:run:new', payload);
+  } catch (err) {
+    console.warn('[socket] emitResolverRunNew error:', err);
+  }
+  pushEvent('resolver:run:new', payload);
+}
+
+export function emitResolverRunUpdate(run: ResolverRun): void {
+  const payload = { run };
+  try {
+    getIo().emit('resolver:run:update', payload);
+  } catch (err) {
+    console.warn('[socket] emitResolverRunUpdate error:', err);
+  }
+  pushEvent('resolver:run:update', payload);
+}
+
+export function emitResolverActionNew(action: ResolverAction): void {
+  const payload = { action };
+  try {
+    getIo().emit('resolver:action:new', payload);
+  } catch (err) {
+    console.warn('[socket] emitResolverActionNew error:', err);
+  }
+  pushEvent('resolver:action:new', payload);
 }

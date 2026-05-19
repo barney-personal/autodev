@@ -23,6 +23,7 @@ import eventsRouter from './events.js';
 import resilienceEventsRouter from './resilienceEvents.js';
 import tasksRouter from './tasks.js';
 import webhooksRouter from './webhooks.js';
+import resolverRouter, { workflowResolverRouter } from './resolver.js';
 
 const router = Router();
 
@@ -62,7 +63,9 @@ router.use('/batch-templates', batchTemplatesRouter);
 router.use('/settings', settingsRouter);
 router.use('/debates', debatesRouter);
 router.use('/workflows', workflowsRouter);
+router.use('/workflows/:id/resolver', workflowResolverRouter);
 router.use('/autonomous-agent-runs', workflowsRouter);
+router.use('/resolver', resolverRouter);
 router.use('/worktrees', worktreesRouter);
 router.use('/stats', statsRouter);
 router.use('/knowledge-base', knowledgeBaseRouter);

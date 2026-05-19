@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Workflow, Job, AgentWithJob, VerifyRun, WorkflowPhase, WorkflowStatus } from '@shared/types';
 import { PHASES, PHASE_SHORT, type LaneTone } from './lanes';
 import { fmtDur, fmtRel, fmtCost } from './format';
+import { ResolverPanel } from '../ResolverPanel';
 
 interface WorkflowDetail extends Workflow {
   plan: string | null;
@@ -605,6 +606,7 @@ export function ControlRoom({ workflow, agents, onBack, onWorkflowUpdate }: Cont
         {tab === 'milestones' && <MilestonesTab workflow={workflow} milestones={milestones} worklogs={worklogs} />}
         {tab === 'activity'   && <ActivityTab   jobs={jobs} agents={agents} worklogs={worklogs} />}
         {tab === 'diff'       && <DiffTab       workflow={workflow} />}
+        <ResolverPanel workflow={workflow} />
       </div>
 
       <SidePanel
