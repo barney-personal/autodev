@@ -100,7 +100,7 @@ export function getRouteDecisionsForWorkflow(workflowId: string): RouteDecisionR
     SELECT * FROM route_decisions
     WHERE workflow_id = ?
     ORDER BY cycle ASC, created_at ASC
-  `).all(workflowId) as RawRouteDecisionRow[];
+  `).all(workflowId) as unknown as RawRouteDecisionRow[];
   return rows.map(parseRow);
 }
 
@@ -123,7 +123,7 @@ export function getLatestRouteDecisionForCycle(
         ORDER BY created_at DESC
         LIMIT 1
       `).get(workflowId, cycle);
-  return row ? parseRow(row as RawRouteDecisionRow) : null;
+  return row ? parseRow(row as unknown as RawRouteDecisionRow) : null;
 }
 
 export function getRouteDecisionsSince(sinceMs: number): RouteDecisionRow[] {
@@ -132,6 +132,6 @@ export function getRouteDecisionsSince(sinceMs: number): RouteDecisionRow[] {
     SELECT * FROM route_decisions
     WHERE created_at >= ?
     ORDER BY created_at ASC
-  `).all(sinceMs) as RawRouteDecisionRow[];
+  `).all(sinceMs) as unknown as RawRouteDecisionRow[];
   return rows.map(parseRow);
 }
