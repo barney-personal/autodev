@@ -40,6 +40,7 @@ vi.mock('../server/orchestrator/ModelClassifier.js', () => ({
     'codex-gpt-5.5',
   ],
   isModelRateLimited: vi.fn(() => false),
+  getAvailableModel: vi.fn((model: string) => model),
 }));
 
 vi.mock('../server/orchestrator/CostEstimator.js', () => ({
@@ -349,7 +350,7 @@ describe('RoutingBrain.decideRouteForCycle', () => {
 
   it('respects low confidence without auto-degrading', async () => {
     const resp = JSON.stringify({
-      implementerModel: 'claude-haiku-4-5',
+      implementerModel: 'claude-haiku-4-5-20251001',
       reviewerModel: 'claude-sonnet-4-6',
       skipReview: false,
       confidence: 'low',
@@ -358,7 +359,7 @@ describe('RoutingBrain.decideRouteForCycle', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeFetchResponse(resp)));
 
     const d = await decideRouteForCycle(mkWorkflow(), 'implement', 2);
-    expect(d.implementerModel).toBe('claude-haiku-4-5');
+    expect(d.implementerModel).toBe('claude-haiku-4-5-20251001');
     expect(d.confidence).toBe('low');
     expect(mockState.insertedRows[0].mode).toBe('live');
   });
@@ -422,5 +423,392 @@ describe('RoutingBrain.decideRouteForCycle', () => {
 
     const callBody = JSON.parse(fetchMock.mock.calls[0][1].body);
     expect(callBody.model).toBe('claude-sonnet-4-6');
+  });
+});
+
+// ─── Guardrails tests ────────────────────────────────────────────────────────
+
+describe('RoutingBrain.applyGuardrails', () => {
+  let applyGuardrails: typeof import('../server/orchestrator/RoutingBrain.js').applyGuardrails;
+  let getAvailableModelMock: any;
+
+  beforeEach(async () => {
+    const mod = await import('../server/orchestrator/RoutingBrain.js');
+    applyGuardrails = mod.applyGuardrails;
+
+    // Get the mocked getAvailableModel from ModelClassifier
+    const { getAvailableModel: imported } = await import('../server/orchestrator/ModelClassifier.js');
+    getAvailableModelMock = vi.mocked(imported);
+    // Default: return the input unchanged (model is available)
+    getAvailableModelMock.mockImplementation((model: string) => model);
+  });
+
+  const mkMilestone = (overrides?: Partial<ReturnType<typeof buildMilestone>>): ReturnType<typeof buildMilestone> => {
+    return buildMilestone(overrides);
+  };
+
+  function buildMilestone(overrides?: Record<string, unknown>) {
+    return {
+      raw: '- [ ] **M5: Core brain** [L]\n  - Build the decision module',
+      title: 'M5: Core brain',
+      complexityTag: 'L',
+      bodyBullets: ['Build the decision module'],
+      mentionedPaths: [],
+      mentionedTestFiles: [],
+      ...overrides,
+    };
+  }
+
+  it('swaps unknown implementer model to workflow default', () => {
+    const decision = {
+      implementerModel: 'unknown-model',
+      reviewerModel: 'claude-sonnet-4-6',
+      skipReview: false,
+      confidence: 'high' as const,
+      rationale: 'Test',
+      guardrailOverrides: [],
+      llmRawResponse: '',
+      signalsSent: {},
+      promptVersion: 'v1',
+      decisionModel: 'claude-sonnet-4-6[1m]',
+      costEstimateUsd: 0.001,
+      decidedAt: Date.now(),
+    };
+    const wf = mkWorkflow();
+
+    const result = applyGuardrails(decision, wf, mkMilestone());
+
+    expect(result.implementerModel).toBe(wf.implementer_model);
+    expect(result.guardrailOverrides.length).toBeGreaterThan(0);
+    expect(result.guardrailOverrides[0]).toMatch(/implementerModel swapped.*unknown model/);
+  });
+
+  it('swaps unknown reviewer model to workflow default', () => {
+    const decision = {
+      implementerModel: 'claude-sonnet-4-6',
+      reviewerModel: 'unknown-reviewer',
+      skipReview: false,
+      confidence: 'high' as const,
+      rationale: 'Test',
+      guardrailOverrides: [],
+      llmRawResponse: '',
+      signalsSent: {},
+      promptVersion: 'v1',
+      decisionModel: 'claude-sonnet-4-6[1m]',
+      costEstimateUsd: 0.001,
+      decidedAt: Date.now(),
+    };
+    const wf = mkWorkflow();
+
+    const result = applyGuardrails(decision, wf, mkMilestone());
+
+    expect(result.reviewerModel).toBe(wf.reviewer_model);
+    expect(result.guardrailOverrides.some((o) => o.match(/reviewerModel swapped.*unknown model/))).toBe(true);
+  });
+
+  it('swaps rate-limited implementer model to fallback', () => {
+    // Mock getAvailableModel to return a fallback for the requested model
+    getAvailableModelMock.mockImplementation((model: string) => {
+      if (model === 'claude-opus-4-7[1m]') return 'claude-sonnet-4-6[1m]'; // Fallback
+      return model;
+    });
+
+    const decision = {
+      implementerModel: 'claude-opus-4-7[1m]',
+      reviewerModel: 'claude-sonnet-4-6',
+      skipReview: false,
+      confidence: 'high' as const,
+      rationale: 'Test',
+      guardrailOverrides: [],
+      llmRawResponse: '',
+      signalsSent: {},
+      promptVersion: 'v1',
+      decisionModel: 'claude-sonnet-4-6[1m]',
+      costEstimateUsd: 0.001,
+      decidedAt: Date.now(),
+    };
+    const wf = mkWorkflow();
+
+    const result = applyGuardrails(decision, wf, mkMilestone());
+
+    expect(result.implementerModel).toBe('claude-sonnet-4-6[1m]');
+    expect(result.guardrailOverrides.some((o) => o.match(/implementerModel swapped.*rate-limited/))).toBe(true);
+  });
+
+  it('swaps rate-limited reviewer model to fallback', () => {
+    // Mock getAvailableModel to return a fallback for the requested model
+    getAvailableModelMock.mockImplementation((model: string) => {
+      if (model === 'codex-gpt-5.5') return 'claude-sonnet-4-6'; // Fallback
+      return model;
+    });
+
+    const decision = {
+      implementerModel: 'claude-sonnet-4-6',
+      reviewerModel: 'codex-gpt-5.5',
+      skipReview: false,
+      confidence: 'high' as const,
+      rationale: 'Test',
+      guardrailOverrides: [],
+      llmRawResponse: '',
+      signalsSent: {},
+      promptVersion: 'v1',
+      decisionModel: 'claude-sonnet-4-6[1m]',
+      costEstimateUsd: 0.001,
+      decidedAt: Date.now(),
+    };
+    const wf = mkWorkflow();
+
+    const result = applyGuardrails(decision, wf, mkMilestone());
+
+    expect(result.reviewerModel).toBe('claude-sonnet-4-6');
+    expect(result.guardrailOverrides.some((o) => o.match(/reviewerModel swapped.*rate-limited/))).toBe(true);
+  });
+
+  it('uses workflow reviewer model when decision has null reviewer and skipReview=false', () => {
+    const decision = {
+      implementerModel: 'claude-sonnet-4-6',
+      reviewerModel: null,
+      skipReview: false,
+      confidence: 'high' as const,
+      rationale: 'Test',
+      guardrailOverrides: [],
+      llmRawResponse: '',
+      signalsSent: {},
+      promptVersion: 'v1',
+      decisionModel: 'claude-sonnet-4-6[1m]',
+      costEstimateUsd: 0.001,
+      decidedAt: Date.now(),
+    };
+    const wf = mkWorkflow();
+
+    const result = applyGuardrails(decision, wf, mkMilestone());
+
+    expect(result.reviewerModel).toBe(wf.reviewer_model);
+    expect(result.guardrailOverrides.some((o) => o.match(/reviewerModel fallback/))).toBe(true);
+  });
+
+  it('forces skipReview=false on final milestone', () => {
+    const decision = {
+      implementerModel: 'claude-sonnet-4-6',
+      reviewerModel: null,
+      skipReview: true,
+      confidence: 'high' as const,
+      rationale: 'Test',
+      guardrailOverrides: [],
+      llmRawResponse: '',
+      signalsSent: {},
+      promptVersion: 'v1',
+      decisionModel: 'claude-sonnet-4-6[1m]',
+      costEstimateUsd: 0.001,
+      decidedAt: Date.now(),
+    };
+    const wf = mkWorkflow({ milestones_done: 4, milestones_total: 5 }); // Final milestone
+
+    const result = applyGuardrails(decision, wf, mkMilestone());
+
+    expect(result.skipReview).toBe(false);
+    expect(result.guardrailOverrides.some((o) => o.includes('final milestone'))).toBe(true);
+  });
+
+  it('forces skipReview=false when milestone touches config.yaml', () => {
+    const decision = {
+      implementerModel: 'claude-sonnet-4-6',
+      reviewerModel: null,
+      skipReview: true,
+      confidence: 'high' as const,
+      rationale: 'Test',
+      guardrailOverrides: [],
+      llmRawResponse: '',
+      signalsSent: {},
+      promptVersion: 'v1',
+      decisionModel: 'claude-sonnet-4-6[1m]',
+      costEstimateUsd: 0.001,
+      decidedAt: Date.now(),
+    };
+    const wf = mkWorkflow();
+    const milestone = mkMilestone({
+      mentionedPaths: ['src/config.yaml'],
+      bodyBullets: ['Update config.yaml with new settings'],
+    });
+
+    const result = applyGuardrails(decision, wf, milestone);
+
+    expect(result.skipReview).toBe(false);
+    expect(result.guardrailOverrides.some((o) => o.includes('critical-path'))).toBe(true);
+  });
+
+  it('forces skipReview=false when milestone touches package.json', () => {
+    const decision = {
+      implementerModel: 'claude-sonnet-4-6',
+      reviewerModel: null,
+      skipReview: true,
+      confidence: 'high' as const,
+      rationale: 'Test',
+      guardrailOverrides: [],
+      llmRawResponse: '',
+      signalsSent: {},
+      promptVersion: 'v1',
+      decisionModel: 'claude-sonnet-4-6[1m]',
+      costEstimateUsd: 0.001,
+      decidedAt: Date.now(),
+    };
+    const wf = mkWorkflow();
+    const milestone = mkMilestone({
+      mentionedPaths: ['package.json'],
+      bodyBullets: ['Add dependency to package.json'],
+    });
+
+    const result = applyGuardrails(decision, wf, milestone);
+
+    expect(result.skipReview).toBe(false);
+    expect(result.guardrailOverrides.some((o) => o.includes('critical-path'))).toBe(true);
+  });
+
+  it('forces skipReview=false when milestone touches DB migrations', () => {
+    const decision = {
+      implementerModel: 'claude-sonnet-4-6',
+      reviewerModel: null,
+      skipReview: true,
+      confidence: 'high' as const,
+      rationale: 'Test',
+      guardrailOverrides: [],
+      llmRawResponse: '',
+      signalsSent: {},
+      promptVersion: 'v1',
+      decisionModel: 'claude-sonnet-4-6[1m]',
+      costEstimateUsd: 0.001,
+      decidedAt: Date.now(),
+    };
+    const wf = mkWorkflow();
+    const milestone = mkMilestone({
+      raw: '- [ ] **M3: Add users table** [M]\n  - Modify src/server/db/migrations/001_init.sql',
+    });
+
+    const result = applyGuardrails(decision, wf, milestone);
+
+    expect(result.skipReview).toBe(false);
+    expect(result.guardrailOverrides.some((o) => o.includes('critical-path'))).toBe(true);
+  });
+
+  it('forces skipReview=false when milestone touches schema.ts', () => {
+    const decision = {
+      implementerModel: 'claude-sonnet-4-6',
+      reviewerModel: null,
+      skipReview: true,
+      confidence: 'high' as const,
+      rationale: 'Test',
+      guardrailOverrides: [],
+      llmRawResponse: '',
+      signalsSent: {},
+      promptVersion: 'v1',
+      decisionModel: 'claude-sonnet-4-6[1m]',
+      costEstimateUsd: 0.001,
+      decidedAt: Date.now(),
+    };
+    const wf = mkWorkflow();
+    const milestone = mkMilestone({
+      mentionedPaths: ['src/server/db/schema.ts'],
+    });
+
+    const result = applyGuardrails(decision, wf, milestone);
+
+    expect(result.skipReview).toBe(false);
+  });
+
+  it('nulls reviewerModel when skipReview=true after guardrails', () => {
+    const decision = {
+      implementerModel: 'claude-sonnet-4-6',
+      reviewerModel: 'claude-opus-4-7',
+      skipReview: true,
+      confidence: 'high' as const,
+      rationale: 'Test',
+      guardrailOverrides: [],
+      llmRawResponse: '',
+      signalsSent: {},
+      promptVersion: 'v1',
+      decisionModel: 'claude-sonnet-4-6[1m]',
+      costEstimateUsd: 0.001,
+      decidedAt: Date.now(),
+    };
+    const wf = mkWorkflow();
+
+    const result = applyGuardrails(decision, wf, mkMilestone());
+
+    expect(result.skipReview).toBe(true);
+    expect(result.reviewerModel).toBeNull();
+  });
+
+  it('preserves low-confidence decisions without auto-degrading', () => {
+    const decision = {
+      implementerModel: 'claude-haiku-4-5-20251001',
+      reviewerModel: 'claude-sonnet-4-6',
+      skipReview: false,
+      confidence: 'low' as const,
+      rationale: 'Uncertain but picking cheap option',
+      guardrailOverrides: [],
+      llmRawResponse: '',
+      signalsSent: {},
+      promptVersion: 'v1',
+      decisionModel: 'claude-sonnet-4-6[1m]',
+      costEstimateUsd: 0.0005,
+      decidedAt: Date.now(),
+    };
+    const wf = mkWorkflow();
+
+    const result = applyGuardrails(decision, wf, mkMilestone());
+
+    expect(result.implementerModel).toBe('claude-haiku-4-5-20251001');
+    expect(result.confidence).toBe('low');
+  });
+
+  it('accumulates multiple guardrail overrides', () => {
+    const decision = {
+      implementerModel: 'unknown-impl',
+      reviewerModel: 'unknown-review',
+      skipReview: true,
+      confidence: 'high' as const,
+      rationale: 'Test',
+      guardrailOverrides: [],
+      llmRawResponse: '',
+      signalsSent: {},
+      promptVersion: 'v1',
+      decisionModel: 'claude-sonnet-4-6[1m]',
+      costEstimateUsd: 0.001,
+      decidedAt: Date.now(),
+    };
+    const wf = mkWorkflow();
+    const milestone = mkMilestone({
+      mentionedPaths: ['config.yaml'],
+    });
+
+    const result = applyGuardrails(decision, wf, milestone);
+
+    // Overrides: (1) critical-path skip, (2) unknown impl, (3) unknown review
+    // skipReview gets forced to false by critical-path, so null reviewer doesn't apply
+    expect(result.guardrailOverrides.length).toBeGreaterThanOrEqual(3);
+    expect(result.skipReview).toBe(false); // Forced by critical-path override
+    expect(result.reviewerModel).toBe(wf.reviewer_model); // Swapped due to unknown, not nulled
+  });
+
+  it('does not override guardrailOverrides if no changes are made', () => {
+    const decision = {
+      implementerModel: 'claude-sonnet-4-6',
+      reviewerModel: 'codex-gpt-5.5',
+      skipReview: false,
+      confidence: 'high' as const,
+      rationale: 'Good choice',
+      guardrailOverrides: [],
+      llmRawResponse: '',
+      signalsSent: {},
+      promptVersion: 'v1',
+      decisionModel: 'claude-sonnet-4-6[1m]',
+      costEstimateUsd: 0.001,
+      decidedAt: Date.now(),
+    };
+    const wf = mkWorkflow({ milestones_done: 1, milestones_total: 5 }); // Not final
+
+    const result = applyGuardrails(decision, wf, mkMilestone());
+
+    expect(result.guardrailOverrides).toEqual([]);
   });
 });
