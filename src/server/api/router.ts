@@ -23,6 +23,7 @@ import eventsRouter from './events.js';
 import resilienceEventsRouter from './resilienceEvents.js';
 import tasksRouter from './tasks.js';
 import webhooksRouter from './webhooks.js';
+import routingBrainRouter from './routing-brain.js';
 
 const router = Router();
 
@@ -69,5 +70,6 @@ router.use('/local-config', localConfigRouter);
 router.use('/models', modelsRouter);
 router.use('/resilience-events', resilienceEventsRouter);
 router.use('/tasks', tasksRouter);
+router.use('/routing-brain', routingBrainRouter);
 
 export default router;
