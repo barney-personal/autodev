@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   buildRoutingBrainContext,
   renderRoutingBrainPrompt,
@@ -8,6 +8,29 @@ import {
 } from '../server/orchestrator/RoutingBrainPrompt.js';
 import type { Workflow } from '../shared/types.js';
 import * as queries from '../server/db/queries.js';
+
+const classifierState = vi.hoisted(() => {
+  const rateLimitedModels = new Set<string>();
+  const isModelRateLimited = vi.fn((model: string) => rateLimitedModels.has(model));
+  return { rateLimitedModels, isModelRateLimited };
+});
+
+vi.mock('../server/orchestrator/ModelClassifier.js', () => ({
+  KNOWN_MODELS: [
+    'claude-haiku-4-5-20251001',
+    'claude-sonnet-4-6',
+    'claude-sonnet-4-6[1m]',
+    'claude-opus-4-7',
+    'claude-opus-4-7[1m]',
+    'codex-gpt-5.5',
+  ],
+  isModelRateLimited: classifierState.isModelRateLimited,
+}));
+
+beforeEach(() => {
+  classifierState.rateLimitedModels.clear();
+  classifierState.isModelRateLimited.mockClear();
+});
 
 // ─── Test Fixtures ──────────────────────────────────────────────────────────
 
@@ -80,7 +103,8 @@ describe('truncatePlan', () => {
     const { text, truncated } = truncatePlan(plan, 3000);
     expect(text.length).toBe(3000);
     expect(truncated).toBe(true);
-    expect(text).toMatch(/^A+$/);
+    expect(text.startsWith('...\n')).toBe(true);
+    expect(text.slice(4)).toMatch(/^A+$/);
   });
 
   it('should prefix with ellipsis when truncated', () => {
@@ -141,17 +165,27 @@ describe('annotateModelMenu', () => {
   });
 
   it('should mark rate-limited models', () => {
+    classifierState.rateLimitedModels.add('claude-sonnet-4-6[1m]');
+    classifierState.rateLimitedModels.add('claude-haiku-4-5-20251001');
+
     const menu = annotateModelMenu();
-    // At least some models should have capability and cost strings
+
     expect(menu.every(m => typeof m.capability === 'string')).toBe(true);
     expect(menu.every(m => typeof m.cost === 'string')).toBe(true);
     expect(menu.every(m => typeof m.rateLimited === 'boolean')).toBe(true);
+    expect(menu.find(m => m.id === 'claude-sonnet-4-6[1m]')?.rateLimited).toBe(true);
+    expect(menu.find(m => m.id === 'claude-haiku-4-5')?.rateLimited).toBe(true);
+    expect(menu.find(m => m.id === 'claude-opus-4-7')?.rateLimited).toBe(false);
   });
 });
 
 // ─── Integration Tests for Context Builder ──────────────────────────────────
 
 describe('buildRoutingBrainContext', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   beforeEach(() => {
     // Mock queries to avoid DB access in tests
     vi.spyOn(queries, 'getNote').mockReturnValue({ key: `workflow/${mockWorkflow.id}/plan`, value: mockPlan, updated_at: Date.now() });
@@ -195,6 +229,10 @@ describe('buildRoutingBrainContext', () => {
 
 describe('renderRoutingBrainPrompt', () => {
   let context: ReturnType<typeof buildRoutingBrainContext>;
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
 
   beforeEach(() => {
     vi.spyOn(queries, 'getNote').mockReturnValue({ key: `workflow/${mockWorkflow.id}/plan`, value: mockPlan, updated_at: Date.now() });
@@ -268,17 +306,10 @@ describe('renderRoutingBrainPrompt', () => {
     expect(user).toContain(mockPlan);
   });
 
-  it('should snapshot match for fixed context (determinism check)', () => {
+  it('should snapshot match for fixed context', () => {
     const rendered = renderRoutingBrainPrompt(context);
 
-    // Verify prompt version
-    expect(rendered.promptVersion).toBe('v1');
-
-    // Basic shape checks (not exhaustive snapshot, but ensures determinism)
-    expect(rendered.system.length).toBeGreaterThan(200);
-    expect(rendered.user.length).toBeGreaterThan(400);
-    expect(rendered.system).toContain('Output schema');
-    expect(rendered.user).toContain('Available models');
+    expect(rendered).toMatchSnapshot();
   });
 });
 

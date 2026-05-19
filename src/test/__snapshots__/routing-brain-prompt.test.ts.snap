@@ -1,0 +1,115 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`renderRoutingBrainPrompt > should snapshot match for fixed context 1`] = `
+{
+  "promptVersion": "v1",
+  "system": "You are autodev's routing brain.
+Your job: for the next implement cycle of a workflow, choose:
+  1. implementerModel — which model runs the implementer
+  2. skipReview — whether to skip the reviewer entirely
+  3. reviewerModel — if not skipping, which model reviews
+
+Optimise for wall-clock and cost subject to quality. Use prior-cycle
+telemetry and cross-workflow priors to weigh trade-offs. Output JSON only.
+
+Output schema (strict):
+{
+  "implementerModel": string,         // one of the model ids in section 2
+  "reviewerModel": string | null,     // null only if skipReview=true
+  "skipReview": boolean,
+  "confidence": "low" | "medium" | "high",
+  "rationale": string                 // <= 3 sentences
+}
+
+Constraints:
+  - You MAY recommend skipReview=true ONLY if this is not the final
+    milestone AND the milestone does not touch critical paths
+    (config.yaml, package.json, DB migrations, schema files).
+  - The orchestrator will OVERRIDE skipReview=false if you violate this.
+  - Pick an implementerModel from the supplied menu; do not invent ids.
+  - If a model is annotated "rate-limited", prefer a non-limited alternative.
+  - Return JSON only. No code fences, no prose before or after.",
+  "user": "## 1. Task
+Decide routing for workflow "Test Workflow" (id test-workflow-123),
+repo "autodev", upcoming phase "implement", cycle 2 of max 5.
+
+## 2. Available models
+- claude-haiku-4-5: fastest, lowest reasoning depth; great for trivial mechanical edits — cost: very cheap
+- claude-sonnet-4-6: balanced quality + speed; safe default for medium milestones — cost: moderate
+- claude-sonnet-4-6[1m]: sonnet with 1M-token context; for plan/context-heavy work — cost: moderate+
+- claude-opus-4-7: highest single-shot reasoning depth — cost: expensive
+- claude-opus-4-7[1m]: opus with 1M-token context; for very large/complex milestones — cost: most expensive
+- codex-gpt-5.5: separate provider, useful as cross-provider fallback or for tests — cost: moderate
+
+## 3. Workflow context
+- title: Test Workflow
+- repo: autodev
+- milestones: 1/5 done
+- cycle: 2/5
+- static implementer (fallback): claude-opus-4-7[1m]
+- static reviewer (fallback): codex-gpt-5.5
+
+### Plan excerpt
+\`\`\`markdown
+# Plan
+
+## Milestones
+
+- [x] **M1: Setup base structure** [S]
+  - Initialize project
+  - Create initial files
+
+- [ ] **M2: Add context builder** [M]
+  - Collect signals from DB
+  - Build \`RoutingBrainContext\` payload
+  - Mentioned file: \`src/server/db/queries.ts\`
+  - Mentioned test: \`src/test/routing-brain.test.ts\`
+
+- [ ] **M3: Final milestone** [L]
+  - This is the last milestone
+  - Should not be skipped by reviewer
+\`\`\`
+
+## 4. Current milestone
+- title: Add context builder
+- complexity tag: M
+- body bullets:
+    - Collect signals from DB
+    - Build \`RoutingBrainContext\` payload
+    - Mentioned file: \`src/server/db/queries.ts\`
+    - Mentioned test: \`src/test/routing-brain.test.ts\`
+- mentioned paths: src/server/db/queries.ts, src/test/routing-brain.test.ts
+- mentioned test files: src/test/routing-brain.test.ts
+
+#### Verbatim milestone block
+\`\`\`markdown
+- [ ] **M2: Add context builder** [M]
+  - Collect signals from DB
+  - Build \`RoutingBrainContext\` payload
+  - Mentioned file: \`src/server/db/queries.ts\`
+  - Mentioned test: \`src/test/routing-brain.test.ts\`
+\`\`\`
+
+## 5. Prior-cycle telemetry (last 3)
+(no prior cycles)
+
+## 6. Cross-workflow priors (repo "autodev", last 30 days)
+- sample size: 0
+- mean implement wall-clock by complexity: (no data)
+- reviewer no-op rate: 0.0%
+- opus→sonnet downgrade success rate: 0.0%
+
+## 7. Hard guardrails (informational)
+- skipReview=true is allowed ONLY when:
+    (a) this is not the final unchecked milestone, AND
+    (b) the milestone does not touch config.yaml, package.json,
+        src/server/db/migrations/**, or any schema.ts / schema.sql.
+- The orchestrator will silently override skipReview=false if you violate this.
+- Rate-limited models will be swapped via the fallback chain.
+
+## 8. Output
+Respond with a single JSON object matching the schema in the system prompt.
+No prose, no code fences, no leading whitespace.
+promptVersion: v1",
+}
+`;

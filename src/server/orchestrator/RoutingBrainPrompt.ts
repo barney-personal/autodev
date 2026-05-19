@@ -19,7 +19,7 @@ import type { Workflow, WorkflowPhase, Job, AgentWithJob, ReviewStatus } from '.
 export const ROUTING_BRAIN_PROMPT_VERSION = 'v1';
 
 const MODEL_MENU: ReadonlyArray<{ id: string; capability: string; cost: string }> = [
-  { id: 'claude-haiku-4-5-20251001', capability: 'fastest, lowest reasoning depth; great for trivial mechanical edits', cost: 'very cheap' },
+  { id: 'claude-haiku-4-5',          capability: 'fastest, lowest reasoning depth; great for trivial mechanical edits', cost: 'very cheap' },
   { id: 'claude-sonnet-4-6',          capability: 'balanced quality + speed; safe default for medium milestones',         cost: 'moderate' },
   { id: 'claude-sonnet-4-6[1m]',      capability: 'sonnet with 1M-token context; for plan/context-heavy work',           cost: 'moderate+' },
   { id: 'claude-opus-4-7',            capability: 'highest single-shot reasoning depth',                                   cost: 'expensive' },
@@ -97,8 +97,10 @@ export interface RoutingBrainContext {
 /** Truncate plan to the last N chars; prefix with a marker when truncated. */
 export function truncatePlan(plan: string, maxChars = PLAN_TRUNCATION_CHARS): { text: string; truncated: boolean } {
   if (plan.length <= maxChars) return { text: plan, truncated: false };
-  const tail = plan.slice(plan.length - maxChars);
-  return { text: tail, truncated: true };
+  const marker = '...\n';
+  const tailChars = Math.max(0, maxChars - marker.length);
+  const tail = plan.slice(plan.length - tailChars);
+  return { text: `${marker}${tail}`, truncated: true };
 }
 
 /**
@@ -142,6 +144,7 @@ export function extractCurrentMilestone(plan: string): MilestoneContext {
     title = afterCheck
       .replace(/\*\*/g, '')
       .replace(/\[([SMLX]+)\]/gi, '')
+      .replace(/^M\d+\s*:\s*/i, '')
       .replace(/\s+—\s+.*$/, '')
       .trim();
     if (!title.length) title = null;
@@ -183,8 +186,9 @@ export function annotateModelMenu(): ModelMenuEntry[] {
 
 function isModelRateLimitedSafe(model: string): boolean {
   try {
-    if (!KNOWN_MODELS.includes(model)) return false;
-    return isModelRateLimited(model);
+    const rateLimitModel = model === 'claude-haiku-4-5' ? 'claude-haiku-4-5-20251001' : model;
+    if (!KNOWN_MODELS.includes(rateLimitModel)) return false;
+    return isModelRateLimited(rateLimitModel);
   } catch {
     return false;
   }
