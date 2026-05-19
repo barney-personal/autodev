@@ -5,9 +5,8 @@
  *   - READ tools: return data, never mutate
  *   - MUTATING tools: change DB rows or worktree files; each one is journaled
  *     to resolver_actions with a payload + outcome before/after execution
- *   - TERMINAL tools: end the run (mark_resolved, escalate_to_user,
- *     mark_unresolvable, propose_resume). The session loop stops when one
- *     of these is called.
+ *   - TERMINAL tools: end the run (propose_resume, escalate_to_user,
+ *     mark_unresolvable). The session loop stops when one of these is called.
  *
  * Safety guarantees enforced here:
  *   - All file paths are resolved + verified to stay inside workflow.worktree_path
@@ -52,13 +51,6 @@ const ALLOWED_WORKFLOW_FIELDS = new Set([
   'reviewer_model',
   'blocked_reason',
 ]);
-
-const ALLOWED_NOTE_KEY_PREFIXES = [
-  '/plan',
-  '/contract',
-  '/worklog/',
-  '/review-feedback/',
-];
 
 // Git subcommand allowlist. No 'push', no 'reset --hard', no 'clean -f',
 // no 'branch -D', no 'rebase', no 'merge', no 'checkout'.
@@ -253,12 +245,29 @@ export function execReadBlockedDiagnostic(run: ResolverRun): ResolverToolResult 
   return { ok: true, message: 'see <diagnostic> block in initial context; re-fetch by reading blocked-diagnostics/' };
 }
 
+// Agent IDs are UUIDv4 in this codebase; constrain to that shape so a value
+// like '../../etc/passwd' can't escape PTY_LOG_DIR via path.join.
+const AGENT_ID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
 export function execReadAgentLog(run: ResolverRun, input: ReadAgentLogInput): ResolverToolResult {
   if (!input.agent_id || typeof input.agent_id !== 'string') {
     return failAction(run, 'read_agent_log', input, 'agent_id required');
   }
+  if (!AGENT_ID_RE.test(input.agent_id)) {
+    return failAction(run, 'read_agent_log', input, 'agent_id must be a UUID');
+  }
+  if (input.kind !== 'ndjson' && input.kind !== 'stderr' && input.kind !== 'snapshot') {
+    return failAction(run, 'read_agent_log', input, `invalid kind '${input.kind}'`);
+  }
   const max = clamp(input.max_bytes ?? LOG_TAIL_BYTES, 1024, LOG_TAIL_BYTES);
-  const file = path.join(PTY_LOG_DIR, `${input.agent_id}.${input.kind}`);
+  const file = path.resolve(PTY_LOG_DIR, `${input.agent_id}.${input.kind}`);
+  // Defence-in-depth: even with the UUID guard above, verify the resolved
+  // path stays inside PTY_LOG_DIR. Catches future regressions if the regex
+  // is loosened or PTY_LOG_DIR is moved.
+  const root = path.resolve(PTY_LOG_DIR) + path.sep;
+  if (!file.startsWith(root)) {
+    return failAction(run, 'read_agent_log', input, 'resolved path escapes PTY_LOG_DIR');
+  }
   const body = tailFile(file, max);
   recordAction(run, 'read_agent_log', { agent_id: input.agent_id, kind: input.kind, bytes: body?.length ?? 0 }, 'applied', null);
   if (body == null) return { ok: false, message: `agent log not found: ${path.basename(file)}` };
@@ -471,6 +480,10 @@ export function execEscalate(run: ResolverRun, input: EscalateInput): ResolverTo
     .filter(a => a.length > 0)
     .slice(0, 5);
 
+  // discussions.agent_id is NOT NULL but has no foreign key, so the
+  // `wf-<id>` synthetic fallback inserts cleanly when no agent has run yet
+  // (e.g. the very first phase failed before spawning). The dashboard groups
+  // discussions by agent and falls through to "no agent" for unmatched IDs.
   const anchorAgentId = findEscalationAnchorAgentId(run.workflow_id) ?? `wf-${run.workflow_id}`;
 
   const action = recordAction(run, 'escalate_to_user', {
@@ -593,18 +606,23 @@ function resolveWorktreeRelativePath(wf: Workflow, p: string): ResolvedPath | Re
 
   const rel = path.relative(rootResolved, absolute);
   const segs = rel.split(path.sep);
-  if (segs[0] === '.git' || segs[0] === 'node_modules' || segs[0]?.startsWith('.claude')) {
-    return { ok: false, error: `editing under ${segs[0]} is not allowed` };
+  const first = segs[0] ?? '';
+  if (first === '.git' || first === 'node_modules' || first.startsWith('.claude')) {
+    return { ok: false, error: `editing under ${first} is not allowed` };
   }
   return { ok: true, relative: rel, absolute };
 }
 
 function resolveNoteKey(workflowId: string, key: string): string | null {
   if (typeof key !== 'string' || key.length === 0) return null;
+  // Only short-form keys are accepted — the regexes below enforce the cycle
+  // shape so an LLM can't write to `workflow/<id>/worklog/cycle-999` or any
+  // other never-run cycle. The full-form passthrough that previously lived
+  // here bypassed that validation; it was unnecessary because the short
+  // forms cover every legitimate access pattern.
   const allowed = ALLOWED_NOTE_KEYS(workflowId);
   if (allowed.has(key)) return key;
 
-  // Map short forms to full keys.
   if (key === 'plan') return RecoveryKeys.plan(workflowId);
   if (key === 'contract') return RecoveryKeys.contract(workflowId);
 
@@ -613,10 +631,6 @@ function resolveNoteKey(workflowId: string, key: string): string | null {
   const review = key.match(/^review-feedback\/cycle-(\d+)$/) ?? key.match(/^review-(\d+)$/);
   if (review) return RecoveryKeys.reviewFeedback(workflowId, parseInt(review[1], 10));
 
-  // Allow direct full-form keys that match the workflow's own namespace.
-  for (const pre of ALLOWED_NOTE_KEY_PREFIXES) {
-    if (key.startsWith(`workflow/${workflowId}${pre}`)) return key;
-  }
   return null;
 }
 

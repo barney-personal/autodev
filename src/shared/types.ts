@@ -176,8 +176,8 @@ export type ResolverActionType =
   | 'edit_worktree_file'
   | 'update_workflow_field'
   | 'write_note'
+  | 'set_classification'
   | 'propose_resume'
-  | 'mark_resolved'
   | 'escalate_to_user'
   | 'mark_unresolvable';
 

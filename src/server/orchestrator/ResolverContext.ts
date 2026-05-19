@@ -7,7 +7,7 @@
  * comfortably under ~80 KB so the system prompt + tools cache hit holds
  * and the per-tick token cost stays bounded.
  */
-import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, statSync, openSync, readSync, closeSync } from 'fs';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
 import * as queries from '../db/queries.js';
@@ -209,16 +209,16 @@ function tailFile(filePath: string, maxBytes: number): string | null {
     const stat = statSync(filePath);
     if (stat.size === 0) return '';
     if (stat.size <= maxBytes) return readFileSync(filePath, 'utf8');
-    const fd = require('fs').openSync(filePath, 'r');
+    const fd = openSync(filePath, 'r');
     try {
       const buf = Buffer.alloc(maxBytes);
-      require('fs').readSync(fd, buf, 0, maxBytes, stat.size - maxBytes);
+      readSync(fd, buf, 0, maxBytes, stat.size - maxBytes);
       const text = buf.toString('utf8');
       // Drop the leading partial line so we don't emit a malformed JSON fragment.
       const nl = text.indexOf('\n');
       return nl >= 0 ? text.slice(nl + 1) : text;
     } finally {
-      require('fs').closeSync(fd);
+      closeSync(fd);
     }
   } catch {
     return null;
@@ -338,6 +338,6 @@ export function renderResolverContext(bundle: ResolverContextBundle): string {
   }
 
   parts.push('---');
-  parts.push('Diagnose this block. Classify it, then choose ONE of: propose_resume, mark_resolved, escalate_to_user, or mark_unresolvable.');
+  parts.push('Diagnose this block. Classify it via set_classification, then end with exactly one terminal tool: propose_resume, escalate_to_user, or mark_unresolvable.');
   return parts.join('\n');
 }

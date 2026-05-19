@@ -193,6 +193,8 @@ When a workflow transitions to `status='blocked'`, the dispatcher (`src/server/o
 
 **Threat model** — same shape as the Live Watcher. All free-text Resolver outputs run through `stripControlChars` + length caps before persistence; mutating tools never accept absolute paths or escape the worktree; the Resolver can never push, create PRs, or modify any workflow except the one it was dispatched for. Resolver-driven resume always goes through the existing `resumeWorkflow()` health checks.
 
+**Known gap — circuit breaker is in-memory.** `_recentResumes` in `ResumeOrchestrator.ts` is a module-level `Map`, so if the server restarts between a Resolver-driven resume and the subsequent re-block, the same-fingerprint check won't trip the breaker on that re-block. The lifetime attempt count (persisted on the workflow row) and the in-flight idempotency note still apply, so the worst case is one extra Resolver attempt — not an unbounded loop. Same shape as the Live Watcher's `_lastManualTickAt` caveat: if the orchestrator ever moves behind a network boundary or to a multi-process setup, persist this map.
+
 **API**
 - `GET /api/resolver/runs` — global recent runs
 - `GET /api/resolver/runs/:id` — run detail + actions

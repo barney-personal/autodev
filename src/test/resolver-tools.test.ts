@@ -64,6 +64,53 @@ describe('ResolverTools — path safety', () => {
   });
 });
 
+describe('ResolverTools — read_agent_log path safety', () => {
+  beforeEach(() => setupTestDb());
+  afterEach(() => cleanupTestDb());
+
+  it('rejects path-traversal agent_ids', async () => {
+    const wf = await insertTestWorkflow();
+    const run = queries.insertResolverRun({
+      id: 'run-path-1', workflow_id: wf.id, trigger_reason: 'test', reason_fingerprint: 'fp',
+      attempt: 1, model: 'claude-opus-4-7',
+    });
+    const result = dispatchResolverTool(run, {
+      type: 'tool_use', id: 'u1', name: 'read_agent_log',
+      input: { agent_id: '../../etc/passwd', kind: 'ndjson' },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.message).toMatch(/UUID/i);
+  });
+
+  it('rejects non-UUID agent_ids even if they look harmless', async () => {
+    const wf = await insertTestWorkflow();
+    const run = queries.insertResolverRun({
+      id: 'run-path-2', workflow_id: wf.id, trigger_reason: 'test', reason_fingerprint: 'fp',
+      attempt: 1, model: 'claude-opus-4-7',
+    });
+    const result = dispatchResolverTool(run, {
+      type: 'tool_use', id: 'u1', name: 'read_agent_log',
+      input: { agent_id: 'plain-string-id', kind: 'ndjson' },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.message).toMatch(/UUID/i);
+  });
+
+  it('rejects invalid kind values', async () => {
+    const wf = await insertTestWorkflow();
+    const run = queries.insertResolverRun({
+      id: 'run-path-3', workflow_id: wf.id, trigger_reason: 'test', reason_fingerprint: 'fp',
+      attempt: 1, model: 'claude-opus-4-7',
+    });
+    const result = dispatchResolverTool(run, {
+      type: 'tool_use', id: 'u1', name: 'read_agent_log',
+      input: { agent_id: '12345678-1234-1234-1234-123456789012', kind: 'shadow' },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.message).toMatch(/invalid kind/);
+  });
+});
+
 describe('ResolverTools — note key resolution', () => {
   it('maps short forms to full keys', () => {
     const wfId = 'abc123';
@@ -82,6 +129,13 @@ describe('ResolverTools — note key resolution', () => {
   it('rejects unrelated keys', () => {
     expect(resolveNoteKey('abc', 'random-key')).toBeNull();
     expect(resolveNoteKey('abc', 'workflow/different/plan')).toBeNull();
+  });
+
+  it('rejects full-form keys that bypass cycle validation', () => {
+    // Previously this returned the key as-is; now it must go through a
+    // short-form match so an LLM can't address arbitrary never-run cycles.
+    expect(resolveNoteKey('abc', 'workflow/abc/worklog/cycle-999')).toBeNull();
+    expect(resolveNoteKey('abc', 'workflow/abc/review-feedback/cycle-42')).toBeNull();
   });
 });
 
