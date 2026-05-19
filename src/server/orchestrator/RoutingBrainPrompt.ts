@@ -223,7 +223,7 @@ export function buildRoutingBrainContext(
   const { text: planExcerpt, truncated: planTruncated } = truncatePlan(planRaw);
   const milestone = extractCurrentMilestone(planRaw);
 
-  const repoName = workflow.work_dir ? path.basename(workflow.work_dir) : (workflow.title || workflow.id);
+  const repoName = deriveRepoIdentity(workflow) ?? (workflow.title || workflow.id);
 
   const priorCycles = collectPriorCycleTelemetry(workflow, cycle);
   const crossWorkflowPriors = collectCrossWorkflowPriors(workflow, repoName);
@@ -299,17 +299,39 @@ function collectPriorCycleTelemetry(workflow: Workflow, currentCycle: number): P
   return out;
 }
 
+/**
+ * Derive a normalized repo identity from a workflow's worktree/work_dir.
+ * Worktrees are namespaced as `.orchestrator-worktrees/<repoName>/wf-<shortId>`,
+ * so prefer that segment when present. Falls back to `basename(work_dir)` for
+ * non-worktree workflows. Returns null if no usable path is set.
+ */
+export function deriveRepoIdentity(workflow: Pick<Workflow, 'work_dir' | 'worktree_path'>): string | null {
+  const candidates = [workflow.worktree_path, workflow.work_dir];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const norm = candidate.replace(/\\/g, '/');
+    const wtMatch = norm.match(/\.orchestrator-worktrees\/([^/]+)\/wf-[^/]+/);
+    if (wtMatch) return wtMatch[1];
+  }
+  if (workflow.work_dir) {
+    const base = path.basename(workflow.work_dir);
+    return base.length > 0 ? base : null;
+  }
+  return null;
+}
+
 function collectCrossWorkflowPriors(workflow: Workflow, repoName: string): CrossWorkflowPriors {
   const since = Date.now() - CROSS_WORKFLOW_WINDOW_MS;
+  const selfIdentity = deriveRepoIdentity(workflow);
   let peerWorkflowIds: string[] = [];
   try {
     const all = queries.listWorkflows();
     peerWorkflowIds = all
       .filter(w => w.id !== workflow.id && w.created_at >= since)
       .filter(w => {
-        if (workflow.project_id && w.project_id) return w.project_id === workflow.project_id;
-        if (workflow.work_dir && w.work_dir) return path.basename(w.work_dir) === repoName;
-        return false;
+        if (!selfIdentity) return false;
+        const peerIdentity = deriveRepoIdentity(w);
+        return peerIdentity !== null && peerIdentity === selfIdentity;
       })
       .map(w => w.id);
   } catch {

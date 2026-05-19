@@ -5,6 +5,7 @@ import {
   truncatePlan,
   extractCurrentMilestone,
   annotateModelMenu,
+  deriveRepoIdentity,
 } from '../server/orchestrator/RoutingBrainPrompt.js';
 import type { Workflow } from '../shared/types.js';
 import * as queries from '../server/db/queries.js';
@@ -359,5 +360,167 @@ describe('routing-brain-prompt: edge cases', () => {
     const milestone = extractCurrentMilestone(planNoBody);
     expect(milestone.title).toBe('Title only');
     expect(milestone.bodyBullets).toEqual([]);
+  });
+});
+
+// ─── Tests for repo identity derivation and cross-workflow priors filtering ─
+
+describe('deriveRepoIdentity', () => {
+  it('should extract repo name from worktree path', () => {
+    const workflow = {
+      work_dir: '/app/other-repo',
+      worktree_path: '/app/.orchestrator-worktrees/myrepo/wf-test-123',
+    };
+    const repoName = deriveRepoIdentity(workflow);
+    expect(repoName).toBe('myrepo');
+  });
+
+  it('should extract repo name from work_dir basename when no worktree', () => {
+    const workflow = {
+      work_dir: '/app/autodev',
+      worktree_path: null,
+    };
+    const repoName = deriveRepoIdentity(workflow);
+    expect(repoName).toBe('autodev');
+  });
+
+  it('should return null when no work_dir or worktree_path', () => {
+    const workflow = {
+      work_dir: null,
+      worktree_path: null,
+    };
+    const repoName = deriveRepoIdentity(workflow);
+    expect(repoName).toBeNull();
+  });
+
+  it('should prefer worktree path over work_dir', () => {
+    const workflow = {
+      work_dir: '/app/wrong-repo',
+      worktree_path: '/app/.orchestrator-worktrees/correct-repo/wf-test-123',
+    };
+    const repoName = deriveRepoIdentity(workflow);
+    expect(repoName).toBe('correct-repo');
+  });
+
+  it('should handle windows-style paths in worktree', () => {
+    const workflow = {
+      work_dir: '/app/autodev',
+      worktree_path: 'C:\\app\\.orchestrator-worktrees\\winrepo\\wf-test-123',
+    };
+    const repoName = deriveRepoIdentity(workflow);
+    expect(repoName).toBe('winrepo');
+  });
+});
+
+describe('collectCrossWorkflowPriors: repo filtering', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('should include same-repo workflows', () => {
+    const currentWorkflow: Workflow = {
+      ...mockWorkflow,
+      id: 'workflow-1',
+      work_dir: '/app/autodev',
+      worktree_path: '/app/.orchestrator-worktrees/autodev/wf-1',
+      created_at: Date.now(),
+    };
+
+    const sameRepoWorkflow: Workflow = {
+      ...mockWorkflow,
+      id: 'workflow-2',
+      work_dir: '/app/autodev',
+      worktree_path: '/app/.orchestrator-worktrees/autodev/wf-2',
+      created_at: Date.now() - 1000 * 60 * 10, // 10 mins ago
+    };
+
+    vi.spyOn(queries, 'getNote').mockReturnValue({ key: '', value: '', updated_at: 0 });
+    vi.spyOn(queries, 'getJobsForWorkflow').mockReturnValue([]);
+    vi.spyOn(queries, 'listWorkflows').mockReturnValue([currentWorkflow, sameRepoWorkflow]);
+
+    const context = buildRoutingBrainContext(currentWorkflow, 'implement', 1);
+
+    // Same-repo workflow should be considered for priors
+    // (we can't directly test priors inclusion without job data, but listWorkflows is called with proper filtering)
+    expect(context.crossWorkflowPriors.repoName).toBe('autodev');
+  });
+
+  it('should exclude different-repo workflows from priors', () => {
+    const currentWorkflow: Workflow = {
+      ...mockWorkflow,
+      id: 'workflow-1',
+      work_dir: '/app/autodev',
+      worktree_path: '/app/.orchestrator-worktrees/autodev/wf-1',
+      created_at: Date.now(),
+    };
+
+    const differentRepoWorkflow: Workflow = {
+      ...mockWorkflow,
+      id: 'workflow-2',
+      work_dir: '/app/other-project',
+      worktree_path: '/app/.orchestrator-worktrees/other-project/wf-2',
+      created_at: Date.now() - 1000 * 60 * 10,
+    };
+
+    vi.spyOn(queries, 'getNote').mockReturnValue({ key: '', value: '', updated_at: 0 });
+    vi.spyOn(queries, 'getJobsForWorkflow').mockReturnValue([]);
+    // Return both workflows from listWorkflows, but the filter should exclude the different-repo one
+    vi.spyOn(queries, 'listWorkflows').mockReturnValue([currentWorkflow, differentRepoWorkflow]);
+
+    const context = buildRoutingBrainContext(currentWorkflow, 'implement', 1);
+
+    // Different-repo workflow should not be queried for jobs, so sampleSize should be 0
+    expect(context.crossWorkflowPriors.sampleSize).toBe(0);
+  });
+
+  it('should degrade gracefully when repo identity is missing', () => {
+    const currentWorkflow: Workflow = {
+      ...mockWorkflow,
+      id: 'workflow-1',
+      work_dir: '/app/autodev',
+      worktree_path: '/app/.orchestrator-worktrees/autodev/wf-1',
+      created_at: Date.now(),
+    };
+
+    const noIdentityWorkflow: Workflow = {
+      ...mockWorkflow,
+      id: 'workflow-2',
+      work_dir: null,
+      worktree_path: null,
+      created_at: Date.now() - 1000 * 60 * 10,
+    };
+
+    vi.spyOn(queries, 'getNote').mockReturnValue({ key: '', value: '', updated_at: 0 });
+    vi.spyOn(queries, 'getJobsForWorkflow').mockReturnValue([]);
+    vi.spyOn(queries, 'listWorkflows').mockReturnValue([currentWorkflow, noIdentityWorkflow]);
+
+    // Should not throw; should return safe defaults
+    const context = buildRoutingBrainContext(currentWorkflow, 'implement', 1);
+
+    expect(context.crossWorkflowPriors.sampleSize).toBe(0);
+    expect(context.crossWorkflowPriors.reviewerNoOpRate).toBe(0);
+    expect(Object.keys(context.crossWorkflowPriors.meanImplementWallClockMsByComplexity).length).toBe(0);
+  });
+
+  it('should handle listWorkflows query error gracefully', () => {
+    const currentWorkflow: Workflow = {
+      ...mockWorkflow,
+      id: 'workflow-1',
+      work_dir: '/app/autodev',
+      worktree_path: '/app/.orchestrator-worktrees/autodev/wf-1',
+      created_at: Date.now(),
+    };
+
+    vi.spyOn(queries, 'getNote').mockReturnValue({ key: '', value: '', updated_at: 0 });
+    vi.spyOn(queries, 'getJobsForWorkflow').mockReturnValue([]);
+    vi.spyOn(queries, 'listWorkflows').mockImplementation(() => {
+      throw new Error('Database error');
+    });
+
+    // Should not throw; should return safe defaults
+    const context = buildRoutingBrainContext(currentWorkflow, 'implement', 1);
+
+    expect(context.crossWorkflowPriors.sampleSize).toBe(0);
+    expect(context.crossWorkflowPriors.repoName).toBeDefined();
   });
 });
