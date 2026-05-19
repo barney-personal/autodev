@@ -188,7 +188,7 @@ When a workflow transitions to `status='blocked'`, the dispatcher (`src/server/o
 
 **Tool surface** — `ResolverTools.ts` defines:
 - READ: `read_blocked_diagnostic`, `read_agent_log`, `read_workflow_note`, `read_worktree_file`.
-- MUTATING: `git_command` (allowlist: add/commit/restore/stash/status/diff/log — no push/reset --hard/clean -f), `edit_worktree_file` (path-traversal guarded, .git/node_modules blocked), `update_workflow_field` (whitelist: work_dir, implementer_model, reviewer_model, blocked_reason), `write_note` (RecoveryKeys whitelist), `set_classification`.
+- MUTATING: `git_command` (allowlist: add/commit/restore/stash/status/diff/log — no push/reset --hard/clean -f), `edit_worktree_file` (path-traversal guarded with lexical + realpath checks, .git/node_modules blocked), `update_workflow_field` (whitelist: implementer_model, reviewer_model, blocked_reason — `work_dir` is intentionally excluded; the watchdog's `recoverNullWorkDirWorkflows` handles null-work_dir recovery, and there's no safe containment constraint for the Resolver to set arbitrary host paths), `write_note` (RecoveryKeys whitelist), `set_classification`.
 - TERMINAL: `propose_resume`, `escalate_to_user` (opens a discussion thread), `mark_unresolvable`.
 
 **Threat model** — same shape as the Live Watcher. All free-text Resolver outputs run through `stripControlChars` + length caps before persistence; mutating tools never accept absolute paths or escape the worktree; the Resolver can never push, create PRs, or modify any workflow except the one it was dispatched for. Resolver-driven resume always goes through the existing `resumeWorkflow()` health checks.

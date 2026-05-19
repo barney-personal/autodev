@@ -144,6 +144,34 @@ describe('dispatchResolverForWorkflow — daily cost cap', () => {
   });
 });
 
+describe('runStartupMaintenance frees stale resolver concurrency slots', () => {
+  it('aborts stale running rows via the maintenance hook so countActiveResolverRuns drops', async () => {
+    const wf = await insertTestWorkflow({ status: 'blocked' });
+    const stale = queries.insertResolverRun({
+      id: 'stale-startup', workflow_id: wf.id, trigger_reason: 'crashed', reason_fingerprint: 'sf',
+      attempt: 1, model: 'claude-opus-4-7',
+    });
+    const fresh = queries.insertResolverRun({
+      id: 'fresh-startup', workflow_id: wf.id, trigger_reason: 'new', reason_fingerprint: 'nf',
+      attempt: 2, model: 'claude-opus-4-7',
+    });
+
+    const db = (await import('../server/db/database.js')).getDb();
+    db.prepare('UPDATE resolver_runs SET started_at = ? WHERE id = ?').run(Date.now() - 2 * 60 * 60 * 1000, stale.id);
+
+    expect(queries.countActiveResolverRuns()).toBe(2);
+
+    const { runStartupMaintenance } = await import('../server/orchestrator/StartupMaintenance.js');
+    const stats = runStartupMaintenance();
+    expect(stats.staleResolverRunsAborted).toBe(1);
+
+    // Concurrency slot freed.
+    expect(queries.countActiveResolverRuns()).toBe(1);
+    expect(queries.getResolverRunById(stale.id)!.status).toBe('aborted');
+    expect(queries.getResolverRunById(fresh.id)!.status).toBe('running');
+  });
+});
+
 describe('abortStaleRunningResolverRuns', () => {
   it('marks rows with status=running and old started_at as aborted', async () => {
     const wf = await insertTestWorkflow({ status: 'blocked' });
@@ -171,6 +199,70 @@ describe('abortStaleRunningResolverRuns', () => {
 
     const reloadedRecent = queries.getResolverRunById(recent.id)!;
     expect(reloadedRecent.status).toBe('running');
+  });
+});
+
+describe('ResumeOrchestrator — circuit-trip end-to-end', () => {
+  it('trips the circuit when a Resolver-driven resume is followed by a same-fingerprint re-block', async () => {
+    const { recordPostResumeBlock, _seedRecentResumeForTest, _resetRecentResumesForTest } =
+      await import('../server/orchestrator/ResumeOrchestrator.js');
+    const { fingerprint } = await import('../server/orchestrator/ResolverFingerprint.js');
+    _resetRecentResumesForTest();
+
+    const wf = await insertTestWorkflow({ status: 'blocked' });
+    const blockedReason = 'Phase failed (rate_limit) on claude-sonnet-4-6';
+    queries.updateWorkflow(wf.id, { blocked_reason: blockedReason });
+    const fp = fingerprint(blockedReason);
+
+    const run = queries.insertResolverRun({
+      id: 'circuit-trip-1', workflow_id: wf.id, trigger_reason: blockedReason,
+      reason_fingerprint: fp, attempt: 1, model: 'claude-opus-4-7',
+    });
+    queries.updateResolverRun(run.id, { resume_outcome: 'resumed_running' });
+
+    // Simulate the state right after a successful Resolver-driven resume.
+    _seedRecentResumeForTest(wf.id, fp, run.id);
+
+    // Workflow re-blocks on the same root cause — fingerprint should match
+    // and the circuit should trip.
+    const tripped = recordPostResumeBlock(wf.id, blockedReason);
+    expect(tripped).toBe(true);
+
+    const wfAfter = queries.getWorkflowById(wf.id)!;
+    expect(wfAfter.resolver_circuit_state).toBe('tripped');
+
+    const runAfter = queries.getResolverRunById(run.id)!;
+    expect(runAfter.resume_outcome).toBe('resumed_re_blocked');
+
+    // A subsequent dispatch attempt must observe the tripped circuit.
+    const decision = decideDispatch(wfAfter);
+    expect(decision.shouldRun).toBe(false);
+    expect(decision.reason).toBe('circuit_tripped');
+  });
+
+  it('does NOT trip the circuit when the re-block has a different fingerprint', async () => {
+    const { recordPostResumeBlock, _seedRecentResumeForTest, _resetRecentResumesForTest } =
+      await import('../server/orchestrator/ResumeOrchestrator.js');
+    const { fingerprint } = await import('../server/orchestrator/ResolverFingerprint.js');
+    _resetRecentResumesForTest();
+
+    const wf = await insertTestWorkflow({ status: 'blocked' });
+    const originalReason = 'Phase failed (rate_limit) on claude-sonnet-4-6';
+    queries.updateWorkflow(wf.id, { blocked_reason: originalReason });
+    const fp = fingerprint(originalReason);
+
+    const run = queries.insertResolverRun({
+      id: 'circuit-trip-2', workflow_id: wf.id, trigger_reason: originalReason,
+      reason_fingerprint: fp, attempt: 1, model: 'claude-opus-4-7',
+    });
+    _seedRecentResumeForTest(wf.id, fp, run.id);
+
+    const newReason = 'Phase failed (test_failure) on claude-sonnet-4-6';
+    const tripped = recordPostResumeBlock(wf.id, newReason);
+    expect(tripped).toBe(false);
+
+    const wfAfter = queries.getWorkflowById(wf.id)!;
+    expect(wfAfter.resolver_circuit_state).toBeNull();
   });
 });
 

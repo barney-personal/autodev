@@ -338,4 +338,26 @@ describe('ResolverTools — git_command in a real worktree', () => {
     });
     expect(bad.ok).toBe(false);
   });
+
+  it('rejects a write through a symlink that escapes the worktree', async () => {
+    const wf = await insertTestWorkflow({ work_dir: tmpDir });
+    const run = queries.insertResolverRun({
+      id: 'run-symlink-1', workflow_id: wf.id, trigger_reason: 'test', reason_fingerprint: 'fp-sym',
+      attempt: 1, model: 'claude-opus-4-7',
+    });
+    // Create a symlink inside the worktree that points to an external dir.
+    const escapeTarget = fs.mkdtempSync(path.join(os.tmpdir(), 'resolver-escape-'));
+    fs.symlinkSync(escapeTarget, path.join(tmpDir, 'escaping'));
+    try {
+      const bad = dispatchResolverTool(run, {
+        type: 'tool_use', id: 'u-sym', name: 'edit_worktree_file',
+        input: { path: 'escaping/owned.ts', contents: 'pwned', reason: 'attempt symlink escape' },
+      });
+      expect(bad.ok).toBe(false);
+      expect(bad.message).toMatch(/symlink/);
+      expect(fs.existsSync(path.join(escapeTarget, 'owned.ts'))).toBe(false);
+    } finally {
+      fs.rmSync(escapeTarget, { recursive: true, force: true });
+    }
+  });
 });

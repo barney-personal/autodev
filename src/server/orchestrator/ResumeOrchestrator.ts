@@ -70,6 +70,20 @@ export async function handleResolverOutcome(input: HandleResolverOutcomeInput): 
     return 'not_resumed';
   }
 
+  // Bounds-check the LLM-proposed cycle. The tool input schema enforces
+  // type:number, but a Resolver under adversarial influence could propose
+  // cycle: 9999 to confuse downstream logic. Clamp explicit out-of-range
+  // values to the workflow's known bounds and surface as a not_resumed.
+  if (proposed.cycle < 0 || proposed.cycle > wf.max_cycles) {
+    log.warn({ workflow_id: wf.id, resolver_id: run.id, proposed_cycle: proposed.cycle, max_cycles: wf.max_cycles }, 'resolver proposed out-of-range cycle — skipping resume');
+    queries.updateResolverRun(run.id, { resume_outcome: 'not_resumed' });
+    logResilienceEvent('resolver_resume_skipped', 'workflow', wf.id, {
+      resolver_id: run.id, reason: 'cycle_out_of_range',
+      proposed_cycle: proposed.cycle, max_cycles: wf.max_cycles,
+    });
+    return 'not_resumed';
+  }
+
   try {
     const job = resumeWorkflow(wf, { phase: proposed.phase, cycle: proposed.cycle });
     log.info({ workflow_id: wf.id, resolver_id: run.id, job_id: job.id }, 'resolver-driven resume succeeded');
@@ -114,6 +128,14 @@ export async function handleResolverOutcome(input: HandleResolverOutcomeInput): 
 
     // Mark workflow blocked again with an updated reason so the next
     // resolver attempt sees what went wrong.
+    //
+    // We deliberately use queries.updateWorkflow + manual emitWorkflowUpdate
+    // here instead of WorkflowManager.updateAndEmit. updateAndEmit's
+    // status='blocked' branch calls dispatchResolverForWorkflowAsync, which
+    // would re-fire the Resolver in a tight loop on every resume failure.
+    // Bypassing that path keeps the resume-failure recovery owned by the
+    // dispatcher's normal flow (next blocked transition from somewhere
+    // outside this code path).
     try {
       queries.updateWorkflow(wf.id, {
         status: 'blocked',
@@ -200,3 +222,6 @@ export function resetResolverCircuit(workflowId: string): boolean {
 
 export function _resetRecentResumesForTest(): void { _recentResumes.clear(); }
 export function _peekRecentResumesForTest() { return new Map(_recentResumes); }
+export function _seedRecentResumeForTest(workflowId: string, fingerprint: string, resolverId: string): void {
+  _recentResumes.set(workflowId, { fingerprint, resolver_id: resolverId, resumed_at: Date.now() });
+}

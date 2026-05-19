@@ -259,36 +259,42 @@ export function execReadAgentLog(run: ResolverRun, input: ReadAgentLogInput): Re
   if (!input.agent_id || typeof input.agent_id !== 'string') {
     return failAction(run, 'read_agent_log', input, 'agent_id required');
   }
-  if (!AGENT_ID_RE.test(input.agent_id)) {
-    return failAction(run, 'read_agent_log', input, 'agent_id must be a UUID');
+  // Strip control chars first — the UUID regex below would reject anything
+  // sneaky anyway, but if it didn't (loosened in future) we don't want raw
+  // bytes from the LLM landing in the resolver_actions payload.
+  const cleanAgentId = capUntrustedText(input.agent_id, 128);
+  if (!AGENT_ID_RE.test(cleanAgentId)) {
+    return failAction(run, 'read_agent_log', { ...input, agent_id: cleanAgentId }, 'agent_id must be a UUID');
   }
   if (input.kind !== 'ndjson' && input.kind !== 'stderr' && input.kind !== 'snapshot') {
-    return failAction(run, 'read_agent_log', input, `invalid kind '${input.kind}'`);
+    return failAction(run, 'read_agent_log', { ...input, agent_id: cleanAgentId }, `invalid kind '${input.kind}'`);
   }
+  // Use cleanAgentId for all downstream operations.
+  const agentId = cleanAgentId;
 
   // Ownership check: the agent must belong to a job in this workflow. Without
   // this an LLM could ask for any other workflow's agent log by guessing a
   // UUID, leaking logs from unrelated runs even though the path is safe.
-  const agent = queries.getAgentById(input.agent_id);
+  const agent = queries.getAgentById(agentId);
   if (!agent) {
-    return failAction(run, 'read_agent_log', input, `agent ${input.agent_id} not found`);
+    return failAction(run, 'read_agent_log', { ...input, agent_id: agentId }, `agent ${agentId} not found`);
   }
   const job = queries.getJobById(agent.job_id);
   if (!job || job.workflow_id !== run.workflow_id) {
-    return failAction(run, 'read_agent_log', input, `agent ${input.agent_id} does not belong to workflow ${run.workflow_id}`);
+    return failAction(run, 'read_agent_log', { ...input, agent_id: agentId }, `agent ${agentId} does not belong to workflow ${run.workflow_id}`);
   }
 
   const max = clamp(input.max_bytes ?? LOG_TAIL_BYTES, 1024, LOG_TAIL_BYTES);
-  const file = path.resolve(PTY_LOG_DIR, `${input.agent_id}.${input.kind}`);
+  const file = path.resolve(PTY_LOG_DIR, `${agentId}.${input.kind}`);
   // Defence-in-depth: even with the UUID + ownership guards above, verify
   // the resolved path stays inside PTY_LOG_DIR. Catches future regressions
   // if either regex is loosened or PTY_LOG_DIR is moved.
   const root = path.resolve(PTY_LOG_DIR) + path.sep;
   if (!file.startsWith(root)) {
-    return failAction(run, 'read_agent_log', input, 'resolved path escapes PTY_LOG_DIR');
+    return failAction(run, 'read_agent_log', { ...input, agent_id: agentId }, 'resolved path escapes PTY_LOG_DIR');
   }
   const body = tailFile(file, max);
-  recordAction(run, 'read_agent_log', { agent_id: input.agent_id, kind: input.kind, bytes: body?.length ?? 0 }, 'applied', null);
+  recordAction(run, 'read_agent_log', { agent_id: agentId, kind: input.kind, bytes: body?.length ?? 0 }, 'applied', null);
   if (body == null) return { ok: false, message: `agent log not found: ${path.basename(file)}` };
   return { ok: true, message: body };
 }
@@ -612,17 +618,63 @@ function resolveWorktreeRelativePath(wf: Workflow, p: string): ResolvedPath | Re
   if (!root) return { ok: false, error: 'workflow has no worktree_path or work_dir' };
 
   const absolute = path.resolve(root, p);
-  const rootResolved = path.resolve(root) + path.sep;
-  if (!(absolute + path.sep).startsWith(rootResolved)) {
+  const rootResolved = path.resolve(root);
+  const rootWithSep = rootResolved + path.sep;
+  if (!(absolute + path.sep).startsWith(rootWithSep)) {
     return { ok: false, error: `path escapes worktree root ${root}` };
   }
 
+  // path.relative receives the resolved root WITHOUT a trailing separator —
+  // posix tolerates the trailing slash, but on Windows path.sep is `\` and
+  // path.relative treats it as a directory anchor.
   const rel = path.relative(rootResolved, absolute);
   const segs = rel.split(path.sep);
   const first = segs[0] ?? '';
   if (first === '.git' || first === 'node_modules' || first.startsWith('.claude')) {
     return { ok: false, error: `editing under ${first} is not allowed` };
   }
+
+  // Symlink defence (TOCTOU): the lexical containment check above does NOT
+  // follow symlinks, but fs.writeFileSync / fs.readFileSync do. If a previous
+  // tool call or an adversarial agent created a symlink inside the worktree
+  // pointing outside it, the lexical check passes but the actual IO escapes.
+  // Resolve the real path of (a) the parent of the target — present even if
+  // the file is new — and (b) the root, then verify containment again.
+  //
+  // Best-effort when the root doesn't exist on disk: skip the check rather
+  // than fail. The real fs.writeFileSync will surface ENOENT itself, so a
+  // missing root can't be exploited — there's nothing to escape from.
+  if (fs.existsSync(rootResolved)) {
+    try {
+      const realRoot = fs.realpathSync(rootResolved) + path.sep;
+      const parent = path.dirname(absolute);
+      // Walk upward until we find an existing ancestor we can realpath. For
+      // new files in new directories the immediate parent may not exist yet.
+      let probe = parent;
+      while (probe.length >= rootResolved.length && !fs.existsSync(probe)) {
+        const up = path.dirname(probe);
+        if (up === probe) break;
+        probe = up;
+      }
+      if (fs.existsSync(probe)) {
+        const realProbe = fs.realpathSync(probe);
+        if (!(realProbe + path.sep).startsWith(realRoot) && realProbe + path.sep !== realRoot) {
+          return { ok: false, error: 'symlink escapes worktree root' };
+        }
+      }
+      // If the file itself exists, realpath it too — catches the case where
+      // the file is a symlink to outside.
+      if (fs.existsSync(absolute)) {
+        const realAbs = fs.realpathSync(absolute);
+        if (!(realAbs + path.sep).startsWith(realRoot) && realAbs + path.sep !== realRoot) {
+          return { ok: false, error: 'symlink target escapes worktree root' };
+        }
+      }
+    } catch (err) {
+      return { ok: false, error: `realpath check failed: ${(err as Error).message}` };
+    }
+  }
+
   return { ok: true, relative: rel, absolute };
 }
 
