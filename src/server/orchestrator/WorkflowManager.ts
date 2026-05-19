@@ -29,6 +29,7 @@ import { parseMilestones, meetsCompletionThreshold, recoverPlanFromAgentOutput }
 import { ensureWorktreeBranch, verifyWorktreeHealth, createWorkflowWorktree, restoreWorkflowWorktree } from './WorkflowWorktreeManager.js';
 import { pushAndCreatePr as _pushAndCreatePr, finalizeWorkflow as _finalizeWorkflow, reconcileBlockedPRs as _reconcileBlockedPRs } from './WorkflowPRCreator.js';
 import { diagnoseWriteNoteInOutput, formatWriteNoteDiagnostic, writeBlockedDiagnostic } from './WorkflowBlockedDiagnostics.js';
+import { decideRouteForCycle, getRoutingBrainMode } from './RoutingBrain.js';
 
 // ─── Re-exports (preserve public API — all import sites continue to work) ──
 export { parseMilestones, meetsCompletionThreshold, recoverPlanFromAgentOutput, extractPlanFromText } from './WorkflowMilestoneParser.js';
@@ -182,7 +183,7 @@ function _onJobCompleted(job: Job): void {
             finalizeWorkflow(queries.getWorkflowById(workflow.id)!).catch(err => console.error(`[workflow ${workflow.id}] finalizeWorkflow error:`, err));
           }
         } else {
-          spawnPhaseJob(updated, 'implement', updated.current_cycle);
+          void spawnImplementWithRouting(updated, updated.current_cycle);
         }
       } catch (err) {
         const errorMessage = errMsg(err);
@@ -764,6 +765,45 @@ function ensureWorkflowWorktreeReadyForPhase(
   }
 
   return activeWorkflow;
+}
+
+// ─── Routing brain integration ──────────────────────────────────────────────────
+
+/**
+ * Async wrapper for spawning an implement job with optional routing brain decision.
+ * Called only for review-approved cycle-start implement spawns.
+ * Fallback/retry/resume paths bypass routing by calling spawnPhaseJob directly.
+ */
+async function spawnImplementWithRouting(workflow: Workflow, cycle: number): Promise<void> {
+  const mode = getRoutingBrainMode();
+
+  // off mode: no routing decision, preserve existing behavior exactly
+  if (mode === 'off') {
+    spawnPhaseJob(workflow, 'implement', cycle);
+    return;
+  }
+
+  try {
+    const decision = await decideRouteForCycle(workflow, 'implement', cycle);
+    const implementerModel = decision.implementerModel;
+
+    // shadow mode: persist decision but spawn with static models
+    if (mode === 'shadow') {
+      spawnPhaseJob(workflow, 'implement', cycle);
+      return;
+    }
+
+    // live mode: use routed implementer model
+    if (mode === 'live') {
+      spawnPhaseJob(workflow, 'implement', cycle, implementerModel);
+      return;
+    }
+  } catch (err) {
+    const errorMessage = errMsg(err);
+    console.error(`[workflow ${workflow.id}] routing brain error for implement cycle ${cycle}:`, err);
+    const blockedReason = `routing_brain_error: Failed to decide route for implement cycle ${cycle}: ${errorMessage.slice(0, 100)}`;
+    updateAndEmit(workflow.id, { status: 'blocked', current_phase: 'implement', blocked_reason: blockedReason });
+  }
 }
 
 function spawnPhaseJob(workflow: Workflow, phase: WorkflowPhase, cycle: number, modelOverride?: string): void {
