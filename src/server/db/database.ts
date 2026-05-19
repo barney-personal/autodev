@@ -722,6 +722,26 @@ function createWatcherTables(db: DatabaseSync): void {
   // (type, created_at) index would only matter for cross-agent type
   // queries — we don't run any, so leaving it out keeps the schema lean.
   db.exec('CREATE INDEX IF NOT EXISTS idx_watcher_actions_cooldown ON watcher_actions(agent_id, type, outcome, created_at)');
+
+  // ── Routing brain: per-cycle route decisions ───────────────────────────────
+  // Persisted by RoutingBrain.decideRouteForCycle. `decision_json` stores the
+  // RouteDecision payload exactly as returned to callers; `mode` is the
+  // persistence wrapper (shadow|live|fallback) and lives only on the row.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS route_decisions (
+      id              TEXT PRIMARY KEY,
+      workflow_id     TEXT NOT NULL,
+      cycle           INTEGER NOT NULL,
+      phase           TEXT NOT NULL,
+      decision_json   TEXT NOT NULL,
+      mode            TEXT NOT NULL,
+      prompt_version  TEXT NOT NULL,
+      decision_model  TEXT NOT NULL,
+      created_at      INTEGER NOT NULL
+    )
+  `);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_route_decisions_workflow_cycle ON route_decisions(workflow_id, cycle, phase, created_at)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_route_decisions_created_at ON route_decisions(created_at)');
 }
 
 export function closeDb(): void {

@@ -5,3 +5,4 @@ export * from './noteQueries.js';
 export * from './workflowQueries.js';
 export * from './eyeQueries.js';
 export * from './watcherQueries.js';
+export * from './routeDecisionQueries.js';
