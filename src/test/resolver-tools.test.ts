@@ -146,6 +146,14 @@ describe('ResolverTools — read_agent_log path safety', () => {
 });
 
 describe('ResolverTools — note key resolution', () => {
+  // The cycle range guard inside resolveNoteKey now consults workflow.max_cycles
+  // via queries.getWorkflowById. Existing legacy tests use a synthetic workflow
+  // id with no DB row — that's still fine because cycleIsValid returns true
+  // when the row can't be found (the primary guard is the short-form regex).
+  // We still set up the DB here so the lookup itself doesn't throw.
+  beforeEach(() => setupTestDb());
+  afterEach(() => cleanupTestDb());
+
   it('maps short forms to full keys', () => {
     const wfId = 'abc123';
     expect(resolveNoteKey(wfId, 'plan')).toBe(`workflow/${wfId}/plan`);
@@ -170,6 +178,64 @@ describe('ResolverTools — note key resolution', () => {
     // short-form match so an LLM can't address arbitrary never-run cycles.
     expect(resolveNoteKey('abc', 'workflow/abc/worklog/cycle-999')).toBeNull();
     expect(resolveNoteKey('abc', 'workflow/abc/review-feedback/cycle-42')).toBeNull();
+  });
+});
+
+describe('ResolverTools — write_note cycle bounds', () => {
+  beforeEach(() => setupTestDb());
+  afterEach(() => cleanupTestDb());
+
+  it('rejects worklog cycles above the workflow max_cycles', async () => {
+    const wf = await insertTestWorkflow({ max_cycles: 5 });
+    const run = queries.insertResolverRun({
+      id: 'cycle-bounds-1', workflow_id: wf.id, trigger_reason: 'test', reason_fingerprint: 'fp',
+      attempt: 1, model: 'claude-opus-4-7',
+    });
+    const r = dispatchResolverTool(run, {
+      type: 'tool_use', id: 'u', name: 'write_note',
+      input: { key: 'worklog/cycle-999', value: 'should be rejected', reason: 'test' },
+    });
+    expect(r.ok).toBe(false);
+    expect(r.message).toMatch(/unrecognized note key/);
+  });
+
+  it('rejects worklog cycle 0', async () => {
+    const wf = await insertTestWorkflow({ max_cycles: 5 });
+    const run = queries.insertResolverRun({
+      id: 'cycle-bounds-2', workflow_id: wf.id, trigger_reason: 'test', reason_fingerprint: 'fp',
+      attempt: 1, model: 'claude-opus-4-7',
+    });
+    const r = dispatchResolverTool(run, {
+      type: 'tool_use', id: 'u', name: 'write_note',
+      input: { key: 'worklog/cycle-0', value: 'should be rejected', reason: 'test' },
+    });
+    expect(r.ok).toBe(false);
+  });
+
+  it('accepts worklog cycles within range', async () => {
+    const wf = await insertTestWorkflow({ max_cycles: 5 });
+    const run = queries.insertResolverRun({
+      id: 'cycle-bounds-3', workflow_id: wf.id, trigger_reason: 'test', reason_fingerprint: 'fp',
+      attempt: 1, model: 'claude-opus-4-7',
+    });
+    const r = dispatchResolverTool(run, {
+      type: 'tool_use', id: 'u', name: 'write_note',
+      input: { key: 'worklog/cycle-3', value: 'within-range cycle worklog', reason: 'test' },
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  it('rejects review-feedback cycles above the workflow max_cycles', async () => {
+    const wf = await insertTestWorkflow({ max_cycles: 4 });
+    const run = queries.insertResolverRun({
+      id: 'cycle-bounds-4', workflow_id: wf.id, trigger_reason: 'test', reason_fingerprint: 'fp',
+      attempt: 1, model: 'claude-opus-4-7',
+    });
+    const r = dispatchResolverTool(run, {
+      type: 'tool_use', id: 'u', name: 'write_note',
+      input: { key: 'review-feedback/cycle-100', value: 'rejected', reason: 'test' },
+    });
+    expect(r.ok).toBe(false);
   });
 });
 

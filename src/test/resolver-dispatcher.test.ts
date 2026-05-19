@@ -6,6 +6,7 @@ vi.mock('../server/socket/SocketManager.js', () => createSocketMock());
 import * as queries from '../server/db/queries.js';
 import {
   decideDispatch,
+  decideDispatchWithCaps,
   dispatchResolverForWorkflow,
   _resetInFlightForTest,
 } from '../server/orchestrator/ResolverDispatcher.js';
@@ -101,6 +102,67 @@ describe('decideDispatch', () => {
     });
     const stored = queries.getWorkflowById(wf.id)!;
     expect(decideDispatch(stored).attempt).toBe(3);
+  });
+});
+
+describe('decideDispatchWithCaps', () => {
+  it('reports daily_cost_cap when prior runs in the window exceed the cap', async () => {
+    process.env.RESOLVER_DAILY_COST_CAP_USD = '5';
+    const wf = await insertTestWorkflow({ status: 'blocked' });
+    queries.updateWorkflow(wf.id, { blocked_reason: 'Phase failed (rate_limit)' });
+    const seeded = queries.insertResolverRun({
+      id: 'wc-1', workflow_id: wf.id, trigger_reason: 'old', reason_fingerprint: 'oldfp',
+      attempt: 1, model: 'claude-opus-4-7',
+    });
+    const db = (await import('../server/db/database.js')).getDb();
+    db.prepare('UPDATE resolver_runs SET cost_usd = 10 WHERE id = ?').run(seeded.id);
+
+    const fresh = queries.getWorkflowById(wf.id)!;
+    const decision = decideDispatchWithCaps(fresh);
+    expect(decision.shouldRun).toBe(false);
+    expect(decision.reason).toBe('daily_cost_cap');
+  });
+
+  it('reports concurrency_cap when active runs meet the limit', async () => {
+    process.env.RESOLVER_GLOBAL_CONCURRENCY = '1';
+    const wf = await insertTestWorkflow({ status: 'blocked' });
+    queries.updateWorkflow(wf.id, { blocked_reason: 'Phase failed (rate_limit)' });
+    queries.insertResolverRun({
+      id: 'wc-active', workflow_id: wf.id, trigger_reason: 'active', reason_fingerprint: 'activefp',
+      attempt: 1, model: 'claude-opus-4-7',
+    });
+
+    const fresh = queries.getWorkflowById(wf.id)!;
+    const decision = decideDispatchWithCaps(fresh);
+    expect(decision.shouldRun).toBe(false);
+    expect(decision.reason).toBe('concurrency_cap');
+  });
+
+  it('reports in_flight when an active run on the same fingerprint exists', async () => {
+    const wf = await insertTestWorkflow({ status: 'blocked' });
+    const reason = 'Phase failed (rate_limit)';
+    queries.updateWorkflow(wf.id, { blocked_reason: reason });
+    const fresh = queries.getWorkflowById(wf.id)!;
+    const { fingerprint } = await import('../server/orchestrator/ResolverFingerprint.js');
+    const fp = fingerprint(reason);
+    queries.insertResolverRun({
+      id: 'wc-inflight', workflow_id: wf.id, trigger_reason: reason, reason_fingerprint: fp,
+      attempt: 1, model: 'claude-opus-4-7',
+    });
+
+    const decision = decideDispatchWithCaps(fresh);
+    expect(decision.shouldRun).toBe(false);
+    expect(decision.reason).toBe('in_flight');
+  });
+
+  it('returns shouldRun=true when all caps clear', async () => {
+    process.env.RESOLVER_DAILY_COST_CAP_USD = '50';
+    process.env.RESOLVER_GLOBAL_CONCURRENCY = '2';
+    const wf = await insertTestWorkflow({ status: 'blocked' });
+    queries.updateWorkflow(wf.id, { blocked_reason: 'Phase failed (rate_limit)' });
+    const fresh = queries.getWorkflowById(wf.id)!;
+    const decision = decideDispatchWithCaps(fresh);
+    expect(decision.shouldRun).toBe(true);
   });
 });
 

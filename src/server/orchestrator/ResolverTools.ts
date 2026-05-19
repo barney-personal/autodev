@@ -692,11 +692,31 @@ function resolveNoteKey(workflowId: string, key: string): string | null {
   if (key === 'contract') return RecoveryKeys.contract(workflowId);
 
   const worklog = key.match(/^worklog\/cycle-(\d+)$/) ?? key.match(/^worklog-(\d+)$/);
-  if (worklog) return RecoveryKeys.worklog(workflowId, parseInt(worklog[1], 10));
+  if (worklog) {
+    const c = parseInt(worklog[1], 10);
+    return cycleIsValid(workflowId, c) ? RecoveryKeys.worklog(workflowId, c) : null;
+  }
   const review = key.match(/^review-feedback\/cycle-(\d+)$/) ?? key.match(/^review-(\d+)$/);
-  if (review) return RecoveryKeys.reviewFeedback(workflowId, parseInt(review[1], 10));
+  if (review) {
+    const c = parseInt(review[1], 10);
+    return cycleIsValid(workflowId, c) ? RecoveryKeys.reviewFeedback(workflowId, c) : null;
+  }
 
   return null;
+}
+
+/**
+ * A cycle number is valid for a workflow if it falls within [1, max_cycles].
+ * Reject anything outside so a Resolver that misreads context can't write to
+ * `worklog/cycle-999` (which no downstream code will ever read). Returns true
+ * when the workflow can't be found — the recordAction path will surface the
+ * underlying error elsewhere; we don't want this guard to mask real failures.
+ */
+function cycleIsValid(workflowId: string, cycle: number): boolean {
+  if (!Number.isInteger(cycle) || cycle < 1) return false;
+  const wf = queries.getWorkflowById(workflowId);
+  if (!wf) return true;
+  return cycle <= wf.max_cycles;
 }
 
 function findEscalationAnchorAgentId(workflowId: string): string | null {

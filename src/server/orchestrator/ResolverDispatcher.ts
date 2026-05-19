@@ -119,6 +119,34 @@ export function decideDispatch(workflow: Workflow): DispatchDecision {
   return { shouldRun: true, ...base };
 }
 
+/**
+ * Like `decideDispatch` but additionally checks the dynamic caps that
+ * `dispatchResolverForWorkflow` enforces (daily cost, concurrency, in-flight).
+ * Used by the operator-facing /dispatch endpoint so a manual click returns
+ * a 409 with the real skip reason instead of a misleading 202 that turns
+ * into a silent no-op inside the dispatcher.
+ *
+ * Read-only: hits the DB for the cap counts but never mutates state.
+ */
+export function decideDispatchWithCaps(workflow: Workflow): DispatchDecision {
+  const base = decideDispatch(workflow);
+  if (!base.shouldRun) return base;
+
+  // Same checks as dispatchResolverForWorkflow, in the same order.
+  const fpKey = `${workflow.id}/${base.fingerprint}`;
+  if (_inFlight.has(fpKey) || queries.findActiveResolverRun(workflow.id, base.fingerprint)) {
+    return { ...base, shouldRun: false, reason: 'in_flight' };
+  }
+  const dayMs = 24 * 60 * 60 * 1000;
+  if (queries.resolverCostUsdSince(Date.now() - dayMs) >= envDailyCostCap()) {
+    return { ...base, shouldRun: false, reason: 'daily_cost_cap' };
+  }
+  if (queries.countActiveResolverRuns() >= envGlobalConcurrency()) {
+    return { ...base, shouldRun: false, reason: 'concurrency_cap' };
+  }
+  return base;
+}
+
 // ─── Dispatch entry point ──────────────────────────────────────────────────
 
 const _inFlight = new Set<string>();   // composite key: `${workflow_id}/${fingerprint}`
