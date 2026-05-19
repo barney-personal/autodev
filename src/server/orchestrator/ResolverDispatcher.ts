@@ -132,7 +132,12 @@ export function decideDispatchWithCaps(workflow: Workflow): DispatchDecision {
   const base = decideDispatch(workflow);
   if (!base.shouldRun) return base;
 
-  // Same checks as dispatchResolverForWorkflow, in the same order.
+  // Same checks as dispatchResolverForWorkflow, in the same order. The
+  // per-workflow guard is checked before per-fingerprint so the endpoint's
+  // 409 response correctly reflects which guard fired.
+  if (_inFlightWorkflows.has(workflow.id)) {
+    return { ...base, shouldRun: false, reason: 'in_flight' };
+  }
   const fpKey = `${workflow.id}/${base.fingerprint}`;
   if (_inFlight.has(fpKey) || queries.findActiveResolverRun(workflow.id, base.fingerprint)) {
     return { ...base, shouldRun: false, reason: 'in_flight' };
@@ -149,7 +154,8 @@ export function decideDispatchWithCaps(workflow: Workflow): DispatchDecision {
 
 // ─── Dispatch entry point ──────────────────────────────────────────────────
 
-const _inFlight = new Set<string>();   // composite key: `${workflow_id}/${fingerprint}`
+const _inFlight = new Set<string>();           // composite key: `${workflow_id}/${fingerprint}`
+const _inFlightWorkflows = new Set<string>();  // per-workflow exclusion: only one active run per workflow
 const log = dispatcherLogger();
 
 /**
@@ -174,11 +180,24 @@ export async function dispatchResolverForWorkflow(workflowId: string): Promise<D
     return { dispatched: false, skip_reason: decision.reason };
   }
 
-  // In-flight guard for this fingerprint
+  // In-flight guards. Two layers:
+  // 1. Per-workflow exclusion (workflow_id only) — only one Resolver session
+  //    may be active per workflow. Without this, a workflow that re-blocks
+  //    with a different fingerprint while a session is in flight could spawn
+  //    a concurrent session, leading to a confusing partial-resume race.
+  // 2. Per-fingerprint dedup (workflow_id + fingerprint) — kept so two
+  //    callsites in WorkflowManager firing on the same blocked transition
+  //    don't both create a row before either can take the workflow lock.
   const key = `${workflowId}/${decision.fingerprint}`;
+  if (_inFlightWorkflows.has(workflowId)) {
+    logResilienceEvent('resolver_dispatch_skipped', 'workflow', workflowId, {
+      reason: 'in_flight', fingerprint: decision.fingerprint, level: 'workflow',
+    });
+    return { dispatched: false, skip_reason: 'in_flight' };
+  }
   if (_inFlight.has(key)) {
     logResilienceEvent('resolver_dispatch_skipped', 'workflow', workflowId, {
-      reason: 'in_flight', fingerprint: decision.fingerprint,
+      reason: 'in_flight', fingerprint: decision.fingerprint, level: 'fingerprint',
     });
     return { dispatched: false, skip_reason: 'in_flight' };
   }
@@ -212,6 +231,7 @@ export async function dispatchResolverForWorkflow(workflowId: string): Promise<D
   }
 
   _inFlight.add(key);
+  _inFlightWorkflows.add(workflowId);
   let runRow: ResolverRun | null = null;
   try {
     runRow = queries.insertResolverRun({
@@ -300,6 +320,7 @@ export async function dispatchResolverForWorkflow(workflowId: string): Promise<D
     return { dispatched: false, skip_reason: undefined, error: msg };
   } finally {
     _inFlight.delete(key);
+    _inFlightWorkflows.delete(workflowId);
   }
 }
 
@@ -384,8 +405,9 @@ async function routeOutcome(input: RouteInput): Promise<ResolverResumeOutcome | 
 
 // ─── Test hooks ────────────────────────────────────────────────────────────
 
-export function _resetInFlightForTest(): void { _inFlight.clear(); }
+export function _resetInFlightForTest(): void { _inFlight.clear(); _inFlightWorkflows.clear(); }
 export function _peekInFlightForTest(): string[] { return [..._inFlight]; }
+export function _seedInFlightWorkflowForTest(workflowId: string): void { _inFlightWorkflows.add(workflowId); }
 
 // ─── Result shape ──────────────────────────────────────────────────────────
 

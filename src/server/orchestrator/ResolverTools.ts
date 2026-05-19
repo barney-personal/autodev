@@ -70,10 +70,6 @@ const ALLOWED_GIT_VERBS = new Set([
   'log',
 ]);
 
-const ALLOWED_NOTE_KEYS = (workflowId: string): Set<string> => new Set([
-  RecoveryKeys.plan(workflowId),
-  RecoveryKeys.contract(workflowId),
-]);
 
 // ─── Tool definitions for the Anthropic Messages API ───────────────────────
 
@@ -433,15 +429,22 @@ export function execUpdateWorkflowField(run: ResolverRun, input: UpdateWorkflowF
   const wf = queries.getWorkflowById(run.workflow_id);
   if (!wf) return failAction(run, 'update_workflow_field', input, 'workflow not found');
 
+  // Sanitize the value before BOTH the journal AND the DB write — the
+  // value gets re-loaded into Resolver context bundles and shown in the
+  // dashboard, so control chars or ANSI escapes here would propagate.
+  // Cap is field-aware: blocked_reason can be longer than the model field
+  // values, but all three are bounded.
+  const cleanValue = capUntrustedText(input.value, input.field === 'blocked_reason' ? TEXT_CAP_MEDIUM : TEXT_CAP_SHORT);
+
   const action = recordAction(run, 'update_workflow_field', {
     field: input.field,
-    value: sanitizeShort(input.value),
+    value: cleanValue,
     reason: sanitizeShort(input.reason),
   }, 'pending', null);
 
   try {
     const fields: Record<string, unknown> = {};
-    fields[input.field] = input.value;
+    fields[input.field] = cleanValue;
     queries.updateWorkflow(run.workflow_id, fields as Parameters<typeof queries.updateWorkflow>[1]);
     const updated = queries.getWorkflowById(run.workflow_id);
     if (updated) socket.emitWorkflowUpdate(updated);
@@ -470,12 +473,17 @@ export function execWriteNote(run: ResolverRun, input: WriteNoteInput): Resolver
     return failAction(run, 'write_note', input, `value exceeds cap (${TEXT_CAP_LONG * 2} chars)`);
   }
 
-  const action = recordAction(run, 'write_note', { key, bytes: input.value.length, reason: sanitizeShort(input.reason) }, 'pending', null);
+  // Notes feed directly into future phase prompts (plan, contract) and into
+  // Resolver context bundles for subsequent runs. Strip control chars before
+  // persistence so injected ANSI escapes can't reach downstream agents.
+  const cleanValue = capUntrustedText(input.value, TEXT_CAP_LONG * 2);
+
+  const action = recordAction(run, 'write_note', { key, bytes: cleanValue.length, reason: sanitizeShort(input.reason) }, 'pending', null);
   try {
-    queries.upsertNote(key, input.value, null);
+    queries.upsertNote(key, cleanValue, null);
     queries.updateResolverActionOutcome(action.id, 'applied', null);
     emitAction(action.id);
-    return { ok: true, message: `wrote note ${key} (${input.value.length} bytes)`, action_id: action.id };
+    return { ok: true, message: `wrote note ${key} (${cleanValue.length} bytes)`, action_id: action.id };
   } catch (err) {
     const msg = (err as Error).message ?? String(err);
     queries.updateResolverActionOutcome(action.id, 'error', msg.slice(0, 500));
@@ -708,11 +716,8 @@ function resolveNoteKey(workflowId: string, key: string): string | null {
   // other never-run cycle. The full-form passthrough that previously lived
   // here bypassed that validation; it was unnecessary because the short
   // forms cover every legitimate access pattern.
-  const allowed = ALLOWED_NOTE_KEYS(workflowId);
-  if (allowed.has(key)) return key;
-
-  if (key === 'plan') return RecoveryKeys.plan(workflowId);
-  if (key === 'contract') return RecoveryKeys.contract(workflowId);
+  if (key === 'plan' || key === RecoveryKeys.plan(workflowId)) return RecoveryKeys.plan(workflowId);
+  if (key === 'contract' || key === RecoveryKeys.contract(workflowId)) return RecoveryKeys.contract(workflowId);
 
   const worklog = key.match(/^worklog\/cycle-(\d+)$/) ?? key.match(/^worklog-(\d+)$/);
   if (worklog) {
@@ -731,14 +736,18 @@ function resolveNoteKey(workflowId: string, key: string): string | null {
 /**
  * A cycle number is valid for a workflow if it falls within [1, max_cycles].
  * Reject anything outside so a Resolver that misreads context can't write to
- * `worklog/cycle-999` (which no downstream code will ever read). Returns true
- * when the workflow can't be found — the recordAction path will surface the
- * underlying error elsewhere; we don't want this guard to mask real failures.
+ * `worklog/cycle-999` (which no downstream code will ever read).
+ *
+ * Tightened from "fall back to permissive when workflow row is missing" to
+ * "reject when the workflow doesn't exist" — a dangling workflow_id should
+ * never produce a note write. The previous lenient fallback was defence-in-
+ * depth for a case that shouldn't occur in production (the run row already
+ * carries a verified workflow_id).
  */
 function cycleIsValid(workflowId: string, cycle: number): boolean {
   if (!Number.isInteger(cycle) || cycle < 1) return false;
   const wf = queries.getWorkflowById(workflowId);
-  if (!wf) return true;
+  if (!wf) return false;
   return cycle <= wf.max_cycles;
 }
 

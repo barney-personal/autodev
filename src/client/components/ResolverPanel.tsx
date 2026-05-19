@@ -144,10 +144,18 @@ export function ResolverPanel({ workflow }: Props) {
           fontSize: 11,
           padding: '2px 8px',
           borderRadius: 4,
-          background: workflow.resolver_circuit_state === 'tripped' ? '#ef4444' : '#22c55e',
+          background: (() => {
+            if (workflow.resolver_circuit_state === 'tripped') return '#ef4444';
+            if (workflow.resolver_circuit_state === 'armed') return '#22c55e';
+            return '#64748b'; // null — never dispatched
+          })(),
           color: 'white',
         }}>
-          {workflow.resolver_circuit_state === 'tripped' ? 'CIRCUIT TRIPPED' : 'CIRCUIT ARMED'}
+          {(() => {
+            if (workflow.resolver_circuit_state === 'tripped') return 'CIRCUIT TRIPPED';
+            if (workflow.resolver_circuit_state === 'armed') return 'CIRCUIT ARMED';
+            return 'NEVER FIRED';
+          })()}
         </span>
         <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>
           attempts {workflow.resolver_attempt_count ?? 0}

@@ -9,6 +9,7 @@ import {
   decideDispatchWithCaps,
   dispatchResolverForWorkflow,
   _resetInFlightForTest,
+  _seedInFlightWorkflowForTest,
 } from '../server/orchestrator/ResolverDispatcher.js';
 import {
   resetResolverCircuit,
@@ -150,6 +151,19 @@ describe('decideDispatchWithCaps', () => {
       attempt: 1, model: 'claude-opus-4-7',
     });
 
+    const decision = decideDispatchWithCaps(fresh);
+    expect(decision.shouldRun).toBe(false);
+    expect(decision.reason).toBe('in_flight');
+  });
+
+  it('reports in_flight when another fingerprint is already running for the workflow', async () => {
+    const wf = await insertTestWorkflow({ status: 'blocked' });
+    queries.updateWorkflow(wf.id, { blocked_reason: 'Phase failed (rate_limit)' });
+    const fresh = queries.getWorkflowById(wf.id)!;
+
+    // Simulate an in-flight session for this workflow under a DIFFERENT
+    // fingerprint. The per-workflow exclusion guard must still trip.
+    _seedInFlightWorkflowForTest(wf.id);
     const decision = decideDispatchWithCaps(fresh);
     expect(decision.shouldRun).toBe(false);
     expect(decision.reason).toBe('in_flight');

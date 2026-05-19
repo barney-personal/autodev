@@ -146,26 +146,25 @@ describe('ResolverTools — read_agent_log path safety', () => {
 });
 
 describe('ResolverTools — note key resolution', () => {
-  // The cycle range guard inside resolveNoteKey now consults workflow.max_cycles
-  // via queries.getWorkflowById. Existing legacy tests use a synthetic workflow
-  // id with no DB row — that's still fine because cycleIsValid returns true
-  // when the row can't be found (the primary guard is the short-form regex).
-  // We still set up the DB here so the lookup itself doesn't throw.
   beforeEach(() => setupTestDb());
   afterEach(() => cleanupTestDb());
 
-  it('maps short forms to full keys', () => {
+  it('maps short forms to full keys (workflow-independent)', async () => {
+    // plan/contract have no cycle component, so the workflow row doesn't
+    // need to exist for these.
     const wfId = 'abc123';
     expect(resolveNoteKey(wfId, 'plan')).toBe(`workflow/${wfId}/plan`);
     expect(resolveNoteKey(wfId, 'contract')).toBe(`workflow/${wfId}/contract`);
   });
 
-  it('parses worklog/cycle-N', () => {
-    expect(resolveNoteKey('abc', 'worklog/cycle-3')).toBe('workflow/abc/worklog/cycle-3');
+  it('parses worklog/cycle-N when the cycle is in range', async () => {
+    const wf = await insertTestWorkflow({ max_cycles: 5 });
+    expect(resolveNoteKey(wf.id, 'worklog/cycle-3')).toBe(`workflow/${wf.id}/worklog/cycle-3`);
   });
 
-  it('parses review-feedback/cycle-N', () => {
-    expect(resolveNoteKey('abc', 'review-feedback/cycle-2')).toBe('workflow/abc/review-feedback/cycle-2');
+  it('parses review-feedback/cycle-N when the cycle is in range', async () => {
+    const wf = await insertTestWorkflow({ max_cycles: 5 });
+    expect(resolveNoteKey(wf.id, 'review-feedback/cycle-2')).toBe(`workflow/${wf.id}/review-feedback/cycle-2`);
   });
 
   it('rejects unrelated keys', () => {
@@ -174,10 +173,15 @@ describe('ResolverTools — note key resolution', () => {
   });
 
   it('rejects full-form keys that bypass cycle validation', () => {
-    // Previously this returned the key as-is; now it must go through a
-    // short-form match so an LLM can't address arbitrary never-run cycles.
     expect(resolveNoteKey('abc', 'workflow/abc/worklog/cycle-999')).toBeNull();
     expect(resolveNoteKey('abc', 'workflow/abc/review-feedback/cycle-42')).toBeNull();
+  });
+
+  it('rejects cycle-N keys for dangling workflow IDs (no row)', () => {
+    // cycleIsValid now refuses when the workflow row doesn't exist, so a
+    // dangling workflow_id can't seed orphan note rows.
+    expect(resolveNoteKey('does-not-exist', 'worklog/cycle-1')).toBeNull();
+    expect(resolveNoteKey('does-not-exist', 'review-feedback/cycle-1')).toBeNull();
   });
 });
 
@@ -290,6 +294,47 @@ describe('ResolverTools — update_workflow_field allowlist', () => {
     expect(result.ok).toBe(true);
     const refreshed = queries.getWorkflowById(wf.id);
     expect(refreshed?.implementer_model).toBe('claude-sonnet-4-6');
+  });
+
+  it('strips control chars from blocked_reason before writing to the DB', async () => {
+    const wf = await insertTestWorkflow();
+    const run = queries.insertResolverRun({
+      id: 'wf-field-3', workflow_id: wf.id, trigger_reason: 'test', reason_fingerprint: 'fp',
+      attempt: 1, model: 'claude-opus-4-7',
+    });
+    const ansiBomb = `\x1b[31mhostile\x1b[0m with control chars`;
+    const result = dispatchResolverTool(run, {
+      type: 'tool_use', id: 'u', name: 'update_workflow_field',
+      input: { field: 'blocked_reason', value: ansiBomb, reason: 'inject' },
+    });
+    expect(result.ok).toBe(true);
+    const refreshed = queries.getWorkflowById(wf.id);
+    // Persisted value must be free of C0 + ANSI ESC bytes.
+    expect(refreshed?.blocked_reason ?? '').not.toMatch(/[\x00-\x08\x0E-\x1F]/);
+    expect(refreshed?.blocked_reason ?? '').toContain('hostile');
+  });
+});
+
+describe('ResolverTools — write_note sanitizes value', () => {
+  beforeEach(() => setupTestDb());
+  afterEach(() => cleanupTestDb());
+
+  it('strips control chars from note value before upserting', async () => {
+    const wf = await insertTestWorkflow({ max_cycles: 5 });
+    const run = queries.insertResolverRun({
+      id: 'note-strip-1', workflow_id: wf.id, trigger_reason: 'test', reason_fingerprint: 'fp',
+      attempt: 1, model: 'claude-opus-4-7',
+    });
+    const dirty = `plan content\x1b[31mwith ANSI\x1b[0m and a bell`;
+    const r = dispatchResolverTool(run, {
+      type: 'tool_use', id: 'u', name: 'write_note',
+      input: { key: 'plan', value: dirty, reason: 'inject' },
+    });
+    expect(r.ok).toBe(true);
+    const note = queries.getNote(`workflow/${wf.id}/plan`);
+    expect(note).not.toBeNull();
+    expect(note!.value).not.toMatch(/[\x00-\x08\x0E-\x1F]/);
+    expect(note!.value).toContain('plan content');
   });
 });
 
