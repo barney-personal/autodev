@@ -57,7 +57,7 @@ export const createWorkflowSchema = z.object({
   maxVerifyRetries: z.number().int().min(0).max(10).optional(),
 }).superRefine((data, ctx) => {
   if (data.useWorktree !== false) {
-    const result = validateGitWorkDir(data.workDir, { requireGit: !!data.workDir });
+    const result = validateGitWorkDir(data.workDir, { requireGit: true });
     if (!result.ok) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['workDir'], message: result.error });
     }

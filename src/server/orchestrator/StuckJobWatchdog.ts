@@ -886,6 +886,9 @@ function recoverNullWorkDirWorkflows(): void {
           continue;
         }
 
+        // Legacy null-work_dir rows usually blocked while spawning the next
+        // cycle phase. If an old row is still idle, match the incident recovery
+        // path and continue implementation rather than starting a fresh assess.
         const resumePhase: WorkflowPhase = fresh.current_phase === 'idle' ? 'implement' : fresh.current_phase;
         resumeWorkflow(fresh, { phase: resumePhase, cycle: fresh.current_cycle });
 
