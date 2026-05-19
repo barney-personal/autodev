@@ -1,6 +1,7 @@
 import * as queries from '../db/queries.js';
 import { getRouteDecisionsSince } from '../db/routeDecisionQueries.js';
 import { estimateCostUsd } from './CostEstimator.js';
+import { RecoveryKeys } from './WorkflowRecovery.js';
 import type { AgentWithJob, Job, RouteDecisionMode, RouteDecisionRow } from '../../shared/types.js';
 
 interface JoinedRow {
@@ -47,10 +48,23 @@ function reviewerOutcome(joined: JoinedRow): 'tp' | 'fp' | null {
   if (joined.row.decision.skipReview !== true) return null;
   const reviewJob = joined.reviewJob;
   if (!reviewJob) return null;
+  // Manually-set review_status (used by some integrations/tests) wins.
   if (reviewJob.review_status === 'needs_revision') return 'fp';
   if (reviewJob.review_status === 'approved') return 'tp';
-  if (reviewJob.review_status === 'pending_review' && joined.reviewAgent?.status === 'done') return 'tp';
-  return null;
+  // Normal workflow review jobs never set review_status. Infer outcome from
+  // the workflow's review-feedback note for this cycle: WorkflowManager writes
+  // it whenever the reviewer added `- [ ] **Fix...` milestones, which is the
+  // ground-truth signal that the reviewer found real issues.
+  const reviewComplete =
+    reviewJob.status === 'done' ||
+    reviewJob.review_status === 'pending_review' ||
+    joined.reviewAgent?.status === 'done';
+  if (!reviewComplete) return null;
+  try {
+    const note = queries.getNote(RecoveryKeys.reviewFeedback(joined.row.workflow_id, joined.row.cycle));
+    if (note?.value && note.value.trim().length > 0) return 'fp';
+  } catch { /* treat as no feedback */ }
+  return 'tp';
 }
 
 function counterfactualCostDeltaUsd(joined: JoinedRow): number | null {

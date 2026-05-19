@@ -326,6 +326,77 @@ describe('routing-brain operator API', () => {
       expect(res.body.workflows[0].cycles).toHaveLength(4);
     });
 
+    it('scores skip TP/FP from review-feedback notes when review_status is null', async () => {
+      const { upsertNote } = await import('../server/db/queries.js');
+      const project = await insertTestProject();
+      const wf = await insertTestWorkflow({ project_id: project.id });
+
+      // Cycle 1: brain said skip, real workflow review ran (status=null) and
+      // produced a review-feedback note (fix milestones added) -> FP.
+      await insertDecision({
+        workflow_id: wf.id,
+        cycle: 1,
+        mode: 'shadow',
+        decision: makeDecision({ skipReview: true, reviewerModel: null }),
+      });
+      await insertImplementJobWithAgent({ workflow_id: wf.id, cycle: 1, model: 'claude-opus-4-7[1m]' });
+      await insertReviewJobWithAgent({ workflow_id: wf.id, cycle: 1, review_status: null });
+      upsertNote(`workflow/${wf.id}/review-feedback/cycle-1`, '- [ ] **Fix: missing case', null);
+
+      // Cycle 2: brain said skip, real workflow review ran (status=null) and
+      // produced no review-feedback note -> TP (no-op review).
+      await insertDecision({
+        workflow_id: wf.id,
+        cycle: 2,
+        mode: 'shadow',
+        decision: makeDecision({ skipReview: true, reviewerModel: null }),
+      });
+      await insertImplementJobWithAgent({ workflow_id: wf.id, cycle: 2, model: 'claude-opus-4-7[1m]' });
+      await insertReviewJobWithAgent({ workflow_id: wf.id, cycle: 2, review_status: null });
+
+      const res = await request(app).get('/api/routing-brain/shadow-report');
+      expect(res.status).toBe(200);
+      expect(res.body.aggregate.decisions).toBe(2);
+      expect(res.body.aggregate.skip_recommended).toBe(2);
+      expect(res.body.aggregate.skip_tp).toBe(1);
+      expect(res.body.aggregate.skip_fp).toBe(1);
+      expect(res.body.aggregate.skip_fp_rate).toBeCloseTo(0.5, 5);
+    });
+
+    it('does not infer TP when the review job has not completed yet', async () => {
+      const { insertJob, insertAgent } = await import('../server/db/queries.js');
+      const project = await insertTestProject();
+      const wf = await insertTestWorkflow({ project_id: project.id });
+
+      await insertDecision({
+        workflow_id: wf.id,
+        cycle: 1,
+        mode: 'shadow',
+        decision: makeDecision({ skipReview: true, reviewerModel: null }),
+      });
+      await insertImplementJobWithAgent({ workflow_id: wf.id, cycle: 1, model: 'claude-opus-4-7[1m]' });
+      const reviewJobId = randomUUID();
+      insertJob({
+        id: reviewJobId,
+        title: '[M1] review cycle 1',
+        description: 'review',
+        context: null,
+        priority: 0,
+        status: 'queued',
+        workflow_id: wf.id,
+        workflow_cycle: 1,
+        workflow_phase: 'review',
+        model: 'codex',
+        review_status: null,
+      });
+      insertAgent({ id: randomUUID(), job_id: reviewJobId, status: 'queued' });
+
+      const res = await request(app).get('/api/routing-brain/shadow-report');
+      expect(res.status).toBe(200);
+      expect(res.body.aggregate.skip_tp).toBe(0);
+      expect(res.body.aggregate.skip_fp).toBe(0);
+    });
+
     it('excludes non-shadow rows from the report', async () => {
       const project = await insertTestProject();
       const wf = await insertTestWorkflow({ project_id: project.id });
