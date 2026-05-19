@@ -585,6 +585,9 @@ export function initDb(dbPath: string): DatabaseSync {
     db.exec('ALTER TABLE jobs ADD COLUMN watch INTEGER NOT NULL DEFAULT 1');
   }
 
+  // ── Auto Resolver ──────────────────────────────────────────────────────────
+  initResolverSchema(db, workflowCols);
+
   // ── Performance indexes ────────────────────────────────────────────────────
   // Covering partial indexes for the hot jobs-list queries. Without these
   // the planner falls back to USE TEMP B-TREE FOR ORDER BY, which at
@@ -722,6 +725,61 @@ function createWatcherTables(db: DatabaseSync): void {
   // (type, created_at) index would only matter for cross-agent type
   // queries — we don't run any, so leaving it out keeps the schema lean.
   db.exec('CREATE INDEX IF NOT EXISTS idx_watcher_actions_cooldown ON watcher_actions(agent_id, type, outcome, created_at)');
+}
+
+function initResolverSchema(db: DatabaseSync, workflowCols: string[]): void {
+  // Auto Resolver tables (see ResolverSession / ResolverDispatcher).
+  // resolver_runs is one row per Resolver dispatch against a blocked workflow.
+  // resolver_actions journals every tool call within a run.
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS resolver_runs (
+      id                 TEXT PRIMARY KEY,
+      workflow_id        TEXT NOT NULL REFERENCES workflows(id),
+      trigger_reason     TEXT NOT NULL,
+      reason_fingerprint TEXT NOT NULL,
+      classification     TEXT,
+      status             TEXT NOT NULL DEFAULT 'running',
+      diagnosis          TEXT,
+      recommended_action TEXT,
+      resume_outcome     TEXT,
+      input_tokens       INTEGER NOT NULL DEFAULT 0,
+      output_tokens      INTEGER NOT NULL DEFAULT 0,
+      cache_read_tokens  INTEGER NOT NULL DEFAULT 0,
+      cache_create_tokens INTEGER NOT NULL DEFAULT 0,
+      cost_usd           REAL NOT NULL DEFAULT 0,
+      turn_count         INTEGER NOT NULL DEFAULT 0,
+      attempt            INTEGER NOT NULL,
+      model              TEXT NOT NULL,
+      error_message      TEXT,
+      started_at         INTEGER NOT NULL,
+      finished_at        INTEGER
+    )
+  `).run();
+  db.prepare('CREATE INDEX IF NOT EXISTS idx_resolver_runs_workflow ON resolver_runs(workflow_id, started_at DESC)').run();
+  db.prepare('CREATE INDEX IF NOT EXISTS idx_resolver_runs_fingerprint ON resolver_runs(workflow_id, reason_fingerprint)').run();
+  db.prepare('CREATE INDEX IF NOT EXISTS idx_resolver_runs_status ON resolver_runs(status, started_at DESC)').run();
+
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS resolver_actions (
+      id            TEXT PRIMARY KEY,
+      resolver_id   TEXT NOT NULL REFERENCES resolver_runs(id),
+      workflow_id   TEXT NOT NULL,
+      type          TEXT NOT NULL,
+      payload       TEXT NOT NULL,
+      outcome       TEXT NOT NULL DEFAULT 'pending',
+      outcome_detail TEXT,
+      created_at    INTEGER NOT NULL
+    )
+  `).run();
+  db.prepare('CREATE INDEX IF NOT EXISTS idx_resolver_actions_resolver ON resolver_actions(resolver_id, created_at)').run();
+
+  // Workflow-level Resolver state — circuit breaker + lifetime attempt count.
+  if (!workflowCols.includes('resolver_circuit_state')) {
+    db.prepare("ALTER TABLE workflows ADD COLUMN resolver_circuit_state TEXT").run();
+  }
+  if (!workflowCols.includes('resolver_attempt_count')) {
+    db.prepare('ALTER TABLE workflows ADD COLUMN resolver_attempt_count INTEGER NOT NULL DEFAULT 0').run();
+  }
 }
 
 export function closeDb(): void {

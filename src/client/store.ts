@@ -13,6 +13,8 @@ import type {
   JobWatcher,
   WatcherCommentary,
   WatcherAction,
+  ResolverRun,
+  ResolverAction,
 } from '@shared/types';
 
 // ── UI state ────────────────────────────────────────────────────────────────
@@ -101,6 +103,10 @@ export interface DataState {
   commentaryByAgent: Record<string, WatcherCommentary[]>;
   actionsByAgent: Record<string, WatcherAction[]>;
 
+  // Auto Resolver
+  resolverRunsByWorkflow: Record<string, ResolverRun[]>;
+  resolverActionsByRun: Record<string, ResolverAction[]>;
+
   archivedJobs: Job[];
   archivedAgents: AgentWithJob[];
   archivedTotal: number;
@@ -154,6 +160,12 @@ export interface DataActions {
   setWatcherCommentary: (agentId: string, commentary: WatcherCommentary[]) => void;
   appendWatcherAction: (action: WatcherAction) => void;
   setWatcherActions: (agentId: string, actions: WatcherAction[]) => void;
+
+  // Auto Resolver
+  setResolverRuns: (workflowId: string, runs: ResolverRun[]) => void;
+  upsertResolverRun: (run: ResolverRun) => void;
+  setResolverActions: (runId: string, actions: ResolverAction[]) => void;
+  appendResolverAction: (action: ResolverAction) => void;
 }
 
 export type AppStore = UIState & UIActions & DataState & DataActions;
@@ -251,6 +263,8 @@ export const useAppStore = create<AppStore>()((set) => ({
   watchersByAgent: {},
   commentaryByAgent: {},
   actionsByAgent: {},
+  resolverRunsByWorkflow: {},
+  resolverActionsByRun: {},
 
   // ── Data actions ──────────────────────────────────────────────────────────
   setAgents: (agents) => set({ agents }),
@@ -379,4 +393,23 @@ export const useAppStore = create<AppStore>()((set) => ({
     // overflow the bounded window.
     actionsByAgent: { ...state.actionsByAgent, [agentId]: actions.slice(-500) },
   })),
+  setResolverRuns: (workflowId, runs) => set(state => ({
+    resolverRunsByWorkflow: { ...state.resolverRunsByWorkflow, [workflowId]: runs.slice(-100) },
+  })),
+  upsertResolverRun: (run) => set(state => {
+    const prev = state.resolverRunsByWorkflow[run.workflow_id] ?? [];
+    const idx = prev.findIndex(r => r.id === run.id);
+    const next = idx >= 0 ? prev.map((r, i) => i === idx ? run : r) : [...prev, run];
+    return { resolverRunsByWorkflow: { ...state.resolverRunsByWorkflow, [run.workflow_id]: next.slice(-100) } };
+  }),
+  setResolverActions: (runId, actions) => set(state => ({
+    resolverActionsByRun: { ...state.resolverActionsByRun, [runId]: actions.slice(-200) },
+  })),
+  appendResolverAction: (action) => set(state => {
+    const prev = state.resolverActionsByRun[action.resolver_id] ?? [];
+    // Dedup by id — pending → applied flips emit the same id twice.
+    const idx = prev.findIndex(a => a.id === action.id);
+    const next = idx >= 0 ? prev.map((a, i) => i === idx ? action : a) : [...prev, action];
+    return { resolverActionsByRun: { ...state.resolverActionsByRun, [action.resolver_id]: next.slice(-200) } };
+  }),
 }));

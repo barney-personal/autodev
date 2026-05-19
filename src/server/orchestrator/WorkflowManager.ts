@@ -30,6 +30,8 @@ import { parseMilestones, meetsCompletionThreshold, recoverPlanFromAgentOutput }
 import { ensureWorktreeBranch, verifyWorktreeHealth, createWorkflowWorktree, restoreWorkflowWorktree } from './WorkflowWorktreeManager.js';
 import { pushAndCreatePr as _pushAndCreatePr, finalizeWorkflow as _finalizeWorkflow, reconcileBlockedPRs as _reconcileBlockedPRs } from './WorkflowPRCreator.js';
 import { diagnoseWriteNoteInOutput, formatWriteNoteDiagnostic, writeBlockedDiagnostic } from './WorkflowBlockedDiagnostics.js';
+import { dispatchResolverForWorkflowAsync } from './ResolverDispatcher.js';
+import { recordPostResumeBlock } from './ResumeOrchestrator.js';
 
 // ─── Re-exports (preserve public API — all import sites continue to work) ──
 export { parseMilestones, meetsCompletionThreshold, recoverPlanFromAgentOutput, extractPlanFromText } from './WorkflowMilestoneParser.js';
@@ -1170,5 +1172,20 @@ function updateAndEmit(id: string, fields: Parameters<typeof queries.updateWorkf
       });
     }
     try { writeBlockedDiagnostic(updated); } catch { /* best effort */ }
+
+    // Resolver hook: first record any same-fingerprint re-block so the circuit
+    // breaker trips before we try to dispatch again. The recordPostResumeBlock
+    // call returns true if the circuit was just tripped — in which case the
+    // dispatcher will see resolver_circuit_state='tripped' and skip.
+    try {
+      recordPostResumeBlock(updated.id, fields.blocked_reason ?? updated.blocked_reason ?? null);
+    } catch (err) {
+      console.warn(`[workflow] recordPostResumeBlock failed for ${updated.id}:`, err);
+    }
+    try {
+      dispatchResolverForWorkflowAsync(updated.id);
+    } catch (err) {
+      console.warn(`[workflow] dispatchResolverForWorkflowAsync failed for ${updated.id}:`, err);
+    }
   }
 }

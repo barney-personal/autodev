@@ -123,6 +123,9 @@ export function createSocketMock() {
     emitWatcherSessionUpdate: vi.fn(),
     emitWatcherCommentaryNew: vi.fn(),
     emitWatcherActionNew: vi.fn(),
+    emitResolverRunNew: vi.fn(),
+    emitResolverRunUpdate: vi.fn(),
+    emitResolverActionNew: vi.fn(),
   };
 }
 
