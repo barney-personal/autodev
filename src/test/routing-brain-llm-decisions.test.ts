@@ -761,6 +761,30 @@ describe('RoutingBrain.applyGuardrails', () => {
     expect(result.confidence).toBe('low');
   });
 
+  it('treats routing menu model ids as known', () => {
+    const decision = {
+      implementerModel: 'claude-haiku-4-5',
+      reviewerModel: 'codex-gpt-5.5',
+      skipReview: false,
+      confidence: 'medium' as const,
+      rationale: 'Use cheap implementer and codex review.',
+      guardrailOverrides: [],
+      llmRawResponse: '',
+      signalsSent: {},
+      promptVersion: 'v1',
+      decisionModel: 'claude-sonnet-4-6[1m]',
+      costEstimateUsd: 0.001,
+      decidedAt: Date.now(),
+    };
+    const wf = mkWorkflow({ milestones_done: 1, milestones_total: 5 });
+
+    const result = applyGuardrails(decision, wf, mkMilestone());
+
+    expect(result.implementerModel).toBe('claude-haiku-4-5');
+    expect(result.reviewerModel).toBe('codex-gpt-5.5');
+    expect(result.guardrailOverrides).toEqual([]);
+  });
+
   it('accumulates multiple guardrail overrides', () => {
     const decision = {
       implementerModel: 'unknown-impl',

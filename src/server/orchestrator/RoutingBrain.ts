@@ -2,7 +2,9 @@ import { randomUUID } from 'crypto';
 import * as queries from '../db/queries.js';
 import { insertRouteDecision } from '../db/routeDecisionQueries.js';
 import { buildRoutingBrainContext, renderRoutingBrainPrompt } from './RoutingBrainPrompt.js';
+import type { MilestoneContext } from './RoutingBrainPrompt.js';
 import { estimateCostUsd } from './CostEstimator.js';
+import { getAvailableModel, KNOWN_MODELS } from './ModelClassifier.js';
 import type { Workflow, WorkflowPhase, RouteDecision, RouteDecisionMode } from '../../shared/types.js';
 
 const DEFAULT_DECISION_MODEL = 'claude-sonnet-4-6[1m]';
@@ -84,6 +86,114 @@ function parseDecisionResponse(raw: string): LlmDecisionFields {
   };
 }
 
+// ─── Guardrails ─────────────────────────────────────────────────────────────
+
+const CRITICAL_PATH_PATTERNS = [
+  /(^|\/)config\.yaml$/,
+  /(^|\/)package\.json$/,
+  /src\/server\/db\/migrations\//,
+  /schema\.ts$/,
+  /schema\.sql$/,
+];
+
+const ROUTING_BRAIN_MODEL_IDS = new Set<string>([
+  ...KNOWN_MODELS,
+  'claude-haiku-4-5',
+  'codex-gpt-5.5',
+]);
+
+function isFinalMilestone(workflow: Workflow): boolean {
+  return workflow.milestones_done >= workflow.milestones_total - 1;
+}
+
+function milestoneMatchesCriticalPath(milestone: MilestoneContext): boolean {
+  const paths = [...milestone.mentionedPaths, ...milestone.bodyBullets];
+  const rawText = milestone.raw;
+  const allText = [...paths, rawText];
+  for (const text of allText) {
+    for (const pattern of CRITICAL_PATH_PATTERNS) {
+      if (pattern.test(text)) return true;
+    }
+  }
+  return false;
+}
+
+function isKnownModel(model: string): boolean {
+  return ROUTING_BRAIN_MODEL_IDS.has(model);
+}
+
+export function applyGuardrails(
+  decision: RouteDecision,
+  workflow: Workflow,
+  milestone: MilestoneContext,
+): RouteDecision {
+  const overrides: string[] = [...decision.guardrailOverrides];
+  let { implementerModel, reviewerModel, skipReview } = decision;
+
+  // 1. Force skipReview=false on final milestone
+  if (skipReview && isFinalMilestone(workflow)) {
+    skipReview = false;
+    overrides.push('skipReview forced false: final milestone');
+  }
+
+  // 2. Force skipReview=false on critical-path files
+  if (skipReview && milestoneMatchesCriticalPath(milestone)) {
+    skipReview = false;
+    overrides.push('skipReview forced false: critical-path files detected');
+  }
+
+  // 3. If skipReview=true, null the reviewer
+  if (skipReview) {
+    reviewerModel = null;
+  }
+
+  // 4. Swap unknown or rate-limited implementer model
+  if (!isKnownModel(implementerModel)) {
+    const fallback = getAvailableModel(workflow.implementer_model) ?? workflow.implementer_model;
+    overrides.push(`implementerModel swapped: unknown model "${implementerModel}" -> ${fallback}`);
+    implementerModel = fallback;
+  } else {
+    const available = getAvailableModel(implementerModel);
+    if (available !== implementerModel) {
+      const resolved = available ?? workflow.implementer_model;
+      overrides.push(`implementerModel swapped: rate-limited "${implementerModel}" -> ${resolved}`);
+      implementerModel = resolved;
+    }
+  }
+
+  // 5. Swap unknown or rate-limited reviewer model (when not skipping)
+  if (!skipReview) {
+    if (reviewerModel === null || reviewerModel === undefined) {
+      const fallback = getAvailableModel(workflow.reviewer_model) ?? workflow.reviewer_model;
+      overrides.push(`reviewerModel fallback: missing -> ${fallback}`);
+      reviewerModel = fallback;
+    } else if (!isKnownModel(reviewerModel)) {
+      const fallback = getAvailableModel(workflow.reviewer_model) ?? workflow.reviewer_model;
+      overrides.push(`reviewerModel swapped: unknown model "${reviewerModel}" -> ${fallback}`);
+      reviewerModel = fallback;
+    } else {
+      const available = getAvailableModel(reviewerModel);
+      if (available !== reviewerModel) {
+        const resolved = available ?? workflow.reviewer_model;
+        overrides.push(`reviewerModel swapped: rate-limited "${reviewerModel}" -> ${resolved}`);
+        reviewerModel = resolved;
+      }
+    }
+  }
+
+  if (overrides.length > decision.guardrailOverrides.length) {
+    console.log(`[routing-brain] guardrail overrides for ${workflow.id}: ${overrides.slice(decision.guardrailOverrides.length).join('; ')}`);
+  }
+
+  return {
+    ...decision,
+    implementerModel,
+    reviewerModel,
+    skipReview,
+    guardrailOverrides: overrides,
+  };
+}
+
 // ─── Core decision function ──────────────────────────────────────────────────
 
 export async function decideRouteForCycle(
@@ -148,7 +258,7 @@ export async function decideRouteForCycle(
     const outputTokenEstimate = Math.ceil(llmRawResponse.length / 4);
     const costEstimateUsd = estimateCostUsd(decisionModel, inputTokenEstimate, outputTokenEstimate);
 
-    const decision: RouteDecision = {
+    const rawDecision: RouteDecision = {
       implementerModel: fields.implementerModel,
       reviewerModel: fields.reviewerModel,
       skipReview: fields.skipReview,
@@ -163,6 +273,8 @@ export async function decideRouteForCycle(
       decidedAt,
     };
 
+    const decision = applyGuardrails(rawDecision, workflow, ctx.milestone);
+
     const persistMode: RouteDecisionMode = mode === 'off' ? 'shadow' : mode;
     insertRouteDecision({
       id: randomUUID(),
@@ -175,7 +287,7 @@ export async function decideRouteForCycle(
       decision_model: decisionModel,
     });
 
-    console.log(`[routing-brain] decided for ${workflow.id} cycle=${cycle} phase=${phase}: impl=${decision.implementerModel} skip=${decision.skipReview} conf=${decision.confidence} (${persistMode})`);
+    console.log(`[routing-brain] decided for ${workflow.id} cycle=${cycle} phase=${phase}: impl=${decision.implementerModel} skip=${decision.skipReview} conf=${decision.confidence} (${persistMode})${decision.guardrailOverrides.length ? ` overrides=${decision.guardrailOverrides.length}` : ''}`);
     return decision;
   } catch (err) {
     const reason = err instanceof Error
