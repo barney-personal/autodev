@@ -23,6 +23,7 @@ import { errMsg } from '../../shared/errors.js';
 import { validateTransition } from './StateTransitions.js';
 import { tryAcquireRecoverySlot, RecoveryKeys } from './WorkflowRecovery.js';
 import { getPhaseConfig } from './WorkflowPhaseConfig.js';
+import { validateGitWorkDir as _validateGitWorkDir } from '../shared/workDirValidation.js';
 
 // ─── Sub-module imports ────────────────────────────────────────────────────
 import { parseMilestones, meetsCompletionThreshold, recoverPlanFromAgentOutput } from './WorkflowMilestoneParser.js';
@@ -937,16 +938,9 @@ export function reconcileRunningWorkflows(): void {
 
 export function startWorkflow(workflow: Workflow): Job | null {
   if (workflow.work_dir) {
-    if (!existsSync(workflow.work_dir)) {
-      const reason = `Pre-flight failed: work_dir does not exist: ${workflow.work_dir}`;
-      console.warn(`[workflow ${workflow.id}] ${reason}`);
-      updateAndEmit(workflow.id, { status: 'blocked', blocked_reason: reason });
-      return null;
-    }
-    try {
-      execSync('git status --porcelain', { cwd: workflow.work_dir, timeout: 5000, stdio: 'pipe' });
-    } catch (err) {
-      const reason = `Pre-flight failed: git is not functional in ${workflow.work_dir}: ${errMsg(err)}`;
+    const workDirCheck = _validateGitWorkDir(workflow.work_dir, { requireGit: true });
+    if (!workDirCheck.ok) {
+      const reason = `Pre-flight failed: ${workDirCheck.error}`;
       console.warn(`[workflow ${workflow.id}] ${reason}`);
       updateAndEmit(workflow.id, { status: 'blocked', blocked_reason: reason });
       return null;
