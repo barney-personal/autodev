@@ -774,7 +774,7 @@ function ensureWorkflowWorktreeReadyForPhase(
  * Called only for review-approved cycle-start implement spawns.
  * Fallback/retry/resume paths bypass routing by calling spawnPhaseJob directly.
  */
-async function spawnImplementWithRouting(workflow: Workflow, cycle: number): Promise<void> {
+export async function spawnImplementWithRouting(workflow: Workflow, cycle: number): Promise<void> {
   const mode = getRoutingBrainMode();
 
   // off mode: no routing decision, preserve existing behavior exactly
@@ -785,7 +785,8 @@ async function spawnImplementWithRouting(workflow: Workflow, cycle: number): Pro
 
   try {
     const decision = await decideRouteForCycle(workflow, 'implement', cycle);
-    const implementerModel = decision.implementerModel;
+    const latestDecisionRow = queries.getLatestRouteDecisionForCycle(workflow.id, cycle, 'implement');
+    const useStaticImplementer = latestDecisionRow?.mode === 'fallback';
 
     // shadow mode: persist decision but spawn with static models
     if (mode === 'shadow') {
@@ -795,7 +796,7 @@ async function spawnImplementWithRouting(workflow: Workflow, cycle: number): Pro
 
     // live mode: use routed implementer model
     if (mode === 'live') {
-      spawnPhaseJob(workflow, 'implement', cycle, implementerModel);
+      spawnPhaseJob(workflow, 'implement', cycle, useStaticImplementer ? undefined : decision.implementerModel);
       return;
     }
   } catch (err) {
