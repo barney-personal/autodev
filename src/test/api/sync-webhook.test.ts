@@ -204,6 +204,62 @@ describe('POST /api/webhooks/sync — sync-webhook-handler-missing', () => {
 });
 
 /**
+ * Bug: sync-deployed-sha-missing
+ * SyncFailurePayload has a `deployedSha` field but buildSyncRemediationPrompt
+ * never includes it in the generated job description. The downstream remediation
+ * agent has no way to know which code version was running when the failure
+ * occurred — critical context for investigating what changed.
+ *
+ * Dispatch id: e7734c86-f7b5-430f-9ece-c5ed5497c13a (Notion sync_blocks)
+ */
+describe('sync-deployed-sha-missing — deployedSha dropped from remediation job description', () => {
+  beforeEach(async () => {
+    delete process.env.AUTH_TOKEN;
+    await setupTestDb();
+    vi.clearAllMocks();
+    app = createTestApp();
+  });
+  afterEach(async () => {
+    await cleanupTestDb();
+    if (ORIGINAL_AUTH_TOKEN === undefined) delete process.env.AUTH_TOKEN;
+    else process.env.AUTH_TOKEN = ORIGINAL_AUTH_TOKEN;
+  });
+
+  it('includes deployedSha in the job description when provided', async () => {
+    const payloadWithSha = {
+      syncLogId: 1293,
+      source: 'notion',
+      status: 'error',
+      startedAt: '2026-05-19T12:00:49.451Z',
+      completedAt: '2026-05-19T12:23:03.322Z',
+      errorMessage: 'Worker lease expired before the sync completed.',
+      lastSuccessAt: null,
+      consecutiveFailureCount: 3,
+      deployedSha: 'abc123def456',
+      failedPhases: [
+        {
+          name: 'sync_blocks',
+          status: 'error',
+          error: 'Phase interrupted — worker lease expired before completion',
+          detail: 'Walking block trees for recently edited pages',
+        },
+      ],
+    };
+
+    const res = await request(app)
+      .post('/api/webhooks/sync')
+      .send(payloadWithSha);
+
+    expect(res.status).toBe(201);
+
+    const { getJobById } = await import('../../server/db/queries.js');
+    const job = getJobById(res.body.jobId);
+    expect(job).not.toBeNull();
+    expect(job!.description).toContain('abc123def456');
+  });
+});
+
+/**
  * Bug: sync-phase-detail-missing
  * SyncFailurePhase lacked a `detail` field, so diagnostic context like
  * "Walking block trees for recently edited pages" was silently dropped from

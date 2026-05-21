@@ -58,6 +58,7 @@ export function buildSyncRemediationPrompt(payload: SyncFailurePayload, dispatch
 - errorMessage: ${payload.errorMessage}
 - lastSuccessAt: ${payload.lastSuccessAt ?? 'never'}
 - consecutiveFailureCount: ${payload.consecutiveFailureCount}
+- Currently deployed SHA: ${payload.deployedSha ?? '(unknown)'}
 
 ## Failed phases
 ${failedPhasesText}
