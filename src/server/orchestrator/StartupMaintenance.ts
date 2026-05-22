@@ -18,6 +18,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { getDb } from '../db/database.js';
 import { archiveStaleTerminalJobs } from '../db/jobQueries.js';
+import { abortStaleRunningResolverRuns } from '../db/resolverQueries.js';
 import { maintenanceLogger } from '../lib/logger.js';
 
 const LOGS_DIR = path.join(process.cwd(), 'data', 'agent-logs');
@@ -34,8 +35,11 @@ interface PruneStats {
   outputRowsDeleted: number;
   jobsArchived: number;
   staleClaimsReleased: number;
+  staleResolverRunsAborted: number;
   vacuumedMb: number;
 }
+
+const STALE_RESOLVER_RUN_MS = 30 * 60 * 1000;
 
 /**
  * Idempotent backfill — release active workflow_file_claims rows belonging to
@@ -68,6 +72,7 @@ export function runStartupMaintenance(): PruneStats {
     outputRowsDeleted: 0,
     jobsArchived: 0,
     staleClaimsReleased: 0,
+    staleResolverRunsAborted: 0,
     vacuumedMb: 0,
   };
 
@@ -99,6 +104,18 @@ export function runStartupMaintenance(): PruneStats {
       }
     } catch (err) {
       log.warn({ err }, 'backfillReleaseStaleClaims failed');
+    }
+
+    // Resolver: crashes mid-session leave 'running' rows that consume
+    // concurrency slots indefinitely. Mark anything older than 30 min as
+    // aborted so the next Resolver dispatch can actually fire.
+    try {
+      stats.staleResolverRunsAborted = abortStaleRunningResolverRuns(STALE_RESOLVER_RUN_MS);
+      if (stats.staleResolverRunsAborted > 0) {
+        log.info({ aborted: stats.staleResolverRunsAborted }, 'aborted stale running resolver runs');
+      }
+    } catch (err) {
+      log.warn({ err }, 'abortStaleRunningResolverRuns failed');
     }
 
     stats.vacuumedMb = maybeVacuum();

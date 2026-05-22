@@ -126,7 +126,7 @@ export function listWorkflows(): Workflow[] {
   return rows.map((r: any) => cast<Workflow>(r));
 }
 
-const WORKFLOW_UPDATE_ALLOWED_FIELDS = new Set(['title', 'task', 'work_dir', 'implementer_model', 'reviewer_model', 'max_cycles', 'current_cycle', 'current_phase', 'status', 'milestones_total', 'milestones_done', 'project_id', 'max_turns_assess', 'max_turns_review', 'max_turns_implement', 'stop_mode_assess', 'stop_value_assess', 'stop_mode_review', 'stop_value_review', 'stop_mode_implement', 'stop_value_implement', 'template_id', 'use_worktree', 'worktree_path', 'worktree_branch', 'blocked_reason', 'pr_url', 'completion_threshold', 'start_command', 'max_verify_retries']);
+const WORKFLOW_UPDATE_ALLOWED_FIELDS = new Set(['title', 'task', 'work_dir', 'implementer_model', 'reviewer_model', 'max_cycles', 'current_cycle', 'current_phase', 'status', 'milestones_total', 'milestones_done', 'project_id', 'max_turns_assess', 'max_turns_review', 'max_turns_implement', 'stop_mode_assess', 'stop_value_assess', 'stop_mode_review', 'stop_value_review', 'stop_mode_implement', 'stop_value_implement', 'template_id', 'use_worktree', 'worktree_path', 'worktree_branch', 'blocked_reason', 'pr_url', 'completion_threshold', 'start_command', 'max_verify_retries', 'resolver_circuit_state', 'resolver_attempt_count']);
 
 // Brief Goal D.1 — workflows transitioning into a terminal status must release
 // their active workflow_file_claims atomically in the same transaction as the
@@ -135,7 +135,7 @@ const WORKFLOW_UPDATE_ALLOWED_FIELDS = new Set(['title', 'task', 'work_dir', 'im
 // same files (see 2026-05-17 c841ec06 incident).
 const TERMINAL_WORKFLOW_STATUSES = new Set(['complete', 'cancelled', 'failed']);
 
-export function updateWorkflow(id: string, fields: Partial<Pick<Workflow, 'title' | 'task' | 'work_dir' | 'implementer_model' | 'reviewer_model' | 'max_cycles' | 'current_cycle' | 'current_phase' | 'status' | 'milestones_total' | 'milestones_done' | 'project_id' | 'max_turns_assess' | 'max_turns_review' | 'max_turns_implement' | 'stop_mode_assess' | 'stop_value_assess' | 'stop_mode_review' | 'stop_value_review' | 'stop_mode_implement' | 'stop_value_implement' | 'template_id' | 'use_worktree' | 'worktree_path' | 'worktree_branch' | 'blocked_reason' | 'pr_url' | 'completion_threshold' | 'start_command' | 'max_verify_retries'>>): Workflow | null {
+export function updateWorkflow(id: string, fields: Partial<Pick<Workflow, 'title' | 'task' | 'work_dir' | 'implementer_model' | 'reviewer_model' | 'max_cycles' | 'current_cycle' | 'current_phase' | 'status' | 'milestones_total' | 'milestones_done' | 'project_id' | 'max_turns_assess' | 'max_turns_review' | 'max_turns_implement' | 'stop_mode_assess' | 'stop_value_assess' | 'stop_mode_review' | 'stop_value_review' | 'stop_mode_implement' | 'stop_value_implement' | 'template_id' | 'use_worktree' | 'worktree_path' | 'worktree_branch' | 'blocked_reason' | 'pr_url' | 'completion_threshold' | 'start_command' | 'max_verify_retries' | 'resolver_circuit_state' | 'resolver_attempt_count'>>): Workflow | null {
   const db = getDb();
   const sets: string[] = ['updated_at = ?'];
   const values: unknown[] = [Date.now()];
@@ -353,6 +353,17 @@ export function listResilienceEvents(opts?: { type?: string; limit?: number }): 
   return db.prepare(
     'SELECT * FROM resilience_events ORDER BY created_at DESC LIMIT ?'
   ).all(limit).map((r: any) => cast<ResilienceEvent>(r));
+}
+
+export function listResilienceEventsForEntity(
+  entityType: string,
+  entityId: string,
+  limit = 50,
+): ResilienceEvent[] {
+  const db = getDb();
+  return db.prepare(
+    'SELECT * FROM resilience_events WHERE entity_type = ? AND entity_id = ? ORDER BY created_at DESC LIMIT ?'
+  ).all(entityType, entityId, limit).map((r: any) => cast<ResilienceEvent>(r));
 }
 
 /** Check if any non-terminal job has work_dir set to the given path. */

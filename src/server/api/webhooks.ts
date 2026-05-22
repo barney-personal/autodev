@@ -1,6 +1,7 @@
-import { Router, type Request } from 'express';
+import { Router, type Request, type Response } from 'express';
 import { createHmac, timingSafeEqual } from 'crypto';
 import { dispatchRemediationJob, type SentryWebhookPayload } from '../../lib/auto-remediation/sentry-webhook.js';
+import { dispatchSyncRemediationJob, type SyncFailurePayload, type SyncFailurePhase } from '../../lib/auto-remediation/sync-webhook.js';
 
 const router = Router();
 
@@ -58,6 +59,24 @@ function verifySentrySignature(req: Request): boolean {
   }
 }
 
+function requireSyncBearer(req: Request, res: Response): boolean {
+  const expected = process.env.AUTH_TOKEN;
+  if (!expected) return true;
+
+  const header = req.headers.authorization;
+  if (!header || !header.startsWith('Bearer ')) {
+    res.status(401).json({ error: 'Missing or malformed Authorization header. Expected: Bearer <token>' });
+    return false;
+  }
+
+  if (header.slice(7) !== expected) {
+    res.status(403).json({ error: 'Invalid bearer token' });
+    return false;
+  }
+
+  return true;
+}
+
 router.post('/sentry', (req, res) => {
   if (!verifySentrySignature(req)) {
     res.status(401).json({ error: 'Invalid or missing sentry-hook-signature' });
@@ -81,6 +100,54 @@ router.post('/sentry', (req, res) => {
 
   const dispatch = dispatchRemediationJob(body as SentryWebhookPayload);
   res.status(dispatch.deduplicated ? 200 : 201).json(dispatch);
+});
+
+function isValidSyncFailurePhase(phase: unknown): phase is SyncFailurePhase {
+  if (!phase || typeof phase !== 'object') return false;
+  const p = phase as Record<string, unknown>;
+  return (
+    typeof p.name === 'string' &&
+    p.name.length > 0 &&
+    (p.status === 'error' || p.status === 'success' || p.status === 'skipped') &&
+    (p.error === undefined || typeof p.error === 'string')
+  );
+}
+
+function isValidSyncFailure(body: unknown): body is SyncFailurePayload {
+  if (!body || typeof body !== 'object') return false;
+  const b = body as Record<string, unknown>;
+  return (
+    typeof b.syncLogId === 'number' &&
+    typeof b.source === 'string' &&
+    b.source.length > 0 &&
+    b.status === 'error' &&
+    typeof b.errorMessage === 'string' &&
+    typeof b.startedAt === 'string' &&
+    typeof b.completedAt === 'string' &&
+    typeof b.consecutiveFailureCount === 'number' &&
+    (b.lastSuccessAt === undefined || b.lastSuccessAt === null || typeof b.lastSuccessAt === 'string') &&
+    (b.deployedSha === undefined || typeof b.deployedSha === 'string') &&
+    (b.failedPhases === undefined || (Array.isArray(b.failedPhases) && b.failedPhases.every(isValidSyncFailurePhase)))
+  );
+}
+
+router.post('/sync', (req, res) => {
+  if (!requireSyncBearer(req, res)) return;
+
+  const body = req.body as Partial<SyncFailurePayload>;
+
+  if (body.status !== 'error') {
+    res.status(400).json({ error: 'Only "error" status is supported' });
+    return;
+  }
+
+  if (!isValidSyncFailure(body)) {
+    res.status(400).json({ error: 'Missing or invalid sync failure data' });
+    return;
+  }
+
+  const dispatch = dispatchSyncRemediationJob(body);
+  res.status(201).json(dispatch);
 });
 
 export default router;

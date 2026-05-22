@@ -9,6 +9,7 @@ import { mkdirSync, writeFileSync, readFileSync } from 'fs';
 import path from 'path';
 import * as queries from '../db/queries.js';
 import type { Job, Workflow } from '../../shared/types.js';
+import { inferWorkspaceRepoFromTitle } from './WorkspaceRepoInference.js';
 
 // ─── Write-Note Diagnostic ───────────────────────────────────────────────────
 
@@ -152,6 +153,70 @@ export function writeBlockedDiagnostic(workflow: Workflow): void {
     };
   });
 
+  // Build optional recovery hint for null work_dir worktree blocks
+  const NULL_WORK_DIR_PATTERN = /work_dir is unavailable|missing worktree_path and worktree_branch/i;
+  let recoveryHint = '';
+  if (
+    workflow.use_worktree === 1 &&
+    !workflow.work_dir &&
+    workflow.blocked_reason &&
+    NULL_WORK_DIR_PATTERN.test(workflow.blocked_reason)
+  ) {
+    const inference = inferWorkspaceRepoFromTitle(workflow.title);
+    const dbPath = process.env.DB_PATH ?? 'data/orchestrator.db';
+    const nowMs = Date.now();
+    const port = process.env.PORT ?? '3456';
+
+    if (inference.match) {
+      recoveryHint = `
+## Recovery hint
+
+The watchdog will attempt to auto-fix this workflow by writing \`work_dir\` and resuming.
+If you need to fix it manually (mirrors the 2026-05-18 \`061b3d5c\` recovery — verify the
+candidate repo before applying):
+
+**Inferred repo:** \`${inference.match}\`
+
+**Step 1 — write work_dir to the DB:**
+\`\`\`bash
+sqlite3 '${dbPath}' "UPDATE workflows SET work_dir='${inference.match}', updated_at=${nowMs} WHERE id='${workflow.id}';"
+\`\`\`
+
+**Step 2 — resume:**
+\`\`\`bash
+curl -X POST http://localhost:${port}/api/workflows/${workflow.id}/resume \\
+  -H 'Content-Type: application/json' \\
+  -d '{"phase":"implement","cycle":${workflow.current_cycle}}'
+\`\`\`
+`;
+    } else {
+      const candidateList = inference.candidates.length > 0
+        ? inference.candidates.map(c => `- \`${c}\``).join('\n')
+        : '- (no workspace entries found)';
+      recoveryHint = `
+## Recovery hint
+
+The watchdog could not auto-fix this workflow (inference result: ${inference.reason}).
+Candidates considered:
+${candidateList}
+
+Once you identify the correct repo path, run:
+
+**Step 1 — write work_dir to the DB:**
+\`\`\`bash
+sqlite3 '${dbPath}' "UPDATE workflows SET work_dir='<REPO_PATH>', updated_at=${nowMs} WHERE id='${workflow.id}';"
+\`\`\`
+
+**Step 2 — resume:**
+\`\`\`bash
+curl -X POST http://localhost:${port}/api/workflows/${workflow.id}/resume \\
+  -H 'Content-Type: application/json' \\
+  -d '{"phase":"implement","cycle":${workflow.current_cycle}}'
+\`\`\`
+`;
+    }
+  }
+
   let planSnippet = '';
   try {
     const plan = queries.getNote(`workflow/${workflow.id}/plan`);
@@ -192,6 +257,7 @@ export function writeBlockedDiagnostic(workflow: Workflow): void {
   }
 
   const md = `# Workflow Blocked Diagnostic
+${recoveryHint}
 
 ## Summary
 - **Title:** ${workflow.title}

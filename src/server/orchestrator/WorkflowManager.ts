@@ -23,6 +23,7 @@ import { errMsg } from '../../shared/errors.js';
 import { validateTransition } from './StateTransitions.js';
 import { tryAcquireRecoverySlot, RecoveryKeys } from './WorkflowRecovery.js';
 import { getPhaseConfig } from './WorkflowPhaseConfig.js';
+import { validateGitWorkDir as _validateGitWorkDir } from '../shared/workDirValidation.js';
 
 // ─── Sub-module imports ────────────────────────────────────────────────────
 import { parseMilestones, meetsCompletionThreshold, recoverPlanFromAgentOutput } from './WorkflowMilestoneParser.js';
@@ -30,6 +31,8 @@ import { ensureWorktreeBranch, verifyWorktreeHealth, createWorkflowWorktree, res
 import { pushAndCreatePr as _pushAndCreatePr, finalizeWorkflow as _finalizeWorkflow, reconcileBlockedPRs as _reconcileBlockedPRs } from './WorkflowPRCreator.js';
 import { diagnoseWriteNoteInOutput, formatWriteNoteDiagnostic, writeBlockedDiagnostic } from './WorkflowBlockedDiagnostics.js';
 import { decideRouteForCycle, getRoutingBrainMode } from './RoutingBrain.js';
+import { dispatchResolverForWorkflowAsync } from './ResolverDispatcher.js';
+import { recordPostResumeBlock } from './ResumeOrchestrator.js';
 
 // ─── Re-exports (preserve public API — all import sites continue to work) ──
 export { parseMilestones, meetsCompletionThreshold, recoverPlanFromAgentOutput, extractPlanFromText } from './WorkflowMilestoneParser.js';
@@ -1017,16 +1020,9 @@ export function reconcileRunningWorkflows(): void {
 
 export function startWorkflow(workflow: Workflow): Job | null {
   if (workflow.work_dir) {
-    if (!existsSync(workflow.work_dir)) {
-      const reason = `Pre-flight failed: work_dir does not exist: ${workflow.work_dir}`;
-      console.warn(`[workflow ${workflow.id}] ${reason}`);
-      updateAndEmit(workflow.id, { status: 'blocked', blocked_reason: reason });
-      return null;
-    }
-    try {
-      execSync('git status --porcelain', { cwd: workflow.work_dir, timeout: 5000, stdio: 'pipe' });
-    } catch (err) {
-      const reason = `Pre-flight failed: git is not functional in ${workflow.work_dir}: ${errMsg(err)}`;
+    const workDirCheck = _validateGitWorkDir(workflow.work_dir, { requireGit: true });
+    if (!workDirCheck.ok) {
+      const reason = `Pre-flight failed: ${workDirCheck.error}`;
       console.warn(`[workflow ${workflow.id}] ${reason}`);
       updateAndEmit(workflow.id, { status: 'blocked', blocked_reason: reason });
       return null;
@@ -1256,5 +1252,20 @@ function updateAndEmit(id: string, fields: Parameters<typeof queries.updateWorkf
       });
     }
     try { writeBlockedDiagnostic(updated); } catch { /* best effort */ }
+
+    // Resolver hook: first record any same-fingerprint re-block so the circuit
+    // breaker trips before we try to dispatch again. The recordPostResumeBlock
+    // call returns true if the circuit was just tripped — in which case the
+    // dispatcher will see resolver_circuit_state='tripped' and skip.
+    try {
+      recordPostResumeBlock(updated.id, fields.blocked_reason ?? updated.blocked_reason ?? null);
+    } catch (err) {
+      console.warn(`[workflow] recordPostResumeBlock failed for ${updated.id}:`, err);
+    }
+    try {
+      dispatchResolverForWorkflowAsync(updated.id);
+    } catch (err) {
+      console.warn(`[workflow] dispatchResolverForWorkflowAsync failed for ${updated.id}:`, err);
+    }
   }
 }

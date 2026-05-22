@@ -166,6 +166,44 @@ Opus 4.7 session bound 1:1 with every running non-interactive agent. Consumes a 
 
 The watcher control endpoints are unauthenticated (consistent with the rest of the local-only API). If the orchestrator ever moves behind a network boundary, add auth to `/watcher/start`, `/watcher/stop`, and `/watcher/tick`, and persist `_lastManualTickAt` (currently in-memory, resets on restart).
 
+### Auto Resolver (post-mortem unblocker)
+
+When a workflow transitions to `status='blocked'`, the dispatcher (`src/server/orchestrator/ResolverDispatcher.ts`) fires a one-shot Resolver session — an Opus 4.7 (by default) Anthropic SDK conversation — that diagnoses the cause and either proposes a resume, escalates to a human via a discussion, or marks the block unresolvable. Complementary to the Live Watcher: Watcher runs *during* an agent's life; Resolver runs *after* a workflow has terminally blocked.
+
+**Lifecycle**
+- `updateAndEmit` in `WorkflowManager.ts` fires `dispatchResolverForWorkflowAsync` whenever status transitions to blocked.
+- Dispatcher records the trigger in `resolver_runs`, computes a `reason_fingerprint` (`src/server/orchestrator/ResolverFingerprint.ts`), classifies the block heuristically, then runs `ResolverSession` with the context bundle from `ResolverContext.ts`.
+- The session uses tools from `ResolverTools.ts` (read-only + a tight whitelist of mutating tools + exactly-one terminal tool).
+- Terminal `propose_resume` → `ResumeOrchestrator` invokes the existing `resumeWorkflow()` if confidence clears the per-class threshold AND `RESOLVER_MODE` allows the class.
+- If a workflow re-blocks on the same fingerprint within 30 min of a Resolver-driven resume, the circuit breaker trips (`workflows.resolver_circuit_state='tripped'`) and no further Resolver attempts run until the operator resets via `POST /api/workflows/:id/resolver/reset`.
+
+**Safety budget** (each guard is independent; any one of them blocks dispatch):
+- `RESOLVER_MODE` = `off` | `diagnose` | `assisted` (default) | `auto`. In `assisted`, only `transient_infra` + `config_drift` auto-resume; everything else escalates to the dashboard for human approval.
+- `RESOLVER_LIFETIME_ATTEMPTS` (default 3) per workflow lifetime, stored in `workflows.resolver_attempt_count`.
+- `RESOLVER_MAX_COST_USD` (default $2) per individual run, enforced inside `ResolverSession`.
+- `RESOLVER_MAX_TURNS` (default 12) per run.
+- `RESOLVER_DAILY_COST_CAP_USD` (default $50) global; once exceeded, all dispatches are skipped with `daily_cost_cap` until the rolling 24h window drops below the cap.
+- `RESOLVER_GLOBAL_CONCURRENCY` (default 2) global active-run cap.
+- In-flight idempotency: `(workflow_id, reason_fingerprint)` is a no-op while a run is active.
+
+**Tool surface** — `ResolverTools.ts` defines:
+- READ: `read_blocked_diagnostic`, `read_agent_log`, `read_workflow_note`, `read_worktree_file`.
+- MUTATING: `git_command` (allowlist: add/commit/restore/stash/status/diff/log — no push/reset --hard/clean -f), `edit_worktree_file` (path-traversal guarded with lexical + realpath checks, .git/node_modules blocked), `update_workflow_field` (whitelist: implementer_model, reviewer_model, blocked_reason — `work_dir` is intentionally excluded; the watchdog's `recoverNullWorkDirWorkflows` handles null-work_dir recovery, and there's no safe containment constraint for the Resolver to set arbitrary host paths), `write_note` (RecoveryKeys whitelist), `set_classification`.
+- TERMINAL: `propose_resume`, `escalate_to_user` (opens a discussion thread), `mark_unresolvable`.
+
+**Threat model** — same shape as the Live Watcher. All free-text Resolver outputs run through `stripControlChars` + length caps before persistence; mutating tools never accept absolute paths or escape the worktree; the Resolver can never push, create PRs, or modify any workflow except the one it was dispatched for. Resolver-driven resume always goes through the existing `resumeWorkflow()` health checks.
+
+**Known gap — circuit breaker is in-memory.** `_recentResumes` in `ResumeOrchestrator.ts` is a module-level `Map`, so if the server restarts between a Resolver-driven resume and the subsequent re-block, the same-fingerprint check won't trip the breaker on that re-block. The lifetime attempt count (persisted on the workflow row) and the in-flight idempotency note still apply, so the worst case is one extra Resolver attempt — not an unbounded loop. Same shape as the Live Watcher's `_lastManualTickAt` caveat: if the orchestrator ever moves behind a network boundary or to a multi-process setup, persist this map.
+
+**API**
+- `GET /api/resolver/runs` — global recent runs
+- `GET /api/resolver/runs/:id` — run detail + actions
+- `GET /api/workflows/:id/resolver/runs` — runs for a workflow
+- `POST /api/workflows/:id/resolver/reset` — clear circuit + attempt count
+- `POST /api/workflows/:id/resolver/dispatch` — operator override
+
+The dashboard's `ControlRoom` embeds `ResolverPanel` (`src/client/components/ResolverPanel.tsx`) for any workflow that's blocked or has had Resolver activity.
+
 ### MCP Tools
 
 Agents connect to the MCP server on :3947 and have access to: `create_task` (unified), `ask_user`, `lock_files`, `release_files`, `check_file_locks`, `report_status`, `create_job` (deprecated), `create_autonomous_agent_run` (deprecated), `wait_for_jobs`, `finish_job`, `write_note`, `read_note`, `list_notes`, `watch_notes`, `search_kb`, `report_learnings`, plus Eye tools (`start_discussion`, `check_discussions`, `reply_discussion`, `create_proposal`, `check_proposals`, `reply_proposal`, `update_proposal`, `report_pr`, `report_pr_review`, `check_pr_reviews`, `reply_pr_review`, `update_daily_summary`) and integration tools (`query_linear`, `query_logs`, `query_db`, `query_ci_logs`).
@@ -258,3 +296,10 @@ data/
 | `EFFORT_DEFAULT` | `xhigh` | Effort budget for one-shot (non-workflow) jobs. |
 | `CODEX_SERVICE_TIER_REVIEW` | `fast` | Codex `service_tier` override for the review phase. `fast` gives ~1.5x throughput on the priority lane (slightly higher cost). Other tiers: `default`, `flex`, `priority`, `auto`. Set to empty string to fall back to `~/.codex/config.toml`. |
 | `CODEX_SERVICE_TIER_ASSESS` / `_IMPLEMENT` / `_VERIFY` / `_DEFAULT` | *(unset)* | Codex `service_tier` overrides for the other phases. No default — the user's `~/.codex/config.toml` value is used. |
+| `RESOLVER_MODE` | `assisted` | Auto Resolver gate: `off` disables entirely; `diagnose` writes diagnoses but never resumes; `assisted` auto-resumes safe classes (transient_infra, config_drift) only; `auto` auto-resumes any class that clears its confidence threshold. |
+| `RESOLVER_MODEL` | `claude-opus-4-7` | Model used for Resolver sessions. |
+| `RESOLVER_MAX_COST_USD` | `2` | Per-run cost ceiling. Resolver self-aborts when hit. |
+| `RESOLVER_MAX_TURNS` | `12` | Per-run turn ceiling. |
+| `RESOLVER_LIFETIME_ATTEMPTS` | `3` | Resolver attempts per workflow lifetime. |
+| `RESOLVER_DAILY_COST_CAP_USD` | `50` | Global 24-hour Resolver spend ceiling. |
+| `RESOLVER_GLOBAL_CONCURRENCY` | `2` | Max simultaneous Resolver runs system-wide. |

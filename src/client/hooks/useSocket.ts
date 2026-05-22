@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import socket from '../socket';
-import type { AgentWithJob, AgentWarning, Job, Project, Question, FileLock, AgentOutput, QueueSnapshot, Debate, Workflow, Discussion, Proposal, JobWatcher, WatcherCommentary, WatcherAction, ServerToClientEvents } from '@shared/types';
+import type { AgentWithJob, AgentWarning, Job, Project, Question, FileLock, AgentOutput, QueueSnapshot, Debate, Workflow, Discussion, Proposal, JobWatcher, WatcherCommentary, WatcherAction, ResolverRun, ResolverAction, ServerToClientEvents } from '@shared/types';
 
 interface SocketHandlers {
   onSnapshot: (snapshot: QueueSnapshot) => void;
@@ -27,6 +27,9 @@ interface SocketHandlers {
   onWatcherSessionUpdate?: (watcher: JobWatcher) => void;
   onWatcherCommentaryNew?: (commentary: WatcherCommentary) => void;
   onWatcherActionNew?: (action: WatcherAction) => void;
+  onResolverRunNew?: (run: ResolverRun) => void;
+  onResolverRunUpdate?: (run: ResolverRun) => void;
+  onResolverActionNew?: (action: ResolverAction) => void;
 }
 
 export function useSocket(handlers: SocketHandlers): void {
@@ -68,6 +71,9 @@ export function useSocket(handlers: SocketHandlers): void {
       h('watcher:session:update', ({ watcher }) => ref.current.onWatcherSessionUpdate?.(watcher)),
       h('watcher:commentary:new', ({ commentary }) => ref.current.onWatcherCommentaryNew?.(commentary)),
       h('watcher:action:new', ({ action }) => ref.current.onWatcherActionNew?.(action)),
+      h('resolver:run:new', ({ run }) => ref.current.onResolverRunNew?.(run)),
+      h('resolver:run:update', ({ run }) => ref.current.onResolverRunUpdate?.(run)),
+      h('resolver:action:new', ({ action }) => ref.current.onResolverActionNew?.(action)),
     ];
 
     // The server already pushes a snapshot on every new connection (io.on('connection')),

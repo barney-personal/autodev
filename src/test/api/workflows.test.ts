@@ -190,7 +190,7 @@ describe('POST /api/workflows', () => {
   it('creates a workflow', async () => {
     const res = await request(app)
       .post('/api/workflows')
-      .send({ task: 'Build a feature' });
+      .send({ task: 'Build a feature', useWorktree: false });
     expect(res.status).toBe(201);
     expect(res.body.workflow).toBeTruthy();
     expect(res.body.project).toBeTruthy();
@@ -208,6 +208,7 @@ describe('POST /api/workflows', () => {
         implementerModel: 'claude-opus-4-6',
         reviewerModel: 'claude-sonnet-4-6',
         maxCycles: 5,
+        useWorktree: false,
       });
     expect(res.status).toBe(201);
     expect(res.body.workflow.title).toBe('Auth Refactor');
@@ -229,14 +230,14 @@ describe('POST /api/workflows', () => {
   it('clamps maxCycles to valid range', async () => {
     const res = await request(app)
       .post('/api/workflows')
-      .send({ task: 'test', maxCycles: 100 });
+      .send({ task: 'test', maxCycles: 100, useWorktree: false });
     expect(res.status).toBe(201);
     expect(res.body.workflow.max_cycles).toBeLessThanOrEqual(50);
   });
 
   it('emits socket events', async () => {
     const socket = await import('../../server/socket/SocketManager.js');
-    await request(app).post('/api/workflows').send({ task: 'test' });
+    await request(app).post('/api/workflows').send({ task: 'test', useWorktree: false });
     expect(socket.emitWorkflowNew).toHaveBeenCalledTimes(1);
   });
 
@@ -260,7 +261,7 @@ describe('POST /api/autonomous-agent-runs', () => {
   it('creates an autonomous agent run via the new route', async () => {
     const res = await request(app)
       .post('/api/autonomous-agent-runs')
-      .send({ task: 'Ship the feature' });
+      .send({ task: 'Ship the feature', useWorktree: false });
     expect(res.status).toBe(201);
     expect(res.body.workflow).toBeTruthy();
     expect(res.body.workflow.title).toMatch(/^Autonomous Agent Run:/);
