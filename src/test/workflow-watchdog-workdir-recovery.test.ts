@@ -35,6 +35,16 @@ vi.mock('../server/orchestrator/WorkflowPrompts.js', () => ({
   buildWorkflowRepairPrompt: vi.fn(() => 'mock repair prompt'),
 }));
 vi.mock('../server/orchestrator/ModelClassifier.js', () => ({
+  KNOWN_MODELS: [
+    'claude-opus-4-7',
+    'claude-opus-4-7[1m]',
+    'claude-opus-4-6',
+    'claude-opus-4-6[1m]',
+    'claude-sonnet-4-6',
+    'claude-sonnet-4-6[1m]',
+    'claude-haiku-4-5-20251001',
+    'codex',
+  ],
   getAvailableModel: vi.fn((m: string) => m),
   getFallbackModel: vi.fn((m: string) => m),
   getAlternateProviderModel: vi.fn(() => null),

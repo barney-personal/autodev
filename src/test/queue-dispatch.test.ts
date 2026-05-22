@@ -36,6 +36,16 @@ vi.mock('../server/orchestrator/PtyManager.js', () => ({
 
 // Mock ModelClassifier so resolveModel just returns the job's model
 vi.mock('../server/orchestrator/ModelClassifier.js', () => ({
+  KNOWN_MODELS: [
+    'claude-opus-4-7',
+    'claude-opus-4-7[1m]',
+    'claude-opus-4-6',
+    'claude-opus-4-6[1m]',
+    'claude-sonnet-4-6',
+    'claude-sonnet-4-6[1m]',
+    'claude-haiku-4-5-20251001',
+    'codex',
+  ],
   getCircuitBreaker: vi.fn(() => ({
     isOpen: () => false,
     reason: () => 'circuit closed',

@@ -57,6 +57,14 @@ vi.mock('../server/orchestrator/WorkflowPrompts.js', () => ({
 }));
 
 vi.mock('../server/orchestrator/ModelClassifier.js', () => ({
+  KNOWN_MODELS: [
+    'claude-opus-4-7',
+    'claude-opus-4-7[1m]',
+    'claude-sonnet-4-6',
+    'claude-sonnet-4-6[1m]',
+    'claude-haiku-4-5',
+    'codex-gpt-5.5',
+  ],
   getCircuitBreaker: vi.fn(() => ({
     isOpen: () => false,
     reason: () => 'circuit closed',
