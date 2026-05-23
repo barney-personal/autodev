@@ -492,6 +492,65 @@ A **stuck job watchdog** runs every 30 seconds to detect agents whose underlying
 
 **Failure classification** automatically categorizes job failures (rate limit, provider overload, tool error, etc.) to support smarter retry decisions.
 
+### System Snapshot API
+
+`GET /api/system/snapshot` returns a read-only aggregate of current process health, database activity, routing-brain state, and queue counts in a single JSON object. It does not mutate any state.
+
+**Response shape:**
+
+```json
+{
+  "process": {
+    "uptime_seconds": 42,
+    "rss_mb": 128,
+    "node_version": "v22.0.0"
+  },
+  "db": {
+    "last_workflow_created_at": 1716394800000,
+    "last_job_completed_at": 1716394750000,
+    "workflow_counts_by_status": {
+      "running": 2,
+      "complete": 14,
+      "blocked": 0,
+      "failed": 1,
+      "cancelled": 0
+    }
+  },
+  "routing_brain": {
+    "mode": "shadow",
+    "total_decisions_30d": 150,
+    "by_mode_30d": {
+      "shadow": 148,
+      "live": 2,
+      "fallback": 0
+    }
+  },
+  "queue": {
+    "queued": 3,
+    "running": 2,
+    "blocked": 0
+  }
+}
+```
+
+**Field notes:**
+
+- `db.last_workflow_created_at` and `db.last_job_completed_at` are epoch milliseconds, or `null` when no rows exist
+- `db.last_job_completed_at` reflects `MAX(updated_at)` for jobs with `status='done'` — a proxy for the last done-transition time
+- `workflow_counts_by_status` always includes all five statuses (`running`, `complete`, `blocked`, `failed`, `cancelled`), with explicit `0` for absent statuses
+- `routing_brain.mode` reflects the current `setting:routing_brain_mode` setting; defaults to `'off'` when not configured
+- `routing_brain.by_mode_30d` always includes all three decision modes (`shadow`, `live`, `fallback`) regardless of whether decisions exist
+- `queue.running` equals `assigned` plus `running` jobs (both represent active execution)
+- `queue.blocked` is the count of workflows with `status='blocked'`
+
+**Example:**
+
+```bash
+curl http://localhost:3456/api/system/snapshot
+```
+
+**Auth:** When `AUTH_TOKEN` is set, the endpoint requires a `Bearer <token>` header, consistent with all other `/api/*` routes except `/api/health` and webhook endpoints.
+
 ## Settings
 
 Click the settings icon in the header to open the Settings modal. Currently configurable:
