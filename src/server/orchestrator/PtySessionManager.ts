@@ -194,29 +194,57 @@ export function getSnapshot(agentId: string): string | null {
 // Stale tmux cleanup
 // ---------------------------------------------------------------------------
 
-export function cleanupStaleTmuxSessions(): void {
+export interface PtyCleanupStats {
+  scanned: number;
+  killed: number;
+  skipped: number;
+  errors: number;
+}
+
+export function cleanupStaleTmuxSessions(): PtyCleanupStats {
+  const stats: PtyCleanupStats = { scanned: 0, killed: 0, skipped: 0, errors: 0 };
+
   try {
-    const output = execFileSync(TMUX, ['list-sessions', '-F', '#{session_name}'], { stdio: 'pipe' }).toString();
+    const output = execFileSync(TMUX, ['list-sessions', '-F', '#{session_name}'], {
+      stdio: 'pipe',
+      timeout: 5000,
+    }).toString();
     const sessions = output.trim().split('\n').filter(s => s.startsWith('orchestrator-'));
+    stats.scanned = sessions.length;
 
     // Get all currently running agent IDs from the in-memory PTY map,
-    // spawning agents, and standalone jobs being monitored via exit polls
+    // spawning agents, standalone jobs being monitored via exit polls, and
+    // the DB's active agent rows. The DB set prevents the periodic cleanup
+    // service from killing a valid tmux session just because its node-pty
+    // attachment is temporarily absent.
     const spawningOrAttaching = agentStates.agentIdsInStates(AgentState.Spawning, AgentState.Attaching);
-    const activeAgentIds = new Set([..._ptys.keys(), ...spawningOrAttaching, ...standaloneExitPollAgentIds()]);
+    const dbActiveAgentIds = queries.listAllRunningAgents().map(agent => agent.id);
+    const activeAgentIds = new Set([
+      ..._ptys.keys(),
+      ...spawningOrAttaching,
+      ...standaloneExitPollAgentIds(),
+      ...dbActiveAgentIds,
+    ]);
 
     for (const session of sessions) {
       const agentId = session.replace('orchestrator-', '');
       if (activeAgentIds.has(agentId)) {
+        stats.skipped++;
         continue;
       }
       try {
-        execFileSync(TMUX, ['kill-session', '-t', session], { stdio: 'pipe' });
+        execFileSync(TMUX, ['kill-session', '-t', session], { stdio: 'pipe', timeout: 5000 });
+        stats.killed++;
         console.log(`[pty] cleaned up stale tmux session: ${session}`);
-      } catch { /* already gone */ }
+      } catch {
+        stats.errors++;
+      }
     }
   } catch {
     // tmux not running or no sessions — fine
   }
+
+  return stats;
 }
 
 // ---------------------------------------------------------------------------
