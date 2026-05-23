@@ -139,6 +139,23 @@ export function countJobsByStatus(status: JobStatus): number {
   return cast<{ cnt: number }>(row).cnt;
 }
 
+export function countActiveJobs(): number {
+  const db = getDb();
+  const row = db.prepare(
+    "SELECT COUNT(*) as cnt FROM jobs WHERE status IN ('assigned','running') AND archived_at IS NULL",
+  ).get();
+  return cast<{ cnt: number }>(row).cnt;
+}
+
+export function getLastJobCompletedAt(): number | null {
+  const db = getDb();
+  const row = db
+    .prepare("SELECT MAX(updated_at) AS max_updated_at FROM jobs WHERE status = 'done'")
+    .get() as { max_updated_at: number | null } | undefined;
+  const val = row?.max_updated_at;
+  return typeof val === 'number' ? val : null;
+}
+
 export function countRunningWorkflowPhaseJobs(excludeJobId?: string): number {
   const db = getDb();
   const row = excludeJobId

@@ -500,6 +500,57 @@ Click the settings icon in the header to open the Settings modal. Currently conf
 |---------|---------|-------------|
 | Max Concurrent Agents | 20 | How many agents may run simultaneously |
 
+## API
+
+The orchestrator exposes a REST API under `/api`. When `AUTH_TOKEN` is set, all routes
+except `/api/health` and `/api/webhooks` require an `Authorization: Bearer <token>` header.
+
+### GET /api/system/snapshot
+
+Read-only aggregated health snapshot for monitoring and dashboards. Inherits the standard
+`AUTH_TOKEN` bearer auth.
+
+Response sections:
+
+- `process` — orchestrator process metrics
+  - `uptime_seconds` (rounded integer)
+  - `rss_mb` (resident set size in MB, rounded integer)
+  - `node_version` (e.g. `v22.10.0`)
+- `db` — recent DB activity
+  - `last_workflow_created_at` (ms epoch, or `null` if no workflows)
+  - `last_job_completed_at` (ms epoch of the latest `status='done'` job, or `null`)
+  - `workflow_counts_by_status` — object mapping each workflow status to its count
+- `routing_brain` — decision-stream stats over the last 30 days
+  - `mode` — current routing-brain mode (`off` | `shadow` | `live`)
+  - `total_decisions_30d`
+  - `by_mode_30d` — object mapping decision mode to its count (`{}` when there are none)
+- `queue` — current queue depth
+  - `queued` — jobs with `status='queued'` (non-archived)
+  - `running` — active jobs (`status='assigned'` or `'running'`, non-archived)
+  - `blocked` — workflows with `status='blocked'`
+
+Sample response:
+
+```json
+{
+  "process": { "uptime_seconds": 4123, "rss_mb": 256, "node_version": "v22.10.0" },
+  "db": {
+    "last_workflow_created_at": 1716422400000,
+    "last_job_completed_at": 1716422450000,
+    "workflow_counts_by_status": { "running": 1, "blocked": 1, "complete": 12 }
+  },
+  "routing_brain": {
+    "mode": "shadow",
+    "total_decisions_30d": 87,
+    "by_mode_30d": { "shadow": 80, "live": 7 }
+  },
+  "queue": { "queued": 1, "running": 2, "blocked": 1 }
+}
+```
+
+The endpoint targets a sub-200ms warm response time on a typical orchestrator DB. All
+queries are pure `SELECT` aggregates and never mutate state.
+
 ## Environment Variables
 
 | Variable | Default | Description |
