@@ -139,6 +139,14 @@ export function countJobsByStatus(status: JobStatus): number {
   return cast<{ cnt: number }>(row).cnt;
 }
 
+export function getLastDoneJobUpdatedAt(): number | null {
+  const db = getDb();
+  const row = db.prepare(
+    "SELECT MAX(updated_at) as ts FROM jobs WHERE status = 'done' AND archived_at IS NULL",
+  ).get();
+  return cast<{ ts: number | null }>(row).ts;
+}
+
 export function countRunningWorkflowPhaseJobs(excludeJobId?: string): number {
   const db = getDb();
   const row = excludeJobId

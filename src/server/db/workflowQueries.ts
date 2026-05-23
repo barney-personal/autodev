@@ -427,3 +427,27 @@ export function getActiveClaimsForWorkflow(workflowId: string): FileClaim[] {
     'SELECT * FROM workflow_file_claims WHERE workflow_id = ? AND released_at IS NULL'
   ).all(workflowId).map((r: any) => cast<FileClaim>(r));
 }
+
+export function getLastWorkflowCreatedAt(): number | null {
+  const db = getDb();
+  const row = db.prepare('SELECT MAX(created_at) as ts FROM workflows').get();
+  return cast<{ ts: number | null }>(row).ts;
+}
+
+export function countWorkflowsByStatus(): Record<import('../../shared/types.js').WorkflowStatus, number> {
+  const db = getDb();
+  const rows = db.prepare(
+    "SELECT status, COUNT(*) as cnt FROM workflows GROUP BY status",
+  ).all() as Array<{ status: string; cnt: number }>;
+  const result: Record<string, number> = {
+    running: 0,
+    complete: 0,
+    blocked: 0,
+    failed: 0,
+    cancelled: 0,
+  };
+  for (const row of rows) {
+    if (row.status in result) result[row.status] = row.cnt;
+  }
+  return result as Record<import('../../shared/types.js').WorkflowStatus, number>;
+}

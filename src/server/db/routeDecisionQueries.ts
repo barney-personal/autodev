@@ -135,3 +135,17 @@ export function getRouteDecisionsSince(sinceMs: number): RouteDecisionRow[] {
   `).all(sinceMs) as unknown as RawRouteDecisionRow[];
   return rows.map(parseRow);
 }
+
+export function countRouteDecisionsByModeSince(sinceMs: number): { total: number; byMode: Record<RouteDecisionMode, number> } {
+  const db = getDb();
+  const rows = db.prepare(
+    'SELECT mode, COUNT(*) as cnt FROM route_decisions WHERE created_at >= ? GROUP BY mode',
+  ).all(sinceMs) as Array<{ mode: string; cnt: number }>;
+  const byMode: Record<string, number> = { shadow: 0, live: 0, fallback: 0 };
+  let total = 0;
+  for (const row of rows) {
+    if (row.mode in byMode) byMode[row.mode] = row.cnt;
+    total += row.cnt;
+  }
+  return { total, byMode: byMode as Record<RouteDecisionMode, number> };
+}
