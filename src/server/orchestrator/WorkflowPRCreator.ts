@@ -6,6 +6,7 @@
 
 import { execFileSync } from 'child_process';
 import { existsSync } from 'fs';
+import path from 'path';
 import * as queries from '../db/queries.js';
 import type { Workflow } from '../../shared/types.js';
 import { errMsg, execErrMsg } from '../../shared/errors.js';
@@ -276,6 +277,7 @@ export interface PushBranchResult {
   ok: boolean;
   error?: string;
   authFailure?: boolean;
+  permanentFailure?: boolean;
   /** Number of `git push` attempts performed (1 or 2 in normal flow, 0 if validation failed). */
   attempts?: number;
   /** True iff a second attempt with `--force-with-lease` was made. */
@@ -318,6 +320,52 @@ function isAuthFailure(stderr: string): boolean {
 }
 
 const DEFAULT_PUSH_RETRY_DELAY_MS = 5000;
+
+interface PushRemoteReadiness {
+  ok: boolean;
+  error?: string;
+}
+
+function validatePushRemote(cwd: string): PushRemoteReadiness {
+  let remoteUrl: string;
+  try {
+    remoteUrl = execFileSync('git', ['remote', 'get-url', '--push', 'origin'], {
+      cwd,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 5000,
+    }).toString().trim();
+  } catch (err) {
+    return { ok: false, error: `origin remote is not configured: ${execErrMsg(err)}` };
+  }
+
+  if (!isUsablePushRemoteUrl(remoteUrl, cwd)) {
+    return { ok: false, error: `origin remote is not a usable push URL: ${remoteUrl || '(empty)'}` };
+  }
+
+  return { ok: true };
+}
+
+function isUsablePushRemoteUrl(remoteUrl: string, cwd: string): boolean {
+  // `git remote get-url` should not produce empty stdout on a real configured
+  // remote. Treat empty as unknown rather than blocking so tests and unusual Git
+  // wrappers can still fall through to the real push error.
+  if (!remoteUrl) return true;
+  if (/^(https?|ssh|git):\/\//i.test(remoteUrl)) return true;
+  if (/^[^@\s]+@[^:\s]+:.+/.test(remoteUrl)) return true;
+  if (remoteUrl.startsWith('file://')) return true;
+  if (path.isAbsolute(remoteUrl)) return existsSync(remoteUrl);
+  if (remoteUrl.startsWith('.') || remoteUrl.includes('/')) {
+    return existsSync(path.resolve(cwd, remoteUrl));
+  }
+  return false;
+}
+
+function isPermanentPushFailure(stderr: string): boolean {
+  const lower = stderr.toLowerCase();
+  return lower.includes('does not appear to be a git repository')
+    || lower.includes('could not read from remote repository')
+    || lower.includes('repository not found');
+}
 
 /**
  * Block the calling thread for `ms` without busy-waiting. Atomics.wait is the
@@ -362,6 +410,17 @@ export function pushBranch(
     return { ok: false, error: `worktree directory missing at ${worktree_path}`, attempts: 0, retried: false };
   }
 
+  const remoteReadiness = validatePushRemote(worktree_path);
+  if (!remoteReadiness.ok) {
+    return {
+      ok: false,
+      error: remoteReadiness.error,
+      permanentFailure: true,
+      attempts: 0,
+      retried: false,
+    };
+  }
+
   const branchCheck = ensureWorktreeBranch(worktree_path, worktree_branch);
   if (!branchCheck.ok) {
     console.warn(`[workflow ${workflow.id}] branch check failed:`, branchCheck.error);
@@ -384,6 +443,9 @@ export function pushBranch(
     if (isAuthFailure(stderr)) {
       return { ok: false, error: stderr, authFailure: true, attempts: 1, retried: false };
     }
+    if (isPermanentPushFailure(stderr)) {
+      return { ok: false, error: stderr, permanentFailure: true, attempts: 1, retried: false };
+    }
 
     console.warn(
       `[workflow ${workflow.id}] git push attempt 1 failed (${stderr.split('\n')[0]}) — retrying once with --force-with-lease after ${retryDelayMs}ms`,
@@ -401,6 +463,7 @@ export function pushBranch(
         ok: false,
         error: stderr2,
         authFailure: isAuthFailure(stderr2),
+        permanentFailure: isPermanentPushFailure(stderr2),
         attempts: 2,
         retried: true,
       };
@@ -537,6 +600,12 @@ export function pushAndCreatePr(
     return null;
   }
 
+  const remoteReadiness = validatePushRemote(worktree_path);
+  if (!remoteReadiness.ok) {
+    console.log(`[workflow ${workflow.id}] PR creation skipped: ${remoteReadiness.error}; worktree preserved at ${worktree_path}`);
+    return null;
+  }
+
   // Verify the worktree is on the workflow branch BEFORE counting commits.
   // If it has drifted to a different (clean) branch, countBranchCommits would
   // count zero on the wrong branch and incorrectly skip PR creation, even
@@ -614,6 +683,16 @@ export async function finalizeWorkflow(
   if (!workflow.worktree_path || !workflow.work_dir) return;
 
   let prUrl: string | null = null;
+
+  const remoteReadiness = validatePushRemote(workflow.worktree_path);
+  if (!remoteReadiness.ok) {
+    console.log(`[workflow ${workflow.id}] PR creation skipped: ${remoteReadiness.error}; worktree preserved at ${workflow.worktree_path}`);
+    updateAndEmit(workflow.id, {
+      status: 'blocked',
+      blocked_reason: `PR creation skipped: ${remoteReadiness.error}; worktree preserved at ${workflow.worktree_path}`,
+    });
+    return;
+  }
 
   for (let attempt = 1; attempt <= _FINALIZE_MAX_ATTEMPTS; attempt++) {
     prUrl = pushAndCreatePr(workflow, false, updateAndEmit);

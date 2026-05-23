@@ -114,7 +114,11 @@ Example: ["id-to-delete-1", "id-to-delete-2"]`;
         }
       }
     } catch (err) {
-      console.warn('[kb-consolidator] dedup batch error:', err);
+      if (isAbortError(err)) {
+        console.log('[kb-consolidator] dedup batch timed out — skipping until next run');
+      } else {
+        console.warn('[kb-consolidator] dedup batch error:', err);
+      }
     }
   }
 
@@ -165,7 +169,11 @@ Example: ["old-contradicted-id-1"]`;
         }
       }
     } catch (err) {
-      console.warn('[kb-consolidator] contradiction check error:', err);
+      if (isAbortError(err)) {
+        console.log('[kb-consolidator] contradiction check timed out — skipping until next run');
+      } else {
+        console.warn('[kb-consolidator] contradiction check error:', err);
+      }
     }
   }
 
@@ -197,6 +205,10 @@ const RETRYABLE_NET_CODES = new Set([
   'ECONNRESET', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENETUNREACH',
   'ECONNREFUSED', 'EAI_AGAIN', 'EPIPE',
 ]);
+
+function isAbortError(err: unknown): boolean {
+  return err instanceof Error && err.name === 'AbortError';
+}
 
 /** Parse a Retry-After header value (seconds-or-HTTP-date) into milliseconds. */
 function parseRetryAfterMs(header: string | null): number | null {

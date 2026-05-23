@@ -91,6 +91,9 @@ export function formatWriteNoteDiagnostic(diag: WriteNoteDiagnostic): string {
     case 'called_successfully':
       return 'write_note was called and did not error — the plan content may have been malformed or used the wrong key. Verify the note key and plan format.';
     case 'called_but_failed':
+      if (diag.failureSummary.includes('No such tool available: write_note')) {
+        return `write_note was called but the client did not expose the short tool name: "${diag.failureSummary}". Retry with the prefixed Claude Code tool name mcp__orchestrator__write_note.`;
+      }
       return `write_note was called but returned an MCP error: "${diag.failureSummary}". Focus on resolving the MCP connectivity issue before writing the note.`;
   }
 }

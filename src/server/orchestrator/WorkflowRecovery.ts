@@ -16,6 +16,8 @@ export const RecoveryKeys = {
     `workflow/${wfId}/cli-retry/${phase}/cycle-${cycle}`,
   altProvider: (wfId: string, phase: string, cycle: number) =>
     `workflow/${wfId}/recovery/${phase}/cycle-${cycle}/alt-provider`,
+  pendingPhaseSpawn: (wfId: string, phase: string, cycle: number) =>
+    `workflow/${wfId}/pending-spawn/${phase}/cycle-${cycle}`,
 
   // ── Workflow artifacts ─────────────────────────────────────────────────────
   plan: (wfId: string) => `workflow/${wfId}/plan`,

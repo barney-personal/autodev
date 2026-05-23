@@ -57,6 +57,7 @@ export type { WriteNoteDiagnostic } from './WorkflowBlockedDiagnostics.js';
 const _processedJobs = new Set<string>();
 const _reconciledJobIds = new Map<string, number>();
 const RECONCILED_JOB_WINDOW_MS = 60_000;
+const PENDING_PHASE_SPAWN_TTL_MS = 5 * 60_000;
 
 function pruneReconciledJobIds(now: number): void {
   for (const [jobId, reconciledAt] of _reconciledJobIds) {
@@ -788,6 +789,15 @@ function maybeSkipReviewWithRoutingDecision(
   const row = queries.getLatestRouteDecisionForCycle(workflow.id, implementCycle, 'implement');
   if (!row || row.mode !== 'live' || !row.decision.skipReview) return false;
 
+  const pendingKey = acquirePendingPhaseSpawn(workflow.id, 'implement', nextCycle, {
+    reason: 'routing_review_skip',
+    fromCycle: implementCycle,
+  });
+  if (!pendingKey) {
+    console.log(`[workflow ${workflow.id}] implement cycle ${nextCycle} spawn already pending after routing review skip`);
+    return true;
+  }
+
   queries.upsertNote(
     `workflow/${workflow.id}/route/cycle-${implementCycle}/review_status`,
     'auto_skipped',
@@ -805,8 +815,59 @@ function maybeSkipReviewWithRoutingDecision(
   console.log(`[workflow ${workflow.id}] routing brain skipped review for cycle ${implementCycle} (confidence=${row.decision.confidence}) — advancing to implement cycle ${nextCycle}`);
 
   updateAndEmit(workflow.id, { current_cycle: nextCycle });
-  void spawnImplementWithRouting(queries.getWorkflowById(workflow.id)!, nextCycle);
+  void spawnImplementWithRouting(queries.getWorkflowById(workflow.id)!, nextCycle)
+    .catch(err => {
+      const errorMessage = errMsg(err);
+      console.error(`[workflow ${workflow.id}] pending implement spawn crashed for cycle ${nextCycle}:`, err);
+      captureWithContext(err, { workflow_id: workflow.id, component: 'WorkflowManager' });
+      updateAndEmit(workflow.id, {
+        status: 'blocked',
+        current_phase: 'implement',
+        blocked_reason: `implement_spawn_error: Pending implement spawn crashed for cycle ${nextCycle}: ${errorMessage.slice(0, 100)}`,
+      });
+    })
+    .finally(() => {
+      queries.deleteNote(pendingKey);
+    });
   return true;
+}
+
+function acquirePendingPhaseSpawn(
+  workflowId: string,
+  phase: WorkflowPhase,
+  cycle: number,
+  details: Record<string, string | number | boolean>,
+): string | null {
+  const key = RecoveryKeys.pendingPhaseSpawn(workflowId, phase, cycle);
+  const value = JSON.stringify({ ...details, createdAt: Date.now() });
+  if (queries.insertNoteIfNotExists(key, value, null)) return key;
+
+  const note = queries.getNote(key);
+  const ageMs = getPendingPhaseSpawnAgeMs(note?.value, note?.updated_at);
+  if (ageMs !== null && ageMs > PENDING_PHASE_SPAWN_TTL_MS) {
+    queries.deleteNote(key);
+    if (queries.insertNoteIfNotExists(key, value, null)) return key;
+  }
+
+  return null;
+}
+
+function hasFreshPendingPhaseSpawn(workflowId: string, phase: WorkflowPhase, cycle: number): boolean {
+  if (phase === 'idle') return false;
+  const note = queries.getNote(RecoveryKeys.pendingPhaseSpawn(workflowId, phase, cycle));
+  const ageMs = getPendingPhaseSpawnAgeMs(note?.value, note?.updated_at);
+  return ageMs !== null && ageMs <= PENDING_PHASE_SPAWN_TTL_MS;
+}
+
+function getPendingPhaseSpawnAgeMs(rawValue: string | undefined, updatedAt: number | undefined): number | null {
+  if (rawValue === undefined || updatedAt === undefined) return null;
+  try {
+    const parsed = JSON.parse(rawValue) as { createdAt?: unknown };
+    if (typeof parsed.createdAt === 'number' && Number.isFinite(parsed.createdAt)) {
+      return Date.now() - parsed.createdAt;
+    }
+  } catch { /* fall back to note updated_at */ }
+  return Date.now() - updatedAt;
 }
 
 // ─── Routing brain integration ──────────────────────────────────────────────────
@@ -995,6 +1056,9 @@ export function reconcileRunningWorkflows(): void {
       .sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0))[0];
 
     if (!latestPhaseJob) {
+      if (hasFreshPendingPhaseSpawn(workflow.id, workflow.current_phase, expectedCycle)) {
+        continue;
+      }
       updateAndEmit(workflow.id, { status: 'blocked', blocked_reason: `Workflow stuck in ${workflow.current_phase} with no phase job to resume` });
       continue;
     }
@@ -1191,6 +1255,7 @@ export const _isOperationalBlockedReasonForTest = isOperationalBlockedReason;
 const OPERATIONAL_BLOCK_SUBSTRINGS = [
   'Reached max cycles', 'no milestone progress', 'Diminishing returns',
   'PR creation failed', 'Draft PR creation failed', 'was cancelled',
+  'PR creation skipped',
   'no fallback model available',
   'verify_failed',
   // Pre-flight environment failures (e.g. work_dir missing, git broken in work_dir).

@@ -25,6 +25,7 @@ describe('StateTransitions', () => {
       ['job', 'running', 'done'],
       ['job', 'running', 'failed'],
       ['job', 'running', 'cancelled'],
+      ['job', 'running', 'queued'],
       ['job', 'failed', 'queued'],
     ] as const)('%s: %s → %s is valid', (entity, from, to) => {
       const result = validateTransition(entity, from, to);

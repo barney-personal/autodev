@@ -120,6 +120,7 @@ export function extractMilestoneChecklist(plan: string | null | undefined): stri
 }
 
 const VERIFY_OUTPUT_MAX_CHARS = 5_000;
+const MCP_TOOL_NAMING_NOTE = `\n- MCP tools may be exposed with a server prefix in Claude Code, for example \`mcp__orchestrator__write_note\` instead of plain \`write_note\`. Call the exact tool name shown in your tool list.`;
 
 /** Render a "Verification Failed" block for inclusion in the implement prompt. */
 export function renderVerifyFailure(failure: InlineWorkflowContext['verifyFailure']): string {
@@ -210,6 +211,7 @@ Also write the operating contract using \`write_note\` with key \`${contractKey}
 \`\`\`
 
 ## Important
+- Use the shared-note MCP tool; if \`write_note\` is unavailable, call \`mcp__orchestrator__write_note\`.
 - Use \`write_note("${planKey}", <plan content>)\` to store the plan.
 - Use \`write_note("${contractKey}", <contract content>)\` to store the contract.
 - Do NOT implement anything yet — this is assessment and planning only.${workflow.worktree_branch ? `
@@ -261,7 +263,7 @@ ${writeTargets}
 - Do NOT make code changes.
 - Do NOT switch branches.${workflow.worktree_branch ? `
 - **You are on branch \`${workflow.worktree_branch}\`. Do NOT switch branches or checkout main.**` : ''}
-- Call \`report_status\` with what you are repairing.`;
+- Call \`report_status\` with what you are repairing.${MCP_TOOL_NAMING_NOTE}`;
 }
 
 /**
@@ -287,7 +289,7 @@ ${workflow.task}
 ${workflow.work_dir ?? '(not specified)'}${diagnosticSection}
 
 ## Required Action
-Call \`write_note("${planKey}", <plan>)\` with a valid plan.
+Call the shared-note MCP tool with key \`${planKey}\` and a valid plan. If \`write_note\` is unavailable, use \`mcp__orchestrator__write_note\`.
 
 The plan must follow this exact format:
 
@@ -307,14 +309,14 @@ The plan must follow this exact format:
 \`\`\`
 
 ## Rules
-- Write ONLY the plan note using \`write_note("${planKey}", <plan>)\`.
+- Write ONLY the plan note using \`write_note("${planKey}", <plan>)\` or \`mcp__orchestrator__write_note\` if the prefixed tool name is what your client exposes.
 - Do NOT write the contract note.
 - Do NOT make code changes.
 - Do NOT switch branches.${workflow.worktree_branch ? `
 - **You are on branch \`${workflow.worktree_branch}\`. Do NOT switch branches or checkout main.**` : ''}
 - The plan MUST contain at least one unchecked milestone (\`- [ ]\`).
 - Skip detailed codebase scanning — use what you know from the task description.
-- Call \`report_status\` when done.`;
+- Call \`report_status\` when done.${MCP_TOOL_NAMING_NOTE}`;
 }
 
 export function buildReviewPrompt(workflow: Workflow, cycle: number, inlineContext?: InlineWorkflowContext): string {
@@ -426,7 +428,7 @@ ${cycleAwareness}${scopeGuard}## Rules
 - If the implementation was poor quality, add multiple specific fix milestones rather than vague notes.
 - The implementer reads your plan directly — be precise and actionable.${workflow.worktree_branch ? `
 - **You are on branch \`${workflow.worktree_branch}\`. Do NOT switch branches or checkout main.**` : ''}
-- Call \`report_status\` to update your progress.${!isFirstReview ? extractMilestoneChecklist(inlineContext?.plan) : ''}${renderInlineContext(inlineContext, planKey, contractKey, worklogPrefix)}${!isFirstReview ? renderRecentChanges(inlineContext?.recentDiff) : ''}`;
+- Call \`report_status\` to update your progress.${MCP_TOOL_NAMING_NOTE}${!isFirstReview ? extractMilestoneChecklist(inlineContext?.plan) : ''}${renderInlineContext(inlineContext, planKey, contractKey, worklogPrefix)}${!isFirstReview ? renderRecentChanges(inlineContext?.recentDiff) : ''}`;
 }
 
 export function buildImplementPrompt(workflow: Workflow, cycle: number, inlineContext?: InlineWorkflowContext): string {
@@ -507,7 +509,7 @@ ${worklogStep}. **Write a worklog entry** using \`write_note("${worklogKey}", <w
 - If blocked, explain clearly in the worklog and set the "Next step" to describe what needs to happen.
 - Call \`report_status\` regularly to update your progress.
 - Call \`search_kb\` at the start for relevant prior knowledge.
-- Call \`report_learnings\` near the end with anything useful you discovered.${renderInlineContext(inlineContext, planKey, contractKey, worklogPrefix)}`;
+- Call \`report_learnings\` near the end with anything useful you discovered.${MCP_TOOL_NAMING_NOTE}${renderInlineContext(inlineContext, planKey, contractKey, worklogPrefix)}`;
 }
 
 export function buildVerifyPrompt(workflow: Workflow, cycle: number, inlineContext?: InlineWorkflowContext): string {
@@ -564,6 +566,6 @@ Use this command to start the application. Run it in the background, wait for it
 - Do NOT modify any source code. You are read-only except for your test scripts.
 - Clean up any test files you create when done.
 - The first line of your result note MUST be \`## Verify Result: PASS\` or \`## Verify Result: FAIL\`.
-- Call \`report_status\` to update your progress.${workflow.worktree_branch ? `
+- Call \`report_status\` to update your progress.${MCP_TOOL_NAMING_NOTE}${workflow.worktree_branch ? `
 - You are on branch \`${workflow.worktree_branch}\`. Do NOT switch branches.` : ''}${renderInlineContext(inlineContext, planKey, contractKey, worklogPrefix)}`;
 }
