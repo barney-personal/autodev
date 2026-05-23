@@ -476,6 +476,44 @@ Agents have access to external system integrations via MCP tools:
 
 These are available to all agents and are particularly useful for Eye's autonomous monitoring.
 
+## API
+
+### `GET /api/system/snapshot`
+
+Read-only aggregate of current system health and recent activity. Inherits the same bearer-auth middleware as the rest of `/api/*`. Returns HTTP 200 even when the database has not been initialised — DB-derived fields fall back to `null` or `0` so the endpoint can also be polled during early startup.
+
+**Response shape:**
+
+```json
+{
+  "process": {
+    "uptime_seconds": 12345,
+    "rss_mb": 187,
+    "node_version": "v22.4.0"
+  },
+  "db": {
+    "last_workflow_created_at": "2026-05-23T08:51:00.000Z",
+    "last_job_completed_at": "2026-05-23T08:50:42.000Z",
+    "workflow_counts_by_status": { "running": 1, "blocked": 0, "completed": 12 }
+  },
+  "routing_brain": {
+    "mode": "shadow",
+    "total_decisions_30d": 42,
+    "by_mode_30d": { "shadow": 30, "enforce": 12 }
+  },
+  "queue": { "queued": 2, "running": 1, "blocked": 1 }
+}
+```
+
+Notes:
+
+- `db.last_workflow_created_at` and `db.last_job_completed_at` are ISO 8601 strings, or `null` if no rows exist.
+- `queue.running` counts active execution slots (`assigned + running` jobs).
+- `queue.blocked` counts queued jobs that cannot dispatch now because of a future `scheduled_at`, an unmet JSON-array `depends_on` parent, or a `pre_debate_id` whose referenced debate has not reached a terminal status (`consensus`, `disagreement`, `failed`, `cancelled`). This matches the dispatcher readiness semantics in `getNextQueuedJob()`.
+- `queue.queued` is the count of queued jobs that are dispatch-eligible right now (queued total minus blocked).
+- `routing_brain.total_decisions_30d` / `by_mode_30d` aggregate the last 30 days from `route_decisions` without parsing `decision_json`.
+- Target response time: under 200ms on a warm DB. Local benchmark (5 samples of `curl -s -o /dev/null -w "%{time_total}\n" http://localhost:3456/api/system/snapshot`) measured a median around 1.5ms.
+
 ## Health Monitoring
 
 The orchestrator includes automated health monitoring that watches for problematic agents:
