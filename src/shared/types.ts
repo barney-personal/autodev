@@ -1012,6 +1012,43 @@ export interface WatcherAction {
   created_at: number;
 }
 
+// ─── Routing brain ────────────────────────────────────────────────────────────
+
+export type RouteDecisionConfidence = 'low' | 'medium' | 'high';
+export type RouteDecisionMode = 'shadow' | 'live' | 'fallback';
+
+/**
+ * Payload returned by RoutingBrain.decideRouteForCycle. Matches the brief's
+ * contract exactly — `mode` is NOT part of this payload (persistence-only).
+ */
+export interface RouteDecision {
+  implementerModel: string;
+  reviewerModel: string | null;
+  skipReview: boolean;
+  confidence: RouteDecisionConfidence;
+  rationale: string;
+  guardrailOverrides: string[];
+  llmRawResponse: string;
+  signalsSent: Record<string, unknown>;
+  promptVersion: string;
+  decisionModel: string;
+  costEstimateUsd: number;
+  decidedAt: number;
+}
+
+/** Persisted row wrapping a RouteDecision with persistence metadata. */
+export interface RouteDecisionRow {
+  id: string;
+  workflow_id: string;
+  cycle: number;
+  phase: string;
+  decision: RouteDecision;
+  mode: RouteDecisionMode;
+  prompt_version: string;
+  decision_model: string;
+  created_at: number;
+}
+
 // ─── Eye Daily Summary ────────────────────────────────────────────────────────
 
 export interface DailySummaryItem {

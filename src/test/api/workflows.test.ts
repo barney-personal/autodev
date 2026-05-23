@@ -118,6 +118,43 @@ describe('GET /api/workflows/:id', () => {
     expect(res.body.id).toBe(wf.id);
     expect(res.body).toHaveProperty('plan');
     expect(res.body).toHaveProperty('worklogs');
+    expect(res.body).toHaveProperty('route_decisions');
+    expect(res.body.route_decisions).toEqual([]);
+  });
+
+  it('includes persisted route_decisions in cycle order', async () => {
+    const project = await insertTestProject();
+    const wf = await insertTestWorkflow({ project_id: project.id });
+    const { insertRouteDecision } = await import('../../server/db/routeDecisionQueries.js');
+    const { randomUUID } = await import('crypto');
+    const makeDecision = (skip: boolean) => ({
+      implementerModel: 'claude-haiku-4-5-20251001',
+      reviewerModel: skip ? null : 'codex',
+      skipReview: skip,
+      confidence: 'high' as const,
+      rationale: 'r',
+      guardrailOverrides: [],
+      llmRawResponse: '{}',
+      signalsSent: {},
+      promptVersion: 'v1',
+      decisionModel: 'claude-sonnet-4-6[1m]',
+      costEstimateUsd: 0.001,
+      decidedAt: Date.now(),
+    });
+    insertRouteDecision({
+      id: randomUUID(), workflow_id: wf.id, cycle: 2, phase: 'implement',
+      decision: makeDecision(false), mode: 'shadow',
+    });
+    insertRouteDecision({
+      id: randomUUID(), workflow_id: wf.id, cycle: 1, phase: 'implement',
+      decision: makeDecision(true), mode: 'live',
+    });
+    const res = await request(app).get(`/api/workflows/${wf.id}`);
+    expect(res.status).toBe(200);
+    expect(res.body.route_decisions).toHaveLength(2);
+    expect(res.body.route_decisions[0].cycle).toBe(1);
+    expect(res.body.route_decisions[1].cycle).toBe(2);
+    expect(res.body.route_decisions[0].decision.skipReview).toBe(true);
   });
 
   it('returns 404 for unknown workflow', async () => {

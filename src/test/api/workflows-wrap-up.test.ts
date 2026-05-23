@@ -173,6 +173,14 @@ vi.mock('../../server/orchestrator/WorkflowPrompts.js', () => ({
   buildSimplifiedAssessRepairPrompt: vi.fn(() => 'mock simplified prompt'),
 }));
 vi.mock('../../server/orchestrator/ModelClassifier.js', () => ({
+  KNOWN_MODELS: [
+    'claude-opus-4-7',
+    'claude-opus-4-7[1m]',
+    'claude-sonnet-4-6',
+    'claude-sonnet-4-6[1m]',
+    'claude-haiku-4-5',
+    'codex-gpt-5.5',
+  ],
   getCircuitBreaker: vi.fn(() => ({
     isOpen: () => false, reason: () => 'closed',
     recordModelLimited: () => {}, recordModelAvailable: () => {},

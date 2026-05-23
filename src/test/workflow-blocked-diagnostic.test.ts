@@ -57,6 +57,14 @@ vi.mock('../server/orchestrator/WorkflowPrompts.js', () => ({
 }));
 
 vi.mock('../server/orchestrator/ModelClassifier.js', () => ({
+  KNOWN_MODELS: [
+    'claude-opus-4-7',
+    'claude-opus-4-7[1m]',
+    'claude-sonnet-4-6',
+    'claude-sonnet-4-6[1m]',
+    'claude-haiku-4-5',
+    'codex-gpt-5.5',
+  ],
   getCircuitBreaker: vi.fn(() => ({
     isOpen: () => false,
     reason: () => 'circuit closed',
@@ -297,6 +305,107 @@ describe('writeBlockedDiagnostic', () => {
     const content = String(vi.mocked(fs.writeFileSync).mock.calls[0][1]);
     expect(content).toContain('No Failed Jobs Workflow');
     expect(content).toContain('No failed jobs.');
+  });
+
+  it('(e) omits routing decisions block when none persisted', async () => {
+    const { writeBlockedDiagnostic } = await import('../server/orchestrator/WorkflowManager.js');
+    const workflow = await insertTestWorkflow({
+      project_id: project.id,
+      title: 'Empty Routing Workflow',
+      status: 'blocked',
+    });
+    queries.updateWorkflow(workflow.id, { blocked_reason: 'stuck' } as any);
+    const updated = queries.getWorkflowById(workflow.id)!;
+    writeBlockedDiagnostic(updated);
+    expect(fs.writeFileSync).toHaveBeenCalledTimes(1);
+    const content = String(vi.mocked(fs.writeFileSync).mock.calls[0][1]);
+    expect(content).not.toContain('## Routing decisions');
+  });
+
+  it('(f) appends last-5 routing decisions block when present', async () => {
+    const { writeBlockedDiagnostic } = await import('../server/orchestrator/WorkflowManager.js');
+    const { insertRouteDecision } = await import('../server/db/routeDecisionQueries.js');
+    const { randomUUID } = await import('crypto');
+    const workflow = await insertTestWorkflow({
+      project_id: project.id,
+      title: 'Routing Workflow',
+      status: 'blocked',
+    });
+    queries.updateWorkflow(workflow.id, { blocked_reason: 'stuck' } as any);
+    const updated = queries.getWorkflowById(workflow.id)!;
+    const baseDecision = (skip: boolean, rationale: string) => ({
+      implementerModel: 'claude-haiku-4-5-20251001',
+      reviewerModel: skip ? null : 'codex',
+      skipReview: skip,
+      confidence: 'high' as const,
+      rationale,
+      guardrailOverrides: [],
+      llmRawResponse: '{}',
+      signalsSent: {},
+      promptVersion: 'v1',
+      decisionModel: 'claude-sonnet-4-6[1m]',
+      costEstimateUsd: 0.001,
+      decidedAt: Date.now(),
+    });
+    // Insert 6 decisions; only the last 5 should appear.
+    for (let c = 1; c <= 6; c++) {
+      insertRouteDecision({
+        id: randomUUID(),
+        workflow_id: workflow.id,
+        cycle: c,
+        phase: 'implement',
+        decision: baseDecision(c % 2 === 0, `rationale cycle ${c}`),
+        mode: 'shadow',
+      });
+    }
+    writeBlockedDiagnostic(updated);
+    expect(fs.writeFileSync).toHaveBeenCalledTimes(1);
+    const content = String(vi.mocked(fs.writeFileSync).mock.calls[0][1]);
+    expect(content).toContain('## Routing decisions (last 5 cycles)');
+    expect(content).toContain('rationale cycle 6');
+    expect(content).toContain('rationale cycle 2');
+    expect(content).not.toContain('rationale cycle 1');
+    expect(content).toContain('skipped'); // even-cycle decisions have skipReview=true
+  });
+
+  it('escapes routing decision rationale pipes in the Markdown table', async () => {
+    const { writeBlockedDiagnostic } = await import('../server/orchestrator/WorkflowManager.js');
+    const { insertRouteDecision } = await import('../server/db/routeDecisionQueries.js');
+    const { randomUUID } = await import('crypto');
+
+    const workflow = await insertTestWorkflow({
+      project_id: project.id,
+      title: 'Routing Workflow',
+      status: 'blocked',
+    });
+    queries.updateWorkflow(workflow.id, { blocked_reason: 'stuck' } as any);
+    const updated = queries.getWorkflowById(workflow.id)!;
+    insertRouteDecision({
+      id: randomUUID(),
+      workflow_id: workflow.id,
+      cycle: 1,
+      phase: 'implement',
+      mode: 'shadow',
+      decision: {
+        implementerModel: 'claude-haiku-4-5-20251001',
+        reviewerModel: 'codex',
+        skipReview: false,
+        confidence: 'high',
+        rationale: 'first | second',
+        guardrailOverrides: [],
+        llmRawResponse: '{}',
+        signalsSent: {},
+        promptVersion: 'v1',
+        decisionModel: 'claude-sonnet-4-6[1m]',
+        costEstimateUsd: 0.001,
+        decidedAt: Date.now(),
+      },
+    });
+
+    writeBlockedDiagnostic(updated);
+
+    const content = String(vi.mocked(fs.writeFileSync).mock.calls[0][1]);
+    expect(content).toContain('first \\| second');
   });
 
   it('(d) handles failed job with no agents', async () => {

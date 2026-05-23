@@ -5,7 +5,7 @@ import path from 'path';
 import { captureWithContext, Sentry } from '../instrument.js';
 import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
-import type { Job, Workflow, WorkflowPhase, StopMode } from '../../shared/types.js';
+import type { Job, RouteDecision, Workflow, WorkflowPhase, StopMode } from '../../shared/types.js';
 import { effectiveMaxTurns, isCodexModel } from '../../shared/types.js';
 import {
   DEFAULT_CLAUDE_OPUS_MODEL,
@@ -30,6 +30,7 @@ import { parseMilestones, meetsCompletionThreshold, recoverPlanFromAgentOutput }
 import { ensureWorktreeBranch, verifyWorktreeHealth, createWorkflowWorktree, restoreWorkflowWorktree } from './WorkflowWorktreeManager.js';
 import { pushAndCreatePr as _pushAndCreatePr, finalizeWorkflow as _finalizeWorkflow, reconcileBlockedPRs as _reconcileBlockedPRs } from './WorkflowPRCreator.js';
 import { diagnoseWriteNoteInOutput, formatWriteNoteDiagnostic, writeBlockedDiagnostic } from './WorkflowBlockedDiagnostics.js';
+import { decideRouteForCycle, getRoutingBrainMode } from './RoutingBrain.js';
 import { dispatchResolverForWorkflowAsync } from './ResolverDispatcher.js';
 import { recordPostResumeBlock } from './ResumeOrchestrator.js';
 
@@ -185,7 +186,7 @@ function _onJobCompleted(job: Job): void {
             finalizeWorkflow(queries.getWorkflowById(workflow.id)!).catch(err => console.error(`[workflow ${workflow.id}] finalizeWorkflow error:`, err));
           }
         } else {
-          spawnPhaseJob(updated, 'implement', updated.current_cycle);
+          void spawnImplementWithRouting(updated, updated.current_cycle);
         }
       } catch (err) {
         const errorMessage = errMsg(err);
@@ -498,6 +499,7 @@ function handleZeroProgressAndAdvance(job: Job, workflow: Workflow, updated: Wor
   }
 
   const nextCycle = updated.current_cycle + 1;
+  if (maybeSkipReviewWithRoutingDecision(updated, updated.current_cycle, nextCycle)) return;
   updateAndEmit(workflow.id, { current_cycle: nextCycle });
   spawnPhaseJob(queries.getWorkflowById(workflow.id)!, 'review', nextCycle);
 }
@@ -767,6 +769,103 @@ function ensureWorkflowWorktreeReadyForPhase(
   }
 
   return activeWorkflow;
+}
+
+// ─── Routing brain reviewer-skip hook ───────────────────────────────────────────
+
+/**
+ * Check if the routing brain's latest implement decision allows skipping the reviewer.
+ * Only applies when the persisted decision row is mode='live' and skipReview is true
+ * (guardrails have already run). On skip: writes a marker note, logs a resilience event,
+ * updates current_cycle, and spawns the next implement via routing.
+ * Returns true if review was skipped.
+ */
+function maybeSkipReviewWithRoutingDecision(
+  workflow: Workflow,
+  implementCycle: number,
+  nextCycle: number,
+): boolean {
+  const row = queries.getLatestRouteDecisionForCycle(workflow.id, implementCycle, 'implement');
+  if (!row || row.mode !== 'live' || !row.decision.skipReview) return false;
+
+  queries.upsertNote(
+    `workflow/${workflow.id}/route/cycle-${implementCycle}/review_status`,
+    'auto_skipped',
+    null,
+  );
+
+  logResilienceEvent('routing_brain_review_skip', 'workflow', workflow.id, {
+    cycle: implementCycle,
+    nextCycle,
+    implementerModel: row.decision.implementerModel,
+    confidence: row.decision.confidence,
+    rationale: row.decision.rationale,
+  });
+
+  console.log(`[workflow ${workflow.id}] routing brain skipped review for cycle ${implementCycle} (confidence=${row.decision.confidence}) — advancing to implement cycle ${nextCycle}`);
+
+  updateAndEmit(workflow.id, { current_cycle: nextCycle });
+  void spawnImplementWithRouting(queries.getWorkflowById(workflow.id)!, nextCycle);
+  return true;
+}
+
+// ─── Routing brain integration ──────────────────────────────────────────────────
+
+/**
+ * Async wrapper for spawning an implement job with optional routing brain decision.
+ * Called only for review-approved cycle-start implement spawns.
+ * Fallback/retry/resume paths bypass routing by calling spawnPhaseJob directly.
+ */
+function spawnStaticImplementOrBlock(workflow: Workflow, cycle: number, modelOverride?: string): void {
+  const latestWorkflow = queries.getWorkflowById(workflow.id);
+  if (!latestWorkflow || latestWorkflow.status !== 'running') {
+    console.log(`[workflow ${workflow.id}] skipping implement spawn for cycle ${cycle}: workflow no longer running`);
+    return;
+  }
+
+  try {
+    spawnPhaseJob(latestWorkflow, 'implement', cycle, modelOverride);
+  } catch (err) {
+    const errorMessage = errMsg(err);
+    console.error(`[workflow ${workflow.id}] implement spawn failed for cycle ${cycle}:`, err);
+    const blockedReason = `implement_spawn_error: Failed to spawn implement cycle ${cycle}: ${errorMessage.slice(0, 100)}`;
+    updateAndEmit(workflow.id, { status: 'blocked', current_phase: 'implement', blocked_reason: blockedReason });
+  }
+}
+
+export async function spawnImplementWithRouting(workflow: Workflow, cycle: number): Promise<void> {
+  const mode = getRoutingBrainMode();
+
+  // off mode: no routing decision, preserve existing behavior exactly
+  if (mode === 'off') {
+    spawnStaticImplementOrBlock(workflow, cycle);
+    return;
+  }
+
+  let decision: RouteDecision;
+  let useStaticImplementer = false;
+
+  try {
+    decision = await decideRouteForCycle(workflow, 'implement', cycle, { mode });
+    const latestDecisionRow = queries.getLatestRouteDecisionForCycle(workflow.id, cycle, 'implement');
+    useStaticImplementer = latestDecisionRow?.mode === 'fallback';
+  } catch (err) {
+    console.error(`[workflow ${workflow.id}] routing brain error for implement cycle ${cycle}:`, err);
+    spawnStaticImplementOrBlock(workflow, cycle);
+    return;
+  }
+
+  // shadow mode: persist decision but spawn with static models
+  if (mode === 'shadow') {
+    spawnStaticImplementOrBlock(workflow, cycle);
+    return;
+  }
+
+  // live mode: use routed implementer model
+  if (mode === 'live') {
+    spawnStaticImplementOrBlock(workflow, cycle, useStaticImplementer ? undefined : decision.implementerModel);
+    return;
+  }
 }
 
 function spawnPhaseJob(workflow: Workflow, phase: WorkflowPhase, cycle: number, modelOverride?: string): void {

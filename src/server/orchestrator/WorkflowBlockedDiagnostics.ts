@@ -232,6 +232,21 @@ curl -X POST http://localhost:${port}/api/workflows/${workflow.id}/resume \\
     }
   } catch { /* ignore */ }
 
+  let routingDecisionsBlock = '';
+  try {
+    const decisions = queries.getRouteDecisionsForWorkflow(workflow.id);
+    if (decisions.length > 0) {
+      const last5 = decisions.slice(-5);
+      const rows = last5.map(r => {
+        const d = r.decision;
+        const reviewer = d.skipReview ? 'skipped' : (d.reviewerModel ?? '-');
+        const rationale = (d.rationale ?? '').replace(/\s+/g, ' ').replace(/\|/g, '\\|').slice(0, 200);
+        return `| ${r.cycle} | ${r.phase} | ${r.mode} | ${d.implementerModel || '-'} | ${reviewer} | ${d.confidence} | ${rationale} |`;
+      }).join('\n');
+      routingDecisionsBlock = `\n## Routing decisions (last 5 cycles)\n| Cycle | Phase | Mode | Implementer | Reviewer | Confidence | Rationale |\n|-------|-------|------|-------------|----------|------------|-----------|\n${rows}\n`;
+    }
+  } catch { /* ignore */ }
+
   let gitState = '';
   if (workflow.worktree_path) {
     try {
@@ -285,6 +300,7 @@ ${f.logTail || '(no log output available)'}
 
 ## Git State
 ${gitState || '(no worktree configured)'}
+${routingDecisionsBlock}
 
 ## Latest Worklog Entry
 \`\`\`
