@@ -139,6 +139,58 @@ export function countJobsByStatus(status: JobStatus): number {
   return cast<{ cnt: number }>(row).cnt;
 }
 
+export function getLastDoneJobUpdatedAt(): number | null {
+  const db = getDb();
+  const row = db.prepare(
+    "SELECT MAX(updated_at) AS m FROM jobs WHERE status = 'done'"
+  ).get() as { m: number | null } | undefined;
+  return row?.m ?? null;
+}
+
+export function getQueueSnapshotStats(): { queued: number; running: number; blocked: number } {
+  const db = getDb();
+  const now = Date.now();
+  // Active execution slots
+  const runRow = db.prepare(
+    "SELECT COUNT(*) AS cnt FROM jobs WHERE status IN ('assigned','running') AND archived_at IS NULL"
+  ).get() as { cnt: number };
+
+  // Blocked: queued jobs that cannot dispatch now due to future schedule, unmet
+  // depends_on, or nonterminal pre_debate_id.
+  const blockedRow = db.prepare(`
+    SELECT COUNT(*) AS cnt FROM jobs j
+    WHERE j.status = 'queued'
+      AND j.archived_at IS NULL
+      AND (
+        (j.scheduled_at IS NOT NULL AND j.scheduled_at > ?)
+        OR (
+          j.depends_on IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM jobs d
+            WHERE d.id = j.depends_on
+              AND d.status NOT IN ('done','failed','cancelled')
+          )
+        )
+        OR (
+          j.pre_debate_id IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM debates dbt
+            WHERE dbt.id = j.pre_debate_id
+              AND dbt.status NOT IN ('consensus','disagreement','failed','cancelled')
+          )
+        )
+      )
+  `).get(now) as { cnt: number };
+
+  const queuedRow = db.prepare(
+    "SELECT COUNT(*) AS cnt FROM jobs WHERE status = 'queued' AND archived_at IS NULL"
+  ).get() as { cnt: number };
+
+  const blocked = blockedRow.cnt;
+  const queued = Math.max(0, queuedRow.cnt - blocked);
+  return { queued, running: runRow.cnt, blocked };
+}
+
 export function countRunningWorkflowPhaseJobs(excludeJobId?: string): number {
   const db = getDb();
   const row = excludeJobId
