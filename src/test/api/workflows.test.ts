@@ -456,6 +456,41 @@ describe('POST /api/workflows/:id/wrap-up', () => {
     expect(vi.mocked(createWorkflowPr)).not.toHaveBeenCalled();
   });
 
+  it('preserves the worktree and blocks with a non-reconcilable reason when push failure is permanent', async () => {
+    const { pushBranch, createWorkflowPr, probeRecoverableWorkflowWork, cleanupWorktree } = await import('../../server/orchestrator/WorkflowManager.js');
+    vi.mocked(probeRecoverableWorkflowWork).mockReturnValue({ status: 'has_work', detail: '3 commit(s) ahead of origin/main', baseRef: 'origin/main' });
+    vi.mocked(pushBranch).mockReturnValue({
+      ok: false,
+      error: 'origin remote is not configured: fatal: No such remote',
+      permanentFailure: true,
+    });
+
+    const project = await insertTestProject();
+    const wf = await insertTestWorkflow({
+      project_id: project.id,
+      status: 'running',
+      current_phase: 'implement',
+      use_worktree: 1,
+    });
+    const { updateWorkflow } = await import('../../server/db/queries.js');
+    updateWorkflow(wf.id, {
+      worktree_path: '/tmp/worktree',
+      worktree_branch: 'workflow/test-branch',
+    });
+
+    const res = await request(app).post(`/api/workflows/${wf.id}/wrap-up`);
+    expect(res.status).toBe(409);
+    expect(res.body.outcome).toBe('draft_pr_failed_preserved');
+    expect(res.body.pr_url).toBeNull();
+    expect(res.body.workflow.status).toBe('blocked');
+    expect(res.body.workflow.blocked_reason).toContain('PR creation skipped');
+    expect(res.body.workflow.blocked_reason).toContain('origin remote is not configured');
+    expect(res.body.workflow.blocked_reason).not.toContain('branch push failed');
+    expect(res.body.workflow.blocked_reason).toContain('/tmp/worktree');
+    expect(vi.mocked(cleanupWorktree)).not.toHaveBeenCalled();
+    expect(vi.mocked(createWorkflowPr)).not.toHaveBeenCalled();
+  });
+
   it('blocks with descriptive reason when worktree_path is missing but milestones_done > 0', async () => {
     const { cleanupWorktree } = await import('../../server/orchestrator/WorkflowManager.js');
 

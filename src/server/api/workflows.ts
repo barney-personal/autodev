@@ -289,10 +289,14 @@ router.post('/:id/wrap-up', (req, res) => {
   // Step 1: Push the branch
   const pushResult = pushBranch(workflow);
   if (!pushResult.ok) {
+    const pushError = pushResult.error ?? 'unknown push failure';
+    const blockedReason = pushResult.permanentFailure
+      ? `PR creation skipped: ${pushError}; worktree preserved at ${preservedAt}`
+      : `Wrap-up: branch push failed (${pushError}) — worktree preserved at ${preservedAt}`;
     queries.updateWorkflow(workflow.id, {
       status: 'blocked',
       current_phase: 'idle' as WorkflowPhase,
-      blocked_reason: `Wrap-up: branch push failed (${pushResult.error}) — worktree preserved at ${preservedAt}`,
+      blocked_reason: blockedReason,
     });
     const finalWorkflow = queries.getWorkflowById(workflow.id);
     if (finalWorkflow) socket.emitWorkflowUpdate(finalWorkflow);
