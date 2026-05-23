@@ -31,6 +31,7 @@ function execFileAsync(
 import { captureWithContext } from '../instrument.js';
 import { agentLogger } from '../lib/logger.js';
 import * as queries from '../db/queries.js';
+import { isDbInitialized } from '../db/database.js';
 import * as socket from '../socket/SocketManager.js';
 import { getFileLockRegistry } from './FileLockRegistry.js';
 import { onJobCompleted as debateOnJobCompleted } from './DebateManager.js';
@@ -319,6 +320,8 @@ export function startTailing(
   let lineBuf = '';        // incomplete last line
 
   function readNewContent(): void {
+    if (!isDbInitialized()) return;
+
     let size: number;
     try {
       size = fs.statSync(logPath).size;
@@ -900,6 +903,8 @@ function handleAgentExit(agentId: string, job: Job, exitCode: number | null): vo
 }
 
 function handleStreamEvent(agentId: string, event: ClaudeStreamEvent | CodexStreamEvent, raw: string, seq: number): void {
+  if (!isDbInitialized()) return;
+
   storeOutput(agentId, seq, event.type, raw);
 
   // Claude: capture session_id from system init event
@@ -957,6 +962,8 @@ function extractAndAccumulateTokens(agentId: string, event: ClaudeStreamEvent | 
 }
 
 function storeOutput(agentId: string, seq: number, eventType: string, content: string): void {
+  if (!isDbInitialized()) return;
+
   queries.insertAgentOutput({
     agent_id: agentId,
     seq,
@@ -1026,4 +1033,3 @@ function buildPrompt(job: Job): string {
 
   return prompt;
 }
-

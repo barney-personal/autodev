@@ -13,7 +13,7 @@ import type { JobStatus, WorkflowStatus, DebateStatus } from '../../shared/types
 const JOB_TRANSITIONS: Record<JobStatus, readonly JobStatus[]> = {
   queued:    ['assigned', 'failed', 'cancelled'],   // failed: cascade-fail (deps failed/cancelled)
   assigned:  ['running', 'failed', 'cancelled'],
-  running:   ['done', 'failed', 'cancelled'],
+  running:   ['done', 'failed', 'cancelled', 'queued'], // queued: explicit requeue/restart recovery
   done:      [],
   failed:    ['queued'],          // retry re-queues the job
   cancelled: [],

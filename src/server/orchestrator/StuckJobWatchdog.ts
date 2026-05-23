@@ -702,7 +702,11 @@ function check(): void {
       console.log(`[watchdog] re-queued job "${job.title}" with model ${fallbackModel}`);
     }
   } catch (err: any) {
-    if (!err.message?.includes('no server running')) {
+    const message = err.message ?? '';
+    const noTmuxServer = message.includes('no server running')
+      || message.includes('failed to connect to server')
+      || (message.includes('error connecting to') && message.includes('No such file or directory'));
+    if (!noTmuxServer) {
       console.warn('[watchdog] rate-limit scan error:', err.message);
     }
   }

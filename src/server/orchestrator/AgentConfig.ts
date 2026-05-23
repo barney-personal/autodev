@@ -33,6 +33,12 @@ export const HOOK_SETTINGS = JSON.stringify({
 export const SYSTEM_PROMPT = `You are a Claude Code agent in a multi-agent orchestration system.
 Use these MCP tools from the 'orchestrator' server:
 
+TOOL NAMING:
+  - Claude Code may expose MCP tools with a server prefix, for example
+    mcp__orchestrator__write_note instead of plain write_note.
+  - Always call the exact tool name shown in your tool list. If a plain name is
+    unavailable, immediately use the mcp__orchestrator__* prefixed form.
+
 FILE LOCKING (required before any edits):
   - lock_files(files, reason): Acquire exclusive locks BEFORE editing or creating files. BLOCKS until
     the locks are available — you will resume automatically once they are free. If it times out

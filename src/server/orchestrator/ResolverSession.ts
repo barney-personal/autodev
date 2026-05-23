@@ -67,6 +67,8 @@ export function validateResolverModel(
 
 const MAX_TOOL_ROUNDS_PER_TURN = 4;
 const MAX_OUTPUT_TOKENS = 2000;
+const RETRYABLE_RESOLVER_STATUSES = new Set([408, 429, 500, 502, 503, 504, 529]);
+const MAX_RESOLVER_API_RETRIES = 3;
 
 // ─── System prompt ─────────────────────────────────────────────────────────
 
@@ -136,6 +138,56 @@ export function _setResolverAnthropicClient(client: Anthropic | null): void {
   _client = client;
 }
 
+function resolverApiBackoffMs(attempt: number): number {
+  if (process.env.VITEST) return 0;
+  const base = [1000, 3000, 8000][attempt] ?? 8000;
+  const jitter = base * 0.3 * (2 * Math.random() - 1);
+  return Math.max(250, Math.round(base + jitter));
+}
+
+function sleep(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function getAnthropicErrorStatus(err: unknown): number | null {
+  const status = (err as { status?: unknown })?.status
+    ?? (err as { statusCode?: unknown })?.statusCode;
+  if (typeof status === 'number' && Number.isFinite(status)) return status;
+  const message = err instanceof Error ? err.message : String(err);
+  const match = message.match(/\b(408|429|5\d\d)\b/);
+  return match ? Number(match[1]) : null;
+}
+
+function isRetryableResolverApiError(err: unknown): boolean {
+  const status = getAnthropicErrorStatus(err);
+  return status !== null && RETRYABLE_RESOLVER_STATUSES.has(status);
+}
+
+async function createResolverMessage(
+  params: Anthropic.Messages.MessageCreateParamsNonStreaming,
+  log: { warn: (obj: unknown, msg?: string) => void },
+): Promise<Anthropic.Messages.Message> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= MAX_RESOLVER_API_RETRIES; attempt++) {
+    try {
+      return await getClient().messages.create(params);
+    } catch (err) {
+      lastErr = err;
+      if (attempt >= MAX_RESOLVER_API_RETRIES || !isRetryableResolverApiError(err)) {
+        throw err;
+      }
+      const waitMs = resolverApiBackoffMs(attempt);
+      log.warn(
+        { err, attempt: attempt + 1, max_retries: MAX_RESOLVER_API_RETRIES, wait_ms: waitMs },
+        'resolver API call failed with retryable provider error — retrying',
+      );
+      await sleep(waitMs);
+    }
+  }
+  throw lastErr;
+}
+
 // ─── runResolverSession ────────────────────────────────────────────────────
 
 export interface RunResolverInput {
@@ -190,16 +242,18 @@ export async function runResolverSession(input: RunResolverInput): Promise<RunRe
 
       let resp: Anthropic.Messages.Message;
       try {
-        resp = await getClient().messages.create({
+        resp = await createResolverMessage({
           model: run.model,
           max_tokens: MAX_OUTPUT_TOKENS,
           system: SYSTEM,
           tools: RESOLVER_TOOLS,
           messages: history,
-        });
+        }, log);
       } catch (err) {
         log.error({ err, turn }, 'API call failed');
-        captureWithContext(err, { resolver_id: run.id, workflow_id: run.workflow_id, component: 'ResolverSession' });
+        if (!isRetryableResolverApiError(err)) {
+          captureWithContext(err, { resolver_id: run.id, workflow_id: run.workflow_id, component: 'ResolverSession' });
+        }
         // Sanitize the API error before persisting — error messages can
         // contain ANSI escapes or non-printable bytes from the SDK's
         // response body and we want the same control-char hygiene that

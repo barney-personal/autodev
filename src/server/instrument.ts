@@ -154,6 +154,20 @@ if (dsn) {
         return null;
       }
 
+      // KB consolidation timeouts are bounded maintenance work; skipping a
+      // dedup/contradiction batch is expected when the model call exceeds its
+      // 30s budget, and the next run will retry from fresh data.
+      if (msg.includes('[kb-consolidator]') && msg.includes('AbortError')) {
+        return null;
+      }
+
+      // External provider overloads/rate limits are operational transients.
+      // The orchestrator retries or routes to fallback models; raw 529 issues
+      // from SDK calls just duplicate the resilience events.
+      if (msg.includes('Error: 529') || msg.includes('overloaded_error')) {
+        return null;
+      }
+
       // Worktree branch auto-switch — when a worktree's HEAD has
       // drifted from the expected branch, ensureWorktreeBranch logs
       // and runs `git checkout` to recover. Same pattern fires from
@@ -176,6 +190,12 @@ if (dsn) {
       // context via captureWithContext (HURLICANE-S5), so this
       // console.warn is redundant. Suppresses HURLICANE-S6.
       if (msg.includes('Startup worktree health check failed') && msg.includes('marking blocked')) {
+        return null;
+      }
+
+      // Explicitly non-publishable repos (no usable origin) should preserve
+      // worktrees and surface a blocked reason in the UI, not page Sentry.
+      if (msg.includes('PR creation skipped:') && msg.includes('origin remote')) {
         return null;
       }
 
