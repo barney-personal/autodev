@@ -476,6 +476,43 @@ Agents have access to external system integrations via MCP tools:
 
 These are available to all agents and are particularly useful for Eye's autonomous monitoring.
 
+## System Snapshot API
+
+`GET /api/system/snapshot` returns a single JSON object with current system health and recent activity. All values are read-only — the endpoint never mutates state.
+
+```json
+{
+  "process": {
+    "uptime_seconds": 3600,
+    "rss_mb": 142,
+    "node_version": "v22.14.0"
+  },
+  "db": {
+    "last_workflow_created_at": 1748000000000,
+    "last_job_completed_at": 1748000100000,
+    "workflow_counts_by_status": { "running": 2, "completed": 5, "blocked": 1 }
+  },
+  "routing_brain": {
+    "mode": "live",
+    "total_decisions_30d": 47,
+    "by_mode_30d": { "live": 30, "shadow": 17 }
+  },
+  "queue": {
+    "queued": 3,
+    "running": 2,
+    "blocked": 1
+  }
+}
+```
+
+Notes:
+- `*_at` timestamps are epoch milliseconds; `null` when no rows exist.
+- `workflow_counts_by_status` and `by_mode_30d` are empty objects `{}` when there are no matching rows.
+- `queue.blocked` counts workflows with `status = 'blocked'` (jobs do not have a blocked status).
+- `routing_brain.by_mode_30d` includes only modes present in the last 30 days.
+
+Warm-DB benchmark (100 rows per table, 50 iterations): avg 0.057ms, max 0.094ms — well under the 200ms target.
+
 ## Health Monitoring
 
 The orchestrator includes automated health monitoring that watches for problematic agents:
