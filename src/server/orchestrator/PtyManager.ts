@@ -38,6 +38,7 @@ export {
   _getAgentStateForTest,
   _resetPtySessionManagerStateForTest as _resetPtyManagerStateForTest,
 } from './PtySessionManager.js';
+export type { PtyCleanupStats } from './PtySessionManager.js';
 
 // ── AgentSpawner: types ─────────────────────────────────────────────────────
 export type { StartInteractiveOptions } from './AgentSpawner.js';

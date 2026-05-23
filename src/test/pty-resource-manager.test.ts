@@ -2,14 +2,25 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mock execFileSync for tmux commands
 const execFileSyncMock = vi.fn();
+const fsMocks = vi.hoisted(() => ({
+  openSync: vi.fn(() => 123),
+  closeSync: vi.fn(),
+}));
+
 vi.mock('child_process', () => ({
   execFileSync: (...args: unknown[]) => execFileSyncMock(...args),
   execSync: vi.fn(() => Buffer.from('')),
 }));
 
+vi.mock('fs', () => ({
+  openSync: fsMocks.openSync,
+  closeSync: fsMocks.closeSync,
+}));
+
 describe('PtyResourceManager', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    fsMocks.openSync.mockReturnValue(123);
     // Default: tmux list-sessions returns no orchestrator sessions
     execFileSyncMock.mockImplementation((cmd: string, args: string[]) => {
       if (cmd === 'tmux' && args[0] === 'list-sessions') {

@@ -232,6 +232,62 @@ describe('JobWatcherManager', () => {
     expect(ticks[0]).toEqual({ agentId, trigger: 'initial' });
   });
 
+  it('reconciliation starts a watcher for a running agent that missed the start hook', async () => {
+    const mod = await import('../server/orchestrator/JobWatcherManager.js');
+    const queries = await import('../server/db/queries.js');
+
+    const agentId = await makeRunningAgent();
+    expect(mod._activeSessionCount()).toBe(0);
+    expect(queries.getWatcherByAgentId(agentId)).toBeNull();
+
+    const result = mod._reconcileActiveWatchersForTest();
+    expect(result.started).toBe(1);
+    expect(mod._activeSessionCount()).toBe(1);
+    expect(queries.getWatcherByAgentId(agentId)).toBeTruthy();
+
+    await new Promise(r => setTimeout(r, 30));
+    expect(ticks).toContainEqual({ agentId, trigger: 'initial' });
+  });
+
+  it('reconciliation respects a manually stopped watcher', async () => {
+    const mod = await import('../server/orchestrator/JobWatcherManager.js');
+    const queries = await import('../server/db/queries.js');
+
+    const agentId = await makeRunningAgent();
+    mod.onAgentStarted(agentId);
+    await new Promise(r => setTimeout(r, 30));
+    expect(mod._activeSessionCount()).toBe(1);
+
+    expect(mod.stopWatcherForAgent(agentId)).toBe(true);
+    expect(mod._activeSessionCount()).toBe(0);
+    expect(queries.getWatcherByAgentId(agentId)?.status).toBe('stopped');
+
+    const result = mod._reconcileActiveWatchersForTest();
+    expect(result.started).toBe(0);
+    expect(result.skippedStopped).toBe(1);
+    expect(mod._activeSessionCount()).toBe(0);
+    expect(queries.getWatcherByAgentId(agentId)?.status).toBe('stopped');
+  });
+
+  it('reconciliation stops a session when the job opts out after start', async () => {
+    const mod = await import('../server/orchestrator/JobWatcherManager.js');
+    const queries = await import('../server/db/queries.js');
+    const { getDb } = await import('../server/db/database.js');
+
+    const agentId = await makeRunningAgent();
+    const agent = queries.getAgentById(agentId)!;
+    mod.onAgentStarted(agentId);
+    await new Promise(r => setTimeout(r, 30));
+    expect(mod._activeSessionCount()).toBe(1);
+
+    getDb().prepare('UPDATE jobs SET watch = 0 WHERE id = ?').run(agent.job_id);
+    const result = mod._reconcileActiveWatchersForTest();
+
+    expect(result.stopped).toBe(1);
+    expect(mod._activeSessionCount()).toBe(0);
+    expect(queries.getWatcherByAgentId(agentId)?.status).toBe('stopped');
+  });
+
   it('WATCHER_ENABLED=0 disables all hooks — no sessions, no DB rows, no socket emissions', async () => {
     const mod = await import('../server/orchestrator/JobWatcherManager.js');
     const queries = await import('../server/db/queries.js');

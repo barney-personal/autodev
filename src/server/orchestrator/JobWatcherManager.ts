@@ -42,6 +42,12 @@ interface SessionEntry {
   pendingTrigger: WatcherTrigger | null;
 }
 
+interface ReconcileResult {
+  started: number;
+  stopped: number;
+  skippedStopped: number;
+}
+
 const _sessions = new Map<string, SessionEntry>();
 // In-memory only — a server restart resets all manual-tick cooldowns. For a
 // local-only orchestrator that's fine (an attacker controlling restarts is
@@ -118,6 +124,11 @@ export function stopJobWatcherManager(): void {
 /** Test-only: snapshot of active session count. */
 export function _activeSessionCount(): number {
   return _sessions.size;
+}
+
+/** Test-only: run the periodic reconciliation pass synchronously. */
+export function _reconcileActiveWatchersForTest(): ReconcileResult {
+  return reconcileActiveWatchers();
 }
 
 /**
@@ -383,6 +394,10 @@ function stopSession(agentId: string): void {
 }
 
 function runHeartbeats(): void {
+  const reconciled = reconcileActiveWatchers();
+  if (reconciled.started > 0 || reconciled.stopped > 0) {
+    log.info(reconciled, 'watcher reconciliation adjusted sessions');
+  }
   for (const [agentId] of _sessions) {
     // Only fire if the agent is still in a live state — recovery already covers
     // dead agents.
@@ -394,6 +409,50 @@ function runHeartbeats(): void {
     }
     scheduleTick(agentId, 'heartbeat');
   }
+}
+
+function isLiveAgentStatus(status: string): boolean {
+  return status === 'starting' || status === 'running' || status === 'waiting_user';
+}
+
+/**
+ * Repair watcher/session drift for long-lived servers.
+ *
+ * The normal path is event-driven: AgentRunner/AgentSpawner call
+ * onAgentStarted and the session lives until onAgentFinished. A missed hook
+ * during a spawn race, a module-level reset, or a dashboard restart can leave a
+ * real running job without a watcher until the server itself restarts. The
+ * heartbeat now reconciles the invariant directly from DB state:
+ *
+ *   every live, watch-enabled, non-interactive agent should have exactly one
+ *   in-process watcher session, unless the operator manually stopped it.
+ */
+function reconcileActiveWatchers(): ReconcileResult {
+  const result: ReconcileResult = { started: 0, stopped: 0, skippedStopped: 0 };
+
+  for (const [agentId] of [..._sessions]) {
+    const agent = queries.getAgentById(agentId);
+    if (!agent || !isLiveAgentStatus(agent.status) || !shouldWatch(agentId)) {
+      stopSession(agentId);
+      result.stopped++;
+    }
+  }
+
+  for (const agent of queries.listAllRunningAgents()) {
+    if (_sessions.has(agent.id)) continue;
+    if (!shouldWatch(agent.id)) continue;
+
+    const watcher = queries.getWatcherByAgentId(agent.id);
+    if (watcher?.status === 'stopped') {
+      result.skippedStopped++;
+      continue;
+    }
+
+    ensureSession(agent.id, 'initial');
+    if (_sessions.has(agent.id)) result.started++;
+  }
+
+  return result;
 }
 
 async function rehydrateActiveWatchers(): Promise<void> {
@@ -419,8 +478,10 @@ async function rehydrateActiveWatchers(): Promise<void> {
   for (const agent of runningAgents) {
     if (!shouldWatch(agent.id)) continue;
     if (_sessions.has(agent.id)) continue;
+    const watcher = queries.getWatcherByAgentId(agent.id);
+    if (watcher?.status === 'stopped') continue;
     ensureSession(agent.id, 'initial');
-    restored++;
+    if (_sessions.has(agent.id)) restored++;
   }
   if (restored > 0) log.info({ restored }, 'rehydrated watcher sessions for running agents');
 }

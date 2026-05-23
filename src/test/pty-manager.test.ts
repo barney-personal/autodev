@@ -16,11 +16,30 @@ const execFileSyncMock = vi.fn((cmd: string, args: string[]) => {
 
   return Buffer.from('');
 });
+const fsMockState = vi.hoisted(() => ({
+  fakePtmxFd: 987_654,
+  ptmxAvailable: true,
+}));
 
 vi.mock('child_process', () => ({
   execFileSync: execFileSyncMock,
   execSync: vi.fn(() => Buffer.from('')),
 }));
+
+vi.mock('fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('fs')>();
+  return {
+    ...actual,
+    openSync: vi.fn((file: fs.PathLike, flags: fs.OpenMode, mode?: fs.Mode) => {
+      if (file === '/dev/ptmx' && fsMockState.ptmxAvailable) return fsMockState.fakePtmxFd;
+      return actual.openSync(file, flags, mode);
+    }),
+    closeSync: vi.fn((fd: number) => {
+      if (fd === fsMockState.fakePtmxFd) return;
+      return actual.closeSync(fd);
+    }),
+  };
+});
 
 vi.mock('node-pty', () => ({
   spawn: vi.fn(),
@@ -167,6 +186,37 @@ describe('PtyManager spawning state', () => {
     } = await import('../server/orchestrator/PtyManager.js');
 
     _seedSpawningAgentForTest('spawning-agent');
+    _cleanupStaleTmuxSessionsForTest();
+
+    const killCalls = execFileSyncMock.mock.calls.filter(([cmd, args]) =>
+      cmd === 'tmux' && Array.isArray(args) && args[0] === 'kill-session'
+    );
+
+    expect(killCalls).toHaveLength(1);
+    expect(killCalls[0]?.[1]).toEqual(['kill-session', '-t', 'orchestrator-stale-agent']);
+  });
+
+  it('does not kill tmux sessions for agents still active in the DB', async () => {
+    const queries = await import('../server/db/queries.js');
+    queries.insertJob({
+      id: 'db-active-job',
+      title: 'DB active job',
+      description: 'test',
+      context: null,
+      priority: 0,
+      status: 'running',
+    });
+    queries.insertAgent({ id: 'db-active-agent', job_id: 'db-active-job', status: 'running' });
+
+    execFileSyncMock.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'tmux' && args[0] === 'list-sessions') {
+        return Buffer.from('orchestrator-db-active-agent\norchestrator-stale-agent\n');
+      }
+      return Buffer.from('');
+    });
+
+    const { _cleanupStaleTmuxSessionsForTest } = await import('../server/orchestrator/PtyManager.js');
+
     _cleanupStaleTmuxSessionsForTest();
 
     const killCalls = execFileSyncMock.mock.calls.filter(([cmd, args]) =>
