@@ -15,6 +15,8 @@ const routingState = vi.hoisted(() => ({
   rowMode: null as RouteDecisionMode | null,
   counter: 0,
   decision: null as RouteDecision | null,
+  afterDecision: null as null | ((workflowId: string) => void | Promise<void>),
+  decisionError: null as Error | null,
 }));
 
 const failureState = vi.hoisted(() => ({
@@ -123,6 +125,7 @@ vi.mock('../server/orchestrator/FailureClassifier.js', () => ({
 vi.mock('../server/orchestrator/RoutingBrain.js', () => ({
   getRoutingBrainMode: vi.fn(() => routingState.mode),
   decideRouteForCycle: vi.fn(async (workflow: { id: string }, phase: string, cycle: number) => {
+    if (routingState.decisionError) throw routingState.decisionError;
     const decision = routingState.decision ?? makeDecision();
     const { insertRouteDecision } = await import('../server/db/queries.js');
     insertRouteDecision({
@@ -135,6 +138,7 @@ vi.mock('../server/orchestrator/RoutingBrain.js', () => ({
       prompt_version: decision.promptVersion,
       decision_model: decision.decisionModel,
     });
+    await routingState.afterDecision?.(workflow.id);
     return decision;
   }),
 }));
@@ -168,6 +172,8 @@ describe('routing brain implement-spawn integration: live mode and bypasses', ()
     routingState.rowMode = null;
     routingState.counter = 0;
     routingState.decision = makeDecision();
+    routingState.afterDecision = null;
+    routingState.decisionError = null;
     failureState.kind = 'unknown';
     failureState.fallbackEligible = false;
     await setupTestDb();
@@ -226,6 +232,53 @@ describe('routing brain implement-spawn integration: live mode and bypasses', ()
     expect(decisions).toHaveLength(1);
     expect(decisions[0].mode).toBe('fallback');
     expect(implementJob?.model).toBe('claude-opus-4-7[1m]');
+  });
+
+  it('falls back to the static implementer when routing decision throws', async () => {
+    routingState.decisionError = new Error('route decision write failed');
+    const workflow = await createReviewReadyWorkflow();
+    const reviewJob = await insertTestJob({
+      workflow_id: workflow.id,
+      workflow_cycle: 2,
+      workflow_phase: 'review',
+      status: 'done',
+    });
+    const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    const { getJobsForWorkflow, getRouteDecisionsForWorkflow } = await import('../server/db/queries.js');
+
+    onJobCompleted(reviewJob);
+    await flushRouting();
+
+    const implementJob = getJobsForWorkflow(workflow.id).find(job => job.workflow_phase === 'implement');
+
+    expect(getRouteDecisionsForWorkflow(workflow.id)).toHaveLength(0);
+    expect(implementJob?.model).toBe('claude-opus-4-7[1m]');
+  });
+
+  it('does not spawn implement if the workflow stops while routing is in flight', async () => {
+    routingState.decision = makeDecision({ implementerModel: 'claude-haiku-4-5-20251001' });
+    routingState.afterDecision = async (workflowId) => {
+      const { updateWorkflow } = await import('../server/db/queries.js');
+      updateWorkflow(workflowId, { status: 'cancelled' } as any);
+    };
+    const workflow = await createReviewReadyWorkflow();
+    const reviewJob = await insertTestJob({
+      workflow_id: workflow.id,
+      workflow_cycle: 2,
+      workflow_phase: 'review',
+      status: 'done',
+    });
+    const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    const { getJobsForWorkflow, getRouteDecisionsForWorkflow } = await import('../server/db/queries.js');
+
+    onJobCompleted(reviewJob);
+    await flushRouting();
+
+    const decisions = getRouteDecisionsForWorkflow(workflow.id);
+    const implementJob = getJobsForWorkflow(workflow.id).find(job => job.workflow_phase === 'implement');
+
+    expect(decisions).toHaveLength(1);
+    expect(implementJob).toBeUndefined();
   });
 
   it('verify-failure implement retry bypasses routing for v1', async () => {

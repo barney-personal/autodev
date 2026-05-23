@@ -10,6 +10,7 @@ import type { Workflow, WorkflowPhase, RouteDecision, RouteDecisionMode } from '
 const DEFAULT_DECISION_MODEL = 'claude-sonnet-4-6[1m]';
 const DECISION_TIMEOUT_MS = 30_000;
 const DECISION_MAX_TOKENS = 512;
+const MAX_RAW_RESPONSE_CHARS = 2_000;
 
 // ─── Settings helpers ────────────────────────────────────────────────────────
 
@@ -108,7 +109,7 @@ const ROUTING_BRAIN_MODEL_IDS = new Set<string>([
 ]);
 
 export const ROUTING_BRAIN_DECISION_MODEL_IDS = new Set<string>(
-  [...KNOWN_MODELS, 'claude-haiku-4-5'].filter(model => model.startsWith('claude-')),
+  KNOWN_MODELS.filter(model => model.startsWith('claude-')),
 );
 
 function isFinalMilestone(workflow: Workflow): boolean {
@@ -303,12 +304,13 @@ export async function decideRouteForCycle(
     }
 
     const data = await response.json() as { content?: Array<{ text?: string }> };
-    llmRawResponse = data.content?.[0]?.text ?? '';
+    const rawResponseText = data.content?.[0]?.text ?? '';
+    llmRawResponse = rawResponseText.slice(0, MAX_RAW_RESPONSE_CHARS);
 
-    const fields = parseDecisionResponse(llmRawResponse);
+    const fields = parseDecisionResponse(rawResponseText);
 
     const inputTokenEstimate = Math.ceil((system.length + user.length) / 4);
-    const outputTokenEstimate = Math.ceil(llmRawResponse.length / 4);
+    const outputTokenEstimate = Math.ceil(rawResponseText.length / 4);
     const costEstimateUsd = estimateCostUsd(decisionModel, inputTokenEstimate, outputTokenEstimate);
 
     const rawDecision: RouteDecision = {

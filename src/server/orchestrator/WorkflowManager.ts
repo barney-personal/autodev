@@ -5,7 +5,7 @@ import path from 'path';
 import { captureWithContext, Sentry } from '../instrument.js';
 import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
-import type { Job, Workflow, WorkflowPhase, StopMode } from '../../shared/types.js';
+import type { Job, RouteDecision, Workflow, WorkflowPhase, StopMode } from '../../shared/types.js';
 import { effectiveMaxTurns, isCodexModel } from '../../shared/types.js';
 import {
   DEFAULT_CLAUDE_OPUS_MODEL,
@@ -816,36 +816,55 @@ function maybeSkipReviewWithRoutingDecision(
  * Called only for review-approved cycle-start implement spawns.
  * Fallback/retry/resume paths bypass routing by calling spawnPhaseJob directly.
  */
+function spawnStaticImplementOrBlock(workflow: Workflow, cycle: number, modelOverride?: string): void {
+  const latestWorkflow = queries.getWorkflowById(workflow.id);
+  if (!latestWorkflow || latestWorkflow.status !== 'running') {
+    console.log(`[workflow ${workflow.id}] skipping implement spawn for cycle ${cycle}: workflow no longer running`);
+    return;
+  }
+
+  try {
+    spawnPhaseJob(latestWorkflow, 'implement', cycle, modelOverride);
+  } catch (err) {
+    const errorMessage = errMsg(err);
+    console.error(`[workflow ${workflow.id}] implement spawn failed for cycle ${cycle}:`, err);
+    const blockedReason = `implement_spawn_error: Failed to spawn implement cycle ${cycle}: ${errorMessage.slice(0, 100)}`;
+    updateAndEmit(workflow.id, { status: 'blocked', current_phase: 'implement', blocked_reason: blockedReason });
+  }
+}
+
 export async function spawnImplementWithRouting(workflow: Workflow, cycle: number): Promise<void> {
   const mode = getRoutingBrainMode();
 
+  // off mode: no routing decision, preserve existing behavior exactly
+  if (mode === 'off') {
+    spawnStaticImplementOrBlock(workflow, cycle);
+    return;
+  }
+
+  let decision: RouteDecision;
+  let useStaticImplementer = false;
+
   try {
-    // off mode: no routing decision, preserve existing behavior exactly
-    if (mode === 'off') {
-      spawnPhaseJob(workflow, 'implement', cycle);
-      return;
-    }
-
-    const decision = await decideRouteForCycle(workflow, 'implement', cycle, { mode });
+    decision = await decideRouteForCycle(workflow, 'implement', cycle, { mode });
     const latestDecisionRow = queries.getLatestRouteDecisionForCycle(workflow.id, cycle, 'implement');
-    const useStaticImplementer = latestDecisionRow?.mode === 'fallback';
-
-    // shadow mode: persist decision but spawn with static models
-    if (mode === 'shadow') {
-      spawnPhaseJob(workflow, 'implement', cycle);
-      return;
-    }
-
-    // live mode: use routed implementer model
-    if (mode === 'live') {
-      spawnPhaseJob(workflow, 'implement', cycle, useStaticImplementer ? undefined : decision.implementerModel);
-      return;
-    }
+    useStaticImplementer = latestDecisionRow?.mode === 'fallback';
   } catch (err) {
-    const errorMessage = errMsg(err);
     console.error(`[workflow ${workflow.id}] routing brain error for implement cycle ${cycle}:`, err);
-    const blockedReason = `routing_brain_error: Failed to decide route for implement cycle ${cycle}: ${errorMessage.slice(0, 100)}`;
-    updateAndEmit(workflow.id, { status: 'blocked', current_phase: 'implement', blocked_reason: blockedReason });
+    spawnStaticImplementOrBlock(workflow, cycle);
+    return;
+  }
+
+  // shadow mode: persist decision but spawn with static models
+  if (mode === 'shadow') {
+    spawnStaticImplementOrBlock(workflow, cycle);
+    return;
+  }
+
+  // live mode: use routed implementer model
+  if (mode === 'live') {
+    spawnStaticImplementOrBlock(workflow, cycle, useStaticImplementer ? undefined : decision.implementerModel);
+    return;
   }
 }
 

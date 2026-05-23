@@ -391,6 +391,23 @@ describe('RoutingBrain.decideRouteForCycle', () => {
     expect(d.rationale.length).toBeLessThanOrEqual(500);
   });
 
+  it('caps stored raw LLM response to 2000 characters', async () => {
+    const resp = JSON.stringify({
+      implementerModel: 'claude-sonnet-4-6',
+      reviewerModel: 'codex-gpt-5.5',
+      skipReview: false,
+      confidence: 'high',
+      rationale: 'Good choice',
+      extra: 'x'.repeat(5000),
+    });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeFetchResponse(resp)));
+
+    const d = await decideRouteForCycle(mkWorkflow(), 'implement', 2);
+
+    expect(d.llmRawResponse.length).toBe(2000);
+    expect(mockState.insertedRows[0].decision.llmRawResponse.length).toBe(2000);
+  });
+
   // ── signalsSent includes expected keys ──────────────────────────────────
 
   it('includes expected keys in signalsSent', async () => {
