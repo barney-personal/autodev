@@ -819,14 +819,14 @@ function maybeSkipReviewWithRoutingDecision(
 export async function spawnImplementWithRouting(workflow: Workflow, cycle: number): Promise<void> {
   const mode = getRoutingBrainMode();
 
-  // off mode: no routing decision, preserve existing behavior exactly
-  if (mode === 'off') {
-    spawnPhaseJob(workflow, 'implement', cycle);
-    return;
-  }
-
   try {
-    const decision = await decideRouteForCycle(workflow, 'implement', cycle);
+    // off mode: no routing decision, preserve existing behavior exactly
+    if (mode === 'off') {
+      spawnPhaseJob(workflow, 'implement', cycle);
+      return;
+    }
+
+    const decision = await decideRouteForCycle(workflow, 'implement', cycle, { mode });
     const latestDecisionRow = queries.getLatestRouteDecisionForCycle(workflow.id, cycle, 'implement');
     const useStaticImplementer = latestDecisionRow?.mode === 'fallback';
 

@@ -107,7 +107,12 @@ const ROUTING_BRAIN_MODEL_IDS = new Set<string>([
   'codex-gpt-5.5',
 ]);
 
+export const ROUTING_BRAIN_DECISION_MODEL_IDS = new Set<string>(
+  [...KNOWN_MODELS, 'claude-haiku-4-5'].filter(model => model.startsWith('claude-')),
+);
+
 function isFinalMilestone(workflow: Workflow): boolean {
+  if (workflow.milestones_total <= 0) return false;
   return workflow.milestones_done >= workflow.milestones_total - 1;
 }
 
@@ -247,8 +252,9 @@ export async function decideRouteForCycle(
   workflow: Workflow,
   phase: WorkflowPhase,
   cycle: number,
+  options: { mode?: 'off' | 'shadow' | 'live' } = {},
 ): Promise<RouteDecision> {
-  const mode = getRoutingBrainMode();
+  const mode = options.mode ?? getRoutingBrainMode();
   const decisionModel = getRoutingBrainDecisionModel();
   const apiKey = process.env.ANTHROPIC_API_KEY;
   const decidedAt = Date.now();

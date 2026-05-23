@@ -10,6 +10,7 @@ import {
   getRoutingBrainShadowReport,
   getRoutingBrainStats,
 } from '../orchestrator/RoutingBrainStats.js';
+import { ROUTING_BRAIN_DECISION_MODEL_IDS } from '../orchestrator/RoutingBrain.js';
 
 const router = Router();
 
@@ -40,6 +41,12 @@ router.post('/decision-model', (req, res) => {
     return;
   }
   const trimmed = model.trim();
+  if (!ROUTING_BRAIN_DECISION_MODEL_IDS.has(trimmed)) {
+    res.status(400).json({
+      error: `model must be one of: ${[...ROUTING_BRAIN_DECISION_MODEL_IDS].join(', ')}`,
+    });
+    return;
+  }
   queries.upsertNote('setting:routing_brain_decision_model', trimmed, null);
   res.json({ model: trimmed });
 });

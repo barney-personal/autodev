@@ -328,6 +328,16 @@ describe('RoutingBrain.decideRouteForCycle', () => {
     expect(mockState.insertedRows[0].mode).toBe('shadow');
   });
 
+  it('uses the caller-supplied mode for persistence when provided', async () => {
+    process.env.ROUTING_BRAIN_MODE = 'live';
+    vi.resetModules();
+    const mod = await import('../server/orchestrator/RoutingBrain.js');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeFetchResponse(validLlmJson)));
+
+    await mod.decideRouteForCycle(mkWorkflow(), 'implement', 2, { mode: 'shadow' });
+    expect(mockState.insertedRows[0].mode).toBe('shadow');
+  });
+
   // ── skipReview=true with null reviewerModel ─────────────────────────────
 
   it('accepts skipReview=true with null reviewerModel', async () => {
@@ -608,6 +618,29 @@ describe('RoutingBrain.applyGuardrails', () => {
 
     expect(result.skipReview).toBe(false);
     expect(result.guardrailOverrides.some((o) => o.includes('final milestone'))).toBe(true);
+  });
+
+  it('does not treat zero-milestone workflows as final for skipReview guardrails', () => {
+    const decision = {
+      implementerModel: 'claude-sonnet-4-6',
+      reviewerModel: null,
+      skipReview: true,
+      confidence: 'high' as const,
+      rationale: 'Test',
+      guardrailOverrides: [],
+      llmRawResponse: '',
+      signalsSent: {},
+      promptVersion: 'v1',
+      decisionModel: 'claude-sonnet-4-6[1m]',
+      costEstimateUsd: 0.001,
+      decidedAt: Date.now(),
+    };
+    const wf = mkWorkflow({ milestones_done: 0, milestones_total: 0 });
+
+    const result = applyGuardrails(decision, wf, mkMilestone());
+
+    expect(result.skipReview).toBe(true);
+    expect(result.guardrailOverrides.some((o) => o.includes('final milestone'))).toBe(false);
   });
 
   it('forces skipReview=false when milestone touches config.yaml', () => {

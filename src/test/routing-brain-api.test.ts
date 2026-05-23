@@ -246,6 +246,21 @@ describe('routing-brain operator API', () => {
       expect(res.body.model).toBe('claude-sonnet-4-6');
     });
 
+    it('rejects unknown model ids', async () => {
+      const res = await request(app)
+        .post('/api/routing-brain/decision-model')
+        .send({ model: 'not-a-real-model' });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('claude-sonnet-4-6');
+    });
+
+    it('rejects non-Anthropic worker models', async () => {
+      const res = await request(app)
+        .post('/api/routing-brain/decision-model')
+        .send({ model: 'codex' });
+      expect(res.status).toBe(400);
+    });
+
     it('rejects empty string', async () => {
       const res = await request(app).post('/api/routing-brain/decision-model').send({ model: '   ' });
       expect(res.status).toBe(400);

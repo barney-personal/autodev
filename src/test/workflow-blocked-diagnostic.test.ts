@@ -368,6 +368,46 @@ describe('writeBlockedDiagnostic', () => {
     expect(content).toContain('skipped'); // even-cycle decisions have skipReview=true
   });
 
+  it('escapes routing decision rationale pipes in the Markdown table', async () => {
+    const { writeBlockedDiagnostic } = await import('../server/orchestrator/WorkflowManager.js');
+    const { insertRouteDecision } = await import('../server/db/routeDecisionQueries.js');
+    const { randomUUID } = await import('crypto');
+
+    const workflow = await insertTestWorkflow({
+      project_id: project.id,
+      title: 'Routing Workflow',
+      status: 'blocked',
+    });
+    queries.updateWorkflow(workflow.id, { blocked_reason: 'stuck' } as any);
+    const updated = queries.getWorkflowById(workflow.id)!;
+    insertRouteDecision({
+      id: randomUUID(),
+      workflow_id: workflow.id,
+      cycle: 1,
+      phase: 'implement',
+      mode: 'shadow',
+      decision: {
+        implementerModel: 'claude-haiku-4-5-20251001',
+        reviewerModel: 'codex',
+        skipReview: false,
+        confidence: 'high',
+        rationale: 'first | second',
+        guardrailOverrides: [],
+        llmRawResponse: '{}',
+        signalsSent: {},
+        promptVersion: 'v1',
+        decisionModel: 'claude-sonnet-4-6[1m]',
+        costEstimateUsd: 0.001,
+        decidedAt: Date.now(),
+      },
+    });
+
+    writeBlockedDiagnostic(updated);
+
+    const content = String(vi.mocked(fs.writeFileSync).mock.calls[0][1]);
+    expect(content).toContain('first \\| second');
+  });
+
   it('(d) handles failed job with no agents', async () => {
     const { writeBlockedDiagnostic } = await import('../server/orchestrator/WorkflowManager.js');
 
