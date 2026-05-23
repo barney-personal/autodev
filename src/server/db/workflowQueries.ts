@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { getDb, withTransaction } from './database.js';
-import type { Job, Review, TemplateModelStat, ReviewStatus, VerifyRun, Workflow, WorkflowMetrics, WorkflowPhaseMetric } from '../../shared/types.js';
+import type { Job, Review, TemplateModelStat, ReviewStatus, VerifyRun, Workflow, WorkflowMetrics, WorkflowPhaseMetric, WorkflowStatus } from '../../shared/types.js';
 
 // A raw database row before casting to a typed interface.
 
@@ -426,4 +426,29 @@ export function getActiveClaimsForWorkflow(workflowId: string): FileClaim[] {
   return db.prepare(
     'SELECT * FROM workflow_file_claims WHERE workflow_id = ? AND released_at IS NULL'
   ).all(workflowId).map((r: any) => cast<FileClaim>(r));
+}
+
+// ─── Snapshot helpers (read-only, used by /api/system/snapshot) ──────────────
+
+/** Returns the unix-ms timestamp of the most recently created workflow, or null if none exist. */
+export function getLastWorkflowCreatedAt(): number | null {
+  const db = getDb();
+  const row = db.prepare('SELECT MAX(created_at) as val FROM workflows').get() as { val: number | null };
+  return row?.val ?? null;
+}
+
+/**
+ * Returns a count of workflows grouped by status. All five WorkflowStatus keys
+ * are always present (defaulting to 0) so consumers never need to handle undefined.
+ */
+export function getWorkflowCountsByStatus(): Record<WorkflowStatus, number> {
+  const db = getDb();
+  const rows = db.prepare('SELECT status, COUNT(*) as cnt FROM workflows GROUP BY status').all() as { status: string; cnt: number }[];
+  const result: Record<WorkflowStatus, number> = { running: 0, complete: 0, blocked: 0, failed: 0, cancelled: 0 };
+  for (const row of rows) {
+    if (Object.prototype.hasOwnProperty.call(result, row.status)) {
+      result[row.status as WorkflowStatus] = row.cnt;
+    }
+  }
+  return result;
 }

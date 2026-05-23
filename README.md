@@ -476,6 +476,20 @@ Agents have access to external system integrations via MCP tools:
 
 These are available to all agents and are particularly useful for Eye's autonomous monitoring.
 
+## API
+
+### GET /api/system/snapshot
+
+Returns a read-only JSON aggregate of process, database, routing-brain, and queue health. Used by dashboards and external monitors.
+
+Response shape:
+- `process.{uptime_seconds, rss_mb, node_version}`
+- `db.{last_workflow_created_at, last_job_completed_at, workflow_counts_by_status}`
+- `routing_brain.{mode, total_decisions_30d, by_mode_30d}`
+- `queue.{queued, running, blocked}`
+
+All five `workflow_counts_by_status` keys (`running`, `complete`, `blocked`, `failed`, `cancelled`) and all three `by_mode_30d` keys (`shadow`, `live`, `fallback`) are always present, defaulting to 0 in an empty DB. `queue.running` counts both `assigned` and `running` jobs. Side-effect free. Target latency <200ms on a warm DB.
+
 ## Health Monitoring
 
 The orchestrator includes automated health monitoring that watches for problematic agents:

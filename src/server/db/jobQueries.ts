@@ -528,3 +528,17 @@ export function getPendingQuestion(agentId: string): Question | null {
   `).get(agentId);
   return row ? cast<Question>(row) : null;
 }
+
+// ─── Snapshot helper (read-only, used by /api/system/snapshot) ───────────────
+
+/**
+ * Returns the unix-ms timestamp of the most recently completed job (status='done'),
+ * using updated_at as a completion proxy. Does not filter on archived_at so that
+ * archived terminal jobs are included — archiving preserves updated_at as the
+ * original completion time.
+ */
+export function getLastDoneJobCompletedAt(): number | null {
+  const db = getDb();
+  const row = db.prepare("SELECT MAX(updated_at) as val FROM jobs WHERE status = 'done'").get() as { val: number | null };
+  return row?.val ?? null;
+}

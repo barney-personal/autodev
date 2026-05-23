@@ -135,3 +135,31 @@ export function getRouteDecisionsSince(sinceMs: number): RouteDecisionRow[] {
   `).all(sinceMs) as unknown as RawRouteDecisionRow[];
   return rows.map(parseRow);
 }
+
+/**
+ * Count route decisions since sinceMs, grouped by mode. Uses SQL aggregation
+ * to avoid fetching and parsing decision_json for every row.
+ * All three RouteDecisionMode keys (shadow, live, fallback) are always present
+ * in the returned byMode map, defaulting to 0.
+ */
+export function countRouteDecisionsByModeSince(sinceMs: number): {
+  total: number;
+  byMode: Record<RouteDecisionMode, number>;
+} {
+  const db = getDb();
+  const rows = db.prepare(`
+    SELECT mode, COUNT(*) as cnt
+    FROM route_decisions
+    WHERE created_at >= ?
+    GROUP BY mode
+  `).all(sinceMs) as { mode: string; cnt: number }[];
+  const byMode: Record<RouteDecisionMode, number> = { shadow: 0, live: 0, fallback: 0 };
+  let total = 0;
+  for (const row of rows) {
+    if (Object.prototype.hasOwnProperty.call(byMode, row.mode)) {
+      byMode[row.mode as RouteDecisionMode] = row.cnt;
+    }
+    total += row.cnt;
+  }
+  return { total, byMode };
+}
