@@ -170,10 +170,10 @@ export function getQueueSnapshotStats(): { queued: number; running: number; bloc
         )
         OR (
           j.pre_debate_id IS NOT NULL
-          AND EXISTS (
+          AND NOT EXISTS (
             SELECT 1 FROM debates dbt
             WHERE dbt.id = j.pre_debate_id
-              AND dbt.status NOT IN ('consensus','disagreement','failed','cancelled')
+              AND dbt.status IN ('consensus','disagreement','failed','cancelled')
           )
         )
       )

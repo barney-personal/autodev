@@ -196,6 +196,89 @@ describe('GET /api/system/snapshot', () => {
     expect(typeof res.body.process.uptime_seconds).toBe('number');
   });
 
+  it('queue: pre-debate gated jobs are blocked; terminal pre-debate stays dispatchable', async () => {
+    const project = await insertTestProject();
+    const { insertDebate } = await import('../server/db/queries.js');
+    const { insertJob } = await import('../server/db/queries.js');
+
+    const now = Date.now();
+    const runningDebate = insertDebate({
+      id: randomUUID(),
+      title: 'running-debate',
+      task: 't',
+      claude_model: 'claude-opus-4-7',
+      codex_model: 'codex',
+      max_rounds: 3,
+      current_round: 0,
+      status: 'running',
+      consensus: null,
+      project_id: project.id,
+      work_dir: null,
+      max_turns: 50,
+      template_id: null,
+      post_action_prompt: null,
+      post_action_role: null,
+      post_action_job_id: null,
+      post_action_verification: 0,
+      verification_review_job_id: null,
+      verification_response_job_id: null,
+      verification_round: 0,
+      loop_count: 1,
+      current_loop: 0,
+      created_at: now,
+      updated_at: now,
+    } as any);
+    const terminalDebate = insertDebate({
+      id: randomUUID(),
+      title: 'consensus-debate',
+      task: 't',
+      claude_model: 'claude-opus-4-7',
+      codex_model: 'codex',
+      max_rounds: 3,
+      current_round: 1,
+      status: 'consensus',
+      consensus: null,
+      project_id: project.id,
+      work_dir: null,
+      max_turns: 50,
+      template_id: null,
+      post_action_prompt: null,
+      post_action_role: null,
+      post_action_job_id: null,
+      post_action_verification: 0,
+      verification_review_job_id: null,
+      verification_response_job_id: null,
+      verification_round: 0,
+      loop_count: 1,
+      current_loop: 0,
+      created_at: now,
+      updated_at: now,
+    } as any);
+
+    insertJob({
+      id: randomUUID(),
+      title: 'gated-by-running-debate',
+      description: 'b',
+      context: null,
+      priority: 0,
+      status: 'queued',
+      pre_debate_id: runningDebate.id,
+    });
+    insertJob({
+      id: randomUUID(),
+      title: 'dispatchable-after-consensus',
+      description: 'b',
+      context: null,
+      priority: 0,
+      status: 'queued',
+      pre_debate_id: terminalDebate.id,
+    });
+
+    const res = await getJson(app, '/api/system/snapshot');
+    expect(res.status).toBe(200);
+    expect(res.body.queue).toEqual({ queued: 1, running: 0, blocked: 1 });
+  });
+
   it('routing_brain: 0 decisions when only older-than-30d decisions exist', async () => {
     const project = await insertTestProject();
     const wf = await insertTestWorkflow({ project_id: project.id });
