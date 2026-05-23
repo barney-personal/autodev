@@ -150,7 +150,7 @@ describe('GET /api/system/snapshot', () => {
       context: null,
       priority: 0,
       status: 'queued',
-      depends_on: parent.id,
+      depends_on: JSON.stringify([parent.id]) as any,
     });
     // Done job to populate last_job_completed_at
     await insertTestJob({ status: 'done' });

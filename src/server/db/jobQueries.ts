@@ -163,13 +163,10 @@ export function getQueueSnapshotStats(): { queued: number; running: number; bloc
       AND j.archived_at IS NULL
       AND (
         (j.scheduled_at IS NOT NULL AND j.scheduled_at > ?)
-        OR (
-          j.depends_on IS NOT NULL
-          AND EXISTS (
-            SELECT 1 FROM jobs d
-            WHERE d.id = j.depends_on
-              AND d.status NOT IN ('done','failed','cancelled')
-          )
+        OR EXISTS (
+          SELECT 1 FROM json_each(COALESCE(j.depends_on, '[]')) dep
+          JOIN jobs d ON d.id = dep.value
+          WHERE d.status NOT IN ('done','failed','cancelled')
         )
         OR (
           j.pre_debate_id IS NOT NULL
