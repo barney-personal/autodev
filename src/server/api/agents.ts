@@ -4,6 +4,7 @@ import { execFileSync } from 'child_process';
 import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
 import { cancelledAgents } from '../orchestrator/AgentRunner.js';
+import { onJobCompleted as workflowOnJobCompleted } from '../orchestrator/WorkflowManager.js';
 import { markJobRunning } from '../orchestrator/JobLifecycle.js';
 import { disconnectAgent, disconnectAll, getPtyBuffer, getSnapshot, attachPty, isTmuxSessionAlive, saveSnapshot } from '../orchestrator/PtyManager.js';
 import { getFileLockRegistry } from '../orchestrator/FileLockRegistry.js';
@@ -247,6 +248,7 @@ router.post('/:id/cancel', (req, res) => {
   socket.emitAgentUpdate(updated);
   const updatedJob = queries.getJobById(agent.job_id);
   if (updatedJob) socket.emitJobUpdate(updatedJob);
+  if (updatedJob?.workflow_id) workflowOnJobCompleted(updatedJob, { force: true });
 
   res.json(updated);
 });

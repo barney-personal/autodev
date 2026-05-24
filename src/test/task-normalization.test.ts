@@ -406,7 +406,7 @@ describe('validateTaskRequest', () => {
     expect(validateTaskRequest({ ...jobBase, stopValueImplement: 80 })).toMatch(/stopValueImplement is a workflow-only field/);
   });
 
-  it('allows per-phase stop fields on workflow-routed tasks', () => {
+  it('rejects workflow per-phase caps on workflow-routed tasks', () => {
     expect(validateTaskRequest({
       description: 'x',
       iterations: 5,
@@ -414,6 +414,17 @@ describe('validateTaskRequest', () => {
       maxTurnsAssess: 10,
       stopModeReview: 'budget',
       stopValueImplement: 80,
+    })).toMatch(/maxTurnsAssess is disabled for autonomous workflows/);
+  });
+
+  it('allows explicit completion mode on workflow-routed tasks', () => {
+    expect(validateTaskRequest({
+      description: 'x',
+      iterations: 5,
+      useWorktree: false,
+      stopModeAssess: 'completion',
+      stopModeReview: 'completion',
+      stopModeImplement: 'completion',
     })).toBeNull();
   });
 });
@@ -784,30 +795,26 @@ describe('taskToWorkflowRequest', () => {
     expect((result as any).projectId).toBeUndefined();
   });
 
-  it('maps per-phase stop conditions', () => {
-    const result = taskToWorkflowRequest({
+  it('rejects per-phase stop caps', () => {
+    expect(() => taskToWorkflowRequest({
       description: 'x',
       iterations: 3,
       maxTurnsAssess: 40,
-      maxTurnsReview: 20,
-      maxTurnsImplement: 80,
-      stopModeAssess: 'budget',
-      stopValueAssess: 5,
-      stopModeReview: 'time',
-      stopValueReview: 30,
-      stopModeImplement: 'turns',
-      stopValueImplement: 80,
+    })).toThrow(/maxTurnsAssess is disabled for autonomous workflows/);
+  });
+
+  it('maps explicit completion stop modes', () => {
+    const result = taskToWorkflowRequest({
+      description: 'x',
+      iterations: 3,
+      stopModeAssess: 'completion',
+      stopModeReview: 'completion',
+      stopModeImplement: 'completion',
       completionThreshold: 0.8,
     });
-    expect(result.maxTurnsAssess).toBe(40);
-    expect(result.maxTurnsReview).toBe(20);
-    expect(result.maxTurnsImplement).toBe(80);
-    expect(result.stopModeAssess).toBe('budget');
-    expect(result.stopValueAssess).toBe(5);
-    expect(result.stopModeReview).toBe('time');
-    expect(result.stopValueReview).toBe(30);
-    expect(result.stopModeImplement).toBe('turns');
-    expect(result.stopValueImplement).toBe(80);
+    expect(result.stopModeAssess).toBe('completion');
+    expect(result.stopModeReview).toBe('completion');
+    expect(result.stopModeImplement).toBe('completion');
     expect(result.completionThreshold).toBe(0.8);
   });
 
@@ -1074,15 +1081,9 @@ describe('taskToWorkflowRequest', () => {
       iterations: 4,
       reviewerModel: 'claude-sonnet-4-6',
       templateId: 'tmpl-abc',
-      maxTurnsAssess: 20,
-      maxTurnsReview: 15,
-      maxTurnsImplement: 80,
-      stopModeAssess: 'turns' as const,
-      stopValueAssess: 18,
-      stopModeReview: 'turns' as const,
-      stopValueReview: 12,
-      stopModeImplement: 'budget' as const,
-      stopValueImplement: 500000,
+      stopModeAssess: 'completion' as const,
+      stopModeReview: 'completion' as const,
+      stopModeImplement: 'completion' as const,
     };
     const matching = resolveTaskConfig(req);
     const withConfig = taskToWorkflowRequest(req, matching);
@@ -1095,8 +1096,7 @@ describe('taskToWorkflowRequest', () => {
     expect(withConfig.reviewerModel).toBe('claude-sonnet-4-6');
     expect(withConfig.title).toBe('Mapped fields test');
     expect(withConfig.templateId).toBe('tmpl-abc');
-    expect(withConfig.stopModeImplement).toBe('budget');
-    expect(withConfig.stopValueImplement).toBe(500000);
+    expect(withConfig.stopModeImplement).toBe('completion');
   });
 
   it('throws on stale config with inflated iterations', () => {

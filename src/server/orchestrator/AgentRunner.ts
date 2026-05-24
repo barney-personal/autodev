@@ -42,7 +42,7 @@ import { triageLearnings } from './MemoryTriager.js';
 import { claimRecovery, clearRecoveryState } from './RecoveryLedger.js';
 import { createPrForJob, pushBranchForFailedJob } from './PrCreator.js';
 import type { Job, ClaudeStreamEvent, CodexStreamEvent } from '../../shared/types.js';
-import { isCodexModel, codexModelName, effectiveMaxTurns } from '../../shared/types.js';
+import { isCodexModel, codexModelName, shouldUseCliMaxTurns } from '../../shared/types.js';
 import { getClaudeEffort, getCodexReasoningEffort, getCodexServiceTier } from '../../shared/models.js';
 import { buildEyePrompt, isEyeJob, computeAdaptiveEyeInterval } from './EyeConfig.js';
 import { getJobIfStatus, markJobRunning } from './JobLifecycle.js';
@@ -108,7 +108,9 @@ export function runAgent(options: RunOptions): void {
   const workDir = job.work_dir ?? process.cwd();
   const stopMode = job.stop_mode ?? 'turns';
   const stopValue = job.stop_value ?? null;
-  const maxTurns = effectiveMaxTurns(stopMode, stopValue);
+  const cliMaxTurnsArgs = shouldUseCliMaxTurns(stopMode, stopValue)
+    ? ['--max-turns', String(stopValue)]
+    : [];
   const model: string | null = job.model ?? null;
   const useCodex = isCodexModel(model);
   const codexReasoningEffort = getCodexReasoningEffort(model, job.workflow_phase);
@@ -159,7 +161,7 @@ export function runAgent(options: RunOptions): void {
       '--settings', HOOK_SETTINGS,
       '--mcp-config', mcpConfig,
       '--append-system-prompt', SYSTEM_PROMPT,
-      '--max-turns', String(maxTurns),
+      ...cliMaxTurnsArgs,
       ...(model ? ['--model', model] : []),
       ...(claudeEffort ? ['--effort', claudeEffort] : []),
       ...(options.resumeSessionId ? ['--resume', options.resumeSessionId] : []),

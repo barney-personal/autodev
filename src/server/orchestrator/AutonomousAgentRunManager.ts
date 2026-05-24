@@ -12,12 +12,23 @@ import {
   DEFAULT_WORKFLOW_IMPLEMENTER_MODEL,
   DEFAULT_WORKFLOW_REVIEWER_MODEL,
 } from '../../shared/models.js';
+import {
+  firstWorkflowRunCapIssue,
+  WORKFLOW_DEFAULT_STOP_MODE,
+  WORKFLOW_DEFAULT_STOP_VALUE,
+  WORKFLOW_UNBOUNDED_MAX_TURNS,
+} from '../../shared/workflowRunPolicy.js';
 
 export function createAutonomousAgentRun(
   body: CreateAutonomousAgentRunRequest,
 ): CreateAutonomousAgentRunResponse {
   if (!body.task?.trim()) {
     throw new Error('task is required');
+  }
+
+  const capIssue = firstWorkflowRunCapIssue(body);
+  if (capIssue) {
+    throw new Error(capIssue);
   }
 
   const useWorktree = body.useWorktree !== false;
@@ -55,15 +66,15 @@ export function createAutonomousAgentRun(
     milestones_total: 0,
     milestones_done: 0,
     project_id: project.id,
-    max_turns_assess: body.maxTurnsAssess ?? 50,
-    max_turns_review: body.maxTurnsReview ?? 30,
-    max_turns_implement: body.maxTurnsImplement ?? 100,
-    stop_mode_assess: body.stopModeAssess ?? 'turns',
-    stop_value_assess: body.stopValueAssess ?? (body.maxTurnsAssess ?? 50),
-    stop_mode_review: body.stopModeReview ?? 'turns',
-    stop_value_review: body.stopValueReview ?? (body.maxTurnsReview ?? 30),
-    stop_mode_implement: body.stopModeImplement ?? 'turns',
-    stop_value_implement: body.stopValueImplement ?? (body.maxTurnsImplement ?? 100),
+    max_turns_assess: WORKFLOW_UNBOUNDED_MAX_TURNS,
+    max_turns_review: WORKFLOW_UNBOUNDED_MAX_TURNS,
+    max_turns_implement: WORKFLOW_UNBOUNDED_MAX_TURNS,
+    stop_mode_assess: body.stopModeAssess ?? WORKFLOW_DEFAULT_STOP_MODE,
+    stop_value_assess: WORKFLOW_DEFAULT_STOP_VALUE,
+    stop_mode_review: body.stopModeReview ?? WORKFLOW_DEFAULT_STOP_MODE,
+    stop_value_review: WORKFLOW_DEFAULT_STOP_VALUE,
+    stop_mode_implement: body.stopModeImplement ?? WORKFLOW_DEFAULT_STOP_MODE,
+    stop_value_implement: WORKFLOW_DEFAULT_STOP_VALUE,
     template_id: body.templateId?.trim() || null,
     use_worktree: body.useWorktree === false ? 0 : 1,
     worktree_path: null,

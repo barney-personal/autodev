@@ -250,76 +250,59 @@ describe('buildImplementPrompt with inline context', () => {
   });
 });
 
-// ─── buildImplementPrompt turn budget visibility (M3/1B) ──────────────────
+// ─── buildImplementPrompt scope guidance ───────────────────────────────────
 
-describe('buildImplementPrompt turn budget visibility', () => {
-  it('includes Budget heading and turn count with default turns mode', () => {
-    const wf = makeWorkflow({ stop_mode_implement: 'turns', stop_value_implement: 75 });
+describe('buildImplementPrompt scope guidance', () => {
+  it('states implementation cycles are not turn-capped', () => {
+    const wf = makeWorkflow({ stop_mode_implement: 'completion', stop_value_implement: null });
     const prompt = buildImplementPrompt(wf, 2);
 
-    expect(prompt).toContain('## Budget');
-    expect(prompt).toContain('75 turns');
+    expect(prompt).toContain('## Scope');
+    expect(prompt).toContain('not turn-capped');
     expect(prompt).toContain('commit your current work');
   });
 
-  it('uses safety cap when stop_mode is not turns', () => {
-    const wf = makeWorkflow({ stop_mode_implement: 'budget', stop_value_implement: 5 });
-    const prompt = buildImplementPrompt(wf, 2);
-
-    expect(prompt).toContain('## Budget');
-    expect(prompt).toContain('1000 turns');
-  });
-
-  it('Budget section appears between Working Directory and Instructions', () => {
-    const wf = makeWorkflow({ stop_mode_implement: 'turns', stop_value_implement: 50 });
+  it('Scope section appears between Working Directory and Instructions', () => {
+    const wf = makeWorkflow({ stop_mode_implement: 'completion', stop_value_implement: null });
     const prompt = buildImplementPrompt(wf, 1);
 
     const dirIdx = prompt.indexOf('## Working Directory');
-    const budgetIdx = prompt.indexOf('## Budget');
+    const scopeIdx = prompt.indexOf('## Scope');
     const instrIdx = prompt.indexOf('## Instructions');
 
-    expect(dirIdx).toBeLessThan(budgetIdx);
-    expect(budgetIdx).toBeLessThan(instrIdx);
+    expect(dirIdx).toBeLessThan(scopeIdx);
+    expect(scopeIdx).toBeLessThan(instrIdx);
   });
 });
 
-// ─── buildAssessPrompt turn-aware milestone sizing (M6/1A) ────────────────
+// ─── buildAssessPrompt milestone sizing ───────────────────────────────────
 
-describe('buildAssessPrompt turn-aware milestone sizing', () => {
-  it('includes turn budget number and 30-40 tool calls guidance', () => {
-    const wf = makeWorkflow({ stop_mode_implement: 'turns', stop_value_implement: 80 });
+describe('buildAssessPrompt milestone sizing', () => {
+  it('sizes milestones for reviewable implementation cycles without turn caps', () => {
+    const wf = makeWorkflow({ stop_mode_implement: 'completion', stop_value_implement: null });
     const prompt = buildAssessPrompt(wf);
 
-    expect(prompt).toContain('80 turns');
-    expect(prompt).toContain('30-40 tool calls');
-    expect(prompt).toContain('Size milestones for the turn budget');
-  });
-
-  it('uses safety cap when stop_mode is not turns', () => {
-    const wf = makeWorkflow({ stop_mode_implement: 'budget', stop_value_implement: null });
-    const prompt = buildAssessPrompt(wf);
-
-    expect(prompt).toContain('1000 turns');
-    expect(prompt).toContain('30-40 tool calls');
+    expect(prompt).toContain('reviewable implementation cycles');
+    expect(prompt).toContain('Do not reduce scope to fit a turn cap');
+    expect(prompt).not.toContain('turn budget');
   });
 
   it('includes complexity annotation instructions [S]/[M]/[L]/[XL] (M15/1D)', () => {
-    const wf = makeWorkflow({ stop_mode_implement: 'turns', stop_value_implement: 100, max_cycles: 10 });
+    const wf = makeWorkflow({ stop_mode_implement: 'completion', stop_value_implement: null, max_cycles: 10 });
     const prompt = buildAssessPrompt(wf);
 
-    expect(prompt).toContain('[S] ~10 tool calls');
-    expect(prompt).toContain('[M] ~25');
-    expect(prompt).toContain('[L] ~40');
-    expect(prompt).toContain('[XL] ~60+');
+    expect(prompt).toContain('[S] small');
+    expect(prompt).toContain('[M] medium');
+    expect(prompt).toContain('[L] large');
+    expect(prompt).toContain('[XL] needs splitting');
   });
 
-  it('computes total tool call budget from turns × cycles (M15/1D)', () => {
-    const wf = makeWorkflow({ stop_mode_implement: 'turns', stop_value_implement: 100, max_cycles: 5 });
+  it('does not compute a total turn budget from cycles', () => {
+    const wf = makeWorkflow({ stop_mode_implement: 'completion', stop_value_implement: null, max_cycles: 5 });
     const prompt = buildAssessPrompt(wf);
 
-    // 100 turns × 5 cycles = 500 total
-    expect(prompt).toContain('100 × 5 cycles = 500 total');
-    expect(prompt).toContain('reduce scope or split milestones');
+    expect(prompt).not.toContain('cycles =');
+    expect(prompt).toContain('split large work into independently reviewable milestones');
   });
 });
 

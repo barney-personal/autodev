@@ -23,7 +23,7 @@ export interface PhaseConfig {
   stopModeKey: (keyof Workflow) | null;
   stopValueKey: (keyof Workflow) | null;
   buildPrompt: (workflow: Workflow, cycle: number, ctx: InlineWorkflowContext | undefined) => string;
-  overrides?: { model?: string; stopMode?: StopMode; stopValue?: number };
+  overrides?: { model?: string; stopMode?: StopMode; stopValue?: number | null };
   /** Optional post-resolution hook to adjust model after lookup */
   postResolve?: (model: string) => string;
 }
@@ -60,7 +60,7 @@ const PHASE_CONFIGS: Record<WorkflowPhase, PhaseConfig> = {
     stopModeKey: null,
     stopValueKey: null,
     buildPrompt: (workflow, cycle, ctx) => buildVerifyPrompt(workflow, cycle, ctx),
-    overrides: { model: DEFAULT_CLAUDE_OPUS_MODEL, stopMode: 'turns', stopValue: 40 },
+    overrides: { model: DEFAULT_CLAUDE_OPUS_MODEL, stopMode: 'completion', stopValue: null },
   },
 };
 

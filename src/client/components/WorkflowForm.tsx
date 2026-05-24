@@ -1,11 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import type { CreateAutonomousAgentRunRequest, Template, StopMode } from '@shared/types';
+import type { CreateAutonomousAgentRunRequest, Template } from '@shared/types';
 import {
   DEFAULT_WORKFLOW_IMPLEMENTER_MODEL,
   DEFAULT_WORKFLOW_REVIEWER_MODEL,
 } from '@shared/models';
 import { useModels } from '../hooks/useModels';
-import { StopModePicker } from './StopModePicker';
 
 interface WorkflowFormProps {
   onSubmit: (req: CreateAutonomousAgentRunRequest) => Promise<void>;
@@ -22,13 +21,6 @@ export function WorkflowForm({ onSubmit, onClose }: WorkflowFormProps) {
   const [maxCycles, setMaxCycles] = useState(10);
   const [templateId, setTemplateId] = useState('');
   const [useWorktree, setUseWorktree] = useState(true);
-  const [showAdvanced, setShowAdvanced] = useState(false);
-  const [stopModeAssess, setStopModeAssess] = useState<StopMode>('turns');
-  const [stopValueAssess, setStopValueAssess] = useState<number | null>(50);
-  const [stopModeReview, setStopModeReview] = useState<StopMode>('turns');
-  const [stopValueReview, setStopValueReview] = useState<number | null>(30);
-  const [stopModeImplement, setStopModeImplement] = useState<StopMode>('turns');
-  const [stopValueImplement, setStopValueImplement] = useState<number | null>(100);
   const [templates, setTemplates] = useState<Template[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -59,12 +51,6 @@ export function WorkflowForm({ onSubmit, onClose }: WorkflowFormProps) {
         maxCycles,
         templateId: templateId || undefined,
         useWorktree,
-        stopModeAssess,
-        stopValueAssess: stopValueAssess ?? undefined,
-        stopModeReview,
-        stopValueReview: stopValueReview ?? undefined,
-        stopModeImplement,
-        stopValueImplement: stopValueImplement ?? undefined,
       });
       onClose();
     } catch (err: any) {
@@ -167,41 +153,6 @@ export function WorkflowForm({ onSubmit, onClose }: WorkflowFormProps) {
               Use git worktree (recommended — all phases share one branch, changes accumulate linearly)
             </label>
           </div>
-
-          <button
-            type="button"
-            className="btn btn-ghost"
-            style={{ fontSize: 12, padding: '4px 0', marginBottom: 8 }}
-            onClick={() => setShowAdvanced(v => !v)}
-          >
-            {showAdvanced ? '▾' : '▸'} Advanced settings
-          </button>
-
-          {showAdvanced && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              <StopModePicker
-                label="Assess stopping condition"
-                mode={stopModeAssess}
-                value={stopValueAssess}
-                onModeChange={setStopModeAssess}
-                onValueChange={setStopValueAssess}
-              />
-              <StopModePicker
-                label="Review stopping condition"
-                mode={stopModeReview}
-                value={stopValueReview}
-                onModeChange={setStopModeReview}
-                onValueChange={setStopValueReview}
-              />
-              <StopModePicker
-                label="Implement stopping condition"
-                mode={stopModeImplement}
-                value={stopValueImplement}
-                onModeChange={setStopModeImplement}
-                onValueChange={setStopValueImplement}
-              />
-            </div>
-          )}
 
           {error && <div className="form-error">{error}</div>}
 

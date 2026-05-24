@@ -148,6 +148,20 @@ describe('POST /api/tasks', () => {
     expect(res.body.error).toMatch(/iterations/i);
   });
 
+  it('returns 400 for workflow turn caps', async () => {
+    const res = await request(app)
+      .post('/api/tasks')
+      .send({
+        description: 'Multi-cycle task',
+        iterations: 5,
+        useWorktree: false,
+        maxTurnsAssess: 8,
+      });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/maxTurnsAssess is disabled/);
+    expect(mockCreateAutonomousAgentRun).not.toHaveBeenCalled();
+  });
+
   it('routes to workflow when iterations > 1 without preset', async () => {
     const res = await request(app)
       .post('/api/tasks')

@@ -576,7 +576,7 @@ function spawnRepairJob(workflow: Workflow, phase: 'assess' | 'review', cycle: n
   const stopMode = phase === 'review' ? workflow.stop_mode_review : workflow.stop_mode_assess;
   const stopValue = phase === 'review' ? workflow.stop_value_review : workflow.stop_value_assess;
   const baseTurns = effectiveMaxTurns(stopMode, stopValue);
-  const maxTurns = Math.ceil(baseTurns * level.turnsMultiplier);
+  const maxTurns = stopMode === 'turns' ? Math.ceil(baseTurns * level.turnsMultiplier) : baseTurns;
   const useSimplifiedPrompt = phase === 'assess' && existingAttempts >= 2
     && missingArtifacts.length === 1 && missingArtifacts[0] === 'plan';
   const prompt = useSimplifiedPrompt
@@ -597,7 +597,8 @@ function spawnRepairJob(workflow: Workflow, phase: 'assess' | 'review', cycle: n
   try { socket.emitJobNew(job); } catch (emitErr) { console.warn(`[workflow ${workflow.id}] socket.emitJobNew failed for repair job ${job.id.slice(0, 8)}:`, emitErr); }
   nudgeQueue();
   updateAndEmit(workflow.id, { current_phase: phase, current_cycle: cycle, status: 'running' });
-  console.log(`[workflow ${workflow.id}] spawned ${phase} ${level.label} (${existingAttempts + 1}/${MAX_REPAIR_ATTEMPTS}, ${maxTurns} turns) for missing ${missingArtifacts.join(', ')}`);
+  const stopSummary = stopMode === 'turns' ? `${maxTurns} turns` : 'completion mode';
+  console.log(`[workflow ${workflow.id}] spawned ${phase} ${level.label} (${existingAttempts + 1}/${MAX_REPAIR_ATTEMPTS}, ${stopSummary}) for missing ${missingArtifacts.join(', ')}`);
   return true;
 }
 

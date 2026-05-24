@@ -33,15 +33,15 @@ export const createTaskSchema = z.object({
   maxTurns: z.number().optional().describe('Max agent turns for job-routed tasks'),
 
   // ── Stopping conditions (per-phase — workflow-routed) ─────────────────────
-  maxTurnsAssess: z.number().optional().describe('Assess phase turn limit (workflow only)'),
-  maxTurnsReview: z.number().optional().describe('Review phase turn limit (workflow only)'),
-  maxTurnsImplement: z.number().optional().describe('Implement phase turn limit (workflow only)'),
-  stopModeAssess: stopModeEnum.optional().describe('Assess phase stop mode (workflow only)'),
-  stopValueAssess: z.number().optional().describe('Assess phase stop value (workflow only)'),
-  stopModeReview: stopModeEnum.optional().describe('Review phase stop mode (workflow only)'),
-  stopValueReview: z.number().optional().describe('Review phase stop value (workflow only)'),
-  stopModeImplement: stopModeEnum.optional().describe('Implement phase stop mode (workflow only)'),
-  stopValueImplement: z.number().optional().describe('Implement phase stop value (workflow only)'),
+  maxTurnsAssess: z.number().optional().describe('Disabled for autonomous workflows; phases run to completion'),
+  maxTurnsReview: z.number().optional().describe('Disabled for autonomous workflows; phases run to completion'),
+  maxTurnsImplement: z.number().optional().describe('Disabled for autonomous workflows; phases run to completion'),
+  stopModeAssess: stopModeEnum.optional().describe('Only completion/no cap is accepted for autonomous workflows'),
+  stopValueAssess: z.number().optional().describe('Disabled for autonomous workflows; phases run to completion'),
+  stopModeReview: stopModeEnum.optional().describe('Only completion/no cap is accepted for autonomous workflows'),
+  stopValueReview: z.number().optional().describe('Disabled for autonomous workflows; phases run to completion'),
+  stopModeImplement: stopModeEnum.optional().describe('Only completion/no cap is accepted for autonomous workflows'),
+  stopValueImplement: z.number().optional().describe('Disabled for autonomous workflows; phases run to completion'),
   completionThreshold: z.number().optional().describe('Milestone completion threshold 0.1-1.0 (workflow only)'),
 
   // ── Verification (workflow-only) ─────────────────────────────────────────
