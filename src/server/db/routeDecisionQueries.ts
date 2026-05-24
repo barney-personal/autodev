@@ -126,6 +126,22 @@ export function getLatestRouteDecisionForCycle(
   return row ? parseRow(row as unknown as RawRouteDecisionRow) : null;
 }
 
+export function getRouteDecisionSnapshotStats(sinceMs: number): {
+  total_decisions: number;
+  by_mode: Record<string, number>;
+} {
+  const db = getDb();
+  const totalRow = db.prepare(
+    'SELECT COUNT(*) AS cnt FROM route_decisions WHERE created_at >= ?'
+  ).get(sinceMs) as { cnt: number };
+  const byModeRows = db.prepare(
+    'SELECT mode, COUNT(*) AS cnt FROM route_decisions WHERE created_at >= ? GROUP BY mode'
+  ).all(sinceMs) as Array<{ mode: string; cnt: number }>;
+  const by_mode: Record<string, number> = {};
+  for (const r of byModeRows) by_mode[r.mode] = r.cnt;
+  return { total_decisions: totalRow.cnt, by_mode };
+}
+
 export function getRouteDecisionsSince(sinceMs: number): RouteDecisionRow[] {
   const db = getDb();
   const rows = db.prepare(`

@@ -126,6 +126,23 @@ export function listWorkflows(): Workflow[] {
   return rows.map((r: any) => cast<Workflow>(r));
 }
 
+export function getWorkflowSnapshotStats(): {
+  last_workflow_created_at: number | null;
+  workflow_counts_by_status: Record<string, number>;
+} {
+  const db = getDb();
+  const maxRow = db.prepare('SELECT MAX(created_at) AS m FROM workflows').get() as { m: number | null } | undefined;
+  const counts = db.prepare(
+    'SELECT status, COUNT(*) AS cnt FROM workflows GROUP BY status'
+  ).all() as Array<{ status: string; cnt: number }>;
+  const workflow_counts_by_status: Record<string, number> = {};
+  for (const r of counts) workflow_counts_by_status[r.status] = r.cnt;
+  return {
+    last_workflow_created_at: maxRow?.m ?? null,
+    workflow_counts_by_status,
+  };
+}
+
 const WORKFLOW_UPDATE_ALLOWED_FIELDS = new Set(['title', 'task', 'work_dir', 'implementer_model', 'reviewer_model', 'max_cycles', 'current_cycle', 'current_phase', 'status', 'milestones_total', 'milestones_done', 'project_id', 'max_turns_assess', 'max_turns_review', 'max_turns_implement', 'stop_mode_assess', 'stop_value_assess', 'stop_mode_review', 'stop_value_review', 'stop_mode_implement', 'stop_value_implement', 'template_id', 'use_worktree', 'worktree_path', 'worktree_branch', 'blocked_reason', 'pr_url', 'completion_threshold', 'start_command', 'max_verify_retries', 'resolver_circuit_state', 'resolver_attempt_count']);
 
 // Brief Goal D.1 — workflows transitioning into a terminal status must release
