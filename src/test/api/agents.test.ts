@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
-import { setupTestDb, cleanupTestDb, createSocketMock, insertTestJob } from '../helpers.js';
+import { setupTestDb, cleanupTestDb, createSocketMock, insertTestJob, insertTestProject, insertTestWorkflow } from '../helpers.js';
 import { createTestApp } from '../api-helpers.js';
 import type express from 'express';
 
@@ -306,6 +306,31 @@ describe('POST /api/agents/:id/cancel', () => {
     expect(vi.mocked(disconnectAgent)).toHaveBeenCalledWith(agent.id);
     expect(vi.mocked(socketMod.emitAgentUpdate)).toHaveBeenCalled();
     expect(vi.mocked(socketMod.emitJobUpdate)).toHaveBeenCalled();
+  });
+
+  it('marks the parent workflow blocked when a workflow phase agent is cancelled', async () => {
+    const queries = await import('../../server/db/queries.js');
+    const project = await insertTestProject();
+    const workflow = await insertTestWorkflow({
+      project_id: project.id,
+      status: 'running',
+      current_phase: 'assess',
+      current_cycle: 0,
+    });
+    const job = await insertTestJob({
+      status: 'running',
+      workflow_id: workflow.id,
+      workflow_phase: 'assess',
+      workflow_cycle: 0,
+    });
+    const agent = await insertAgent(job.id, { status: 'running' });
+
+    const res = await request(app).post(`/api/agents/${agent.id}/cancel`);
+
+    expect(res.status).toBe(200);
+    const updatedWorkflow = queries.getWorkflowById(workflow.id);
+    expect(updatedWorkflow?.status).toBe('blocked');
+    expect(updatedWorkflow?.blocked_reason).toMatch(/was cancelled/);
   });
 });
 

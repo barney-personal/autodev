@@ -5,6 +5,8 @@ import type { JobStatus, WorkflowStatus, DebateStatus } from '../../shared/types
 // Each map defines the legal transitions for an entity's status field.
 // The key is the current status; the value is the set of statuses it may move to.
 // 'cancelled' is reachable from every non-terminal state (force-cancel).
+// Cancelled workflows can be force-resumed when recoverable worktree metadata
+// still exists; normal workflow cancel now parks work in blocked instead.
 //
 // These are used for warn-only validation — illegal transitions log a warning
 // but are NOT blocked, because edge cases (force-cancel, resume, recovery) may
@@ -24,7 +26,7 @@ const WORKFLOW_TRANSITIONS: Record<WorkflowStatus, readonly WorkflowStatus[]> = 
   complete:  ['blocked'],            // PR creation failure after completion
   blocked:   ['running', 'cancelled'],  // resume unblocks
   failed:    ['running'],               // manual restart
-  cancelled: [],
+  cancelled: ['blocked'],               // force-resume recovery path
 };
 
 const DEBATE_TRANSITIONS: Record<DebateStatus, readonly DebateStatus[]> = {

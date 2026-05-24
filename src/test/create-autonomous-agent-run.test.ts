@@ -36,4 +36,15 @@ describe('createAutonomousAgentRunHandler', () => {
     expect(payload.assess_job_id).toBe('assess-job-id');
     expect(socket.emitWorkflowNew).toHaveBeenCalledTimes(1);
   });
+
+  it('rejects legacy turn caps for autonomous workflows', async () => {
+    const { createAutonomousAgentRunHandler } = await import('../server/mcp/tools/createAutonomousAgentRun.js');
+
+    await expect(createAutonomousAgentRunHandler('agent-1', {
+      task: 'Audit and improve the repo',
+      workDir: process.cwd(),
+      useWorktree: true,
+      maxTurnsAssess: 8,
+    })).rejects.toThrow(/maxTurnsAssess is disabled/);
+  });
 });

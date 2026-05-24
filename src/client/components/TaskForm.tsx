@@ -71,14 +71,6 @@ export function TaskForm({ onSubmit, onClose, availableJobs = [] }: TaskFormProp
   const [debateCodexModel, setDebateCodexModel] = useState(DEFAULT_DEBATE_CODEX_MODEL);
   const [debateMaxRounds, setDebateMaxRounds] = useState(3);
 
-  // ── Workflow-only: per-phase stops ────────────────────────────────────────
-  const [stopModeAssess, setStopModeAssess] = useState<StopMode>('turns');
-  const [stopValueAssess, setStopValueAssess] = useState<number | null>(50);
-  const [stopModeReview, setStopModeReview] = useState<StopMode>('turns');
-  const [stopValueReview, setStopValueReview] = useState<number | null>(30);
-  const [stopModeImplement, setStopModeImplement] = useState<StopMode>('turns');
-  const [stopValueImplement, setStopValueImplement] = useState<number | null>(100);
-
   // ── Workflow-only: start command (for verify agent) ──────────────────────
   const [verifyEnabled, setVerifyEnabled] = useState(true);
   const [startCommand, setStartCommand] = useState<string>('npm run dev');
@@ -192,12 +184,6 @@ export function TaskForm({ onSubmit, onClose, availableJobs = [] }: TaskFormProp
       } else {
         // Workflow-specific fields
         req.reviewerModel = reviewerModel || undefined;
-        req.stopModeAssess = stopModeAssess;
-        req.stopValueAssess = stopValueAssess ?? undefined;
-        req.stopModeReview = stopModeReview;
-        req.stopValueReview = stopValueReview ?? undefined;
-        req.stopModeImplement = stopModeImplement;
-        req.stopValueImplement = stopValueImplement ?? undefined;
         req.startCommand = verifyEnabled && startCommand.trim() ? startCommand.trim() : undefined;
       }
 
@@ -627,32 +613,11 @@ export function TaskForm({ onSubmit, onClose, availableJobs = [] }: TaskFormProp
                 style={{ fontSize: 12, padding: '4px 0', marginBottom: 8 }}
                 onClick={() => setShowAdvanced(v => !v)}
               >
-                {showAdvanced ? '\u25be' : '\u25b8'} Per-phase stopping conditions
+                {showAdvanced ? '\u25be' : '\u25b8'} Workflow verification
               </button>
 
               {showAdvanced && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                  <StopModePicker
-                    label="Assess stopping condition"
-                    mode={stopModeAssess}
-                    value={stopValueAssess}
-                    onModeChange={setStopModeAssess}
-                    onValueChange={setStopValueAssess}
-                  />
-                  <StopModePicker
-                    label="Review stopping condition"
-                    mode={stopModeReview}
-                    value={stopValueReview}
-                    onModeChange={setStopModeReview}
-                    onValueChange={setStopValueReview}
-                  />
-                  <StopModePicker
-                    label="Implement stopping condition"
-                    mode={stopModeImplement}
-                    value={stopValueImplement}
-                    onModeChange={setStopModeImplement}
-                    onValueChange={setStopValueImplement}
-                  />
                   <div className="form-group">
                     <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
                       <input

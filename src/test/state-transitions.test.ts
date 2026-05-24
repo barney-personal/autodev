@@ -41,6 +41,7 @@ describe('StateTransitions', () => {
       ['workflow', 'blocked', 'running'],
       ['workflow', 'blocked', 'cancelled'],
       ['workflow', 'failed', 'running'],
+      ['workflow', 'cancelled', 'blocked'],
     ] as const)('%s: %s → %s is valid', (entity, from, to) => {
       const result = validateTransition(entity, from, to);
       expect(result).toEqual({ valid: true, from, to });

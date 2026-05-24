@@ -163,6 +163,15 @@ export async function insertTestWorkflow(overrides: Partial<{
   milestones_total: number;
   milestones_done: number;
   project_id: string | null;
+  max_turns_assess: number;
+  max_turns_review: number;
+  max_turns_implement: number;
+  stop_mode_assess: string;
+  stop_value_assess: number | null;
+  stop_mode_review: string;
+  stop_value_review: number | null;
+  stop_mode_implement: string;
+  stop_value_implement: number | null;
   template_id: string | null;
   use_worktree: number;
 }> = {}) {
@@ -182,15 +191,15 @@ export async function insertTestWorkflow(overrides: Partial<{
     milestones_total: overrides.milestones_total ?? 0,
     milestones_done: overrides.milestones_done ?? 0,
     project_id: overrides.project_id ?? null,
-    max_turns_assess: 50,
-    max_turns_review: 30,
-    max_turns_implement: 100,
-    stop_mode_assess: 'turns',
-    stop_value_assess: 50,
-    stop_mode_review: 'turns',
-    stop_value_review: 30,
-    stop_mode_implement: 'turns',
-    stop_value_implement: 100,
+    max_turns_assess: overrides.max_turns_assess ?? 10_000,
+    max_turns_review: overrides.max_turns_review ?? 10_000,
+    max_turns_implement: overrides.max_turns_implement ?? 10_000,
+    stop_mode_assess: (overrides.stop_mode_assess ?? 'completion') as any,
+    stop_value_assess: overrides.stop_value_assess ?? null,
+    stop_mode_review: (overrides.stop_mode_review ?? 'completion') as any,
+    stop_value_review: overrides.stop_value_review ?? null,
+    stop_mode_implement: (overrides.stop_mode_implement ?? 'completion') as any,
+    stop_value_implement: overrides.stop_value_implement ?? null,
     template_id: overrides.template_id ?? null,
     use_worktree: overrides.use_worktree ?? 0,
     created_at: Date.now(),
@@ -214,6 +223,9 @@ export async function insertTestJob(overrides: Partial<{
   project_id: string | null;
   work_dir: string | null;
   model: string | null;
+  max_turns: number;
+  stop_mode: string;
+  stop_value: number | null;
 }> = {}) {
   const { insertJob } = await import('../server/db/queries.js');
   return insertJob({
@@ -229,5 +241,8 @@ export async function insertTestJob(overrides: Partial<{
     project_id: overrides.project_id ?? null,
     work_dir: overrides.work_dir ?? null,
     model: overrides.model ?? null,
+    max_turns: overrides.max_turns,
+    stop_mode: overrides.stop_mode as any,
+    stop_value: overrides.stop_value,
   });
 }

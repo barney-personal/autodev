@@ -456,13 +456,21 @@ export interface CodexStreamEvent {
   message?: string;
 }
 
-/** Safety cap for --max-turns when using budget/time/completion modes. */
-export const SAFETY_CAP_TURNS = 1000;
+/**
+ * Legacy placeholder for DB/API fields that still require a numeric max_turns.
+ * It is not passed to the CLI unless the job explicitly uses stop_mode='turns'.
+ */
+export const SAFETY_CAP_TURNS = 10_000;
 
-/** Compute the effective --max-turns value for a given stop mode. */
+/** Compute the legacy max_turns value stored on a job row. */
 export function effectiveMaxTurns(mode: StopMode, value: number | null): number {
   if (mode === 'turns' && value != null) return value;
   return SAFETY_CAP_TURNS;
+}
+
+/** Returns true when a job should pass an actual --max-turns CLI argument. */
+export function shouldUseCliMaxTurns(mode: StopMode, value: number | null): boolean {
+  return mode === 'turns' && value != null;
 }
 
 /** Returns true for jobs that run with --print and exit naturally (no finish_job needed). */

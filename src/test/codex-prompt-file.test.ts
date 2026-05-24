@@ -287,6 +287,54 @@ describe('AgentRunner: Codex prompt file delivery', () => {
     expect(stdinWrites[0]).toContain('Claude task');
   });
 
+  it('Claude completion-mode jobs do not pass --max-turns', async () => {
+    const { runAgent } = await import('../server/orchestrator/AgentRunner.js');
+
+    const job = await insertTestJob({
+      id: 'claude-completion-job',
+      title: 'Completion Claude Job',
+      description: 'Run until done',
+      model: 'claude-sonnet-4-6',
+      status: 'assigned',
+      max_turns: 10_000,
+      stop_mode: 'completion',
+      stop_value: null,
+    });
+
+    const queries = await import('../server/db/queries.js');
+    const agent = queries.insertAgent({ id: 'claude-agent-completion', job_id: job.id, status: 'running' });
+
+    runAgent({ agentId: agent.id, job });
+
+    expect(spawnCalls).toHaveLength(1);
+    expect(spawnCalls[0].args).not.toContain('--max-turns');
+  });
+
+  it('Claude turn-mode jobs pass the explicit --max-turns value', async () => {
+    const { runAgent } = await import('../server/orchestrator/AgentRunner.js');
+
+    const job = await insertTestJob({
+      id: 'claude-turn-job',
+      title: 'Turn Claude Job',
+      description: 'Run with explicit turns',
+      model: 'claude-sonnet-4-6',
+      status: 'assigned',
+      max_turns: 25,
+      stop_mode: 'turns',
+      stop_value: 25,
+    });
+
+    const queries = await import('../server/db/queries.js');
+    const agent = queries.insertAgent({ id: 'claude-agent-turns', job_id: job.id, status: 'running' });
+
+    runAgent({ agentId: agent.id, job });
+
+    expect(spawnCalls).toHaveLength(1);
+    const maxTurnsIndex = spawnCalls[0].args.indexOf('--max-turns');
+    expect(maxTurnsIndex).toBeGreaterThanOrEqual(0);
+    expect(spawnCalls[0].args[maxTurnsIndex + 1]).toBe('25');
+  });
+
   it('large Codex prompts do not appear in argv', async () => {
     const { runAgent } = await import('../server/orchestrator/AgentRunner.js');
 

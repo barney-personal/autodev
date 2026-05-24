@@ -18,6 +18,7 @@ import type {
   TaskPreset,
 } from './types.js';
 import { DEFAULT_CODEX_MODEL } from './models.js';
+import { firstWorkflowRunCapIssue } from './workflowRunPolicy.js';
 
 // ─── Preset defaults ────────────────────────────────────────────────────────
 
@@ -119,6 +120,8 @@ export function validateTaskRequest(req: CreateTaskRequest): string | null {
     if (req.context !== undefined)   return 'context is not supported for autonomous tasks (iterations > 1)';
     if (req.reviewConfig !== undefined) return 'reviewConfig is not supported for autonomous tasks (iterations > 1); reviewer model is set via reviewerModel';
     if (req.projectId !== undefined)   return 'projectId is not supported for autonomous tasks (iterations > 1) — workflows always create their own project';
+    const capIssue = firstWorkflowRunCapIssue(req);
+    if (capIssue) return capIssue;
   }
   // Per-phase stop fields and verify fields are workflow-only — reject on job-routed tasks
   if (config.routesTo === 'job') {
@@ -246,6 +249,10 @@ export function taskToWorkflowRequest(req: CreateTaskRequest, config?: ResolvedT
   }
   if (req.maxTurns !== undefined) {
     throw new Error('maxTurns is not supported for workflow tasks; use maxTurnsAssess/Review/Implement instead');
+  }
+  const capIssue = firstWorkflowRunCapIssue(req);
+  if (capIssue) {
+    throw new Error(capIssue);
   }
 
   // Fail fast on job-only fields that have no workflow equivalent —

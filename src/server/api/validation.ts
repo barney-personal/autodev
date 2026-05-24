@@ -3,6 +3,7 @@
  */
 import { z } from 'zod';
 import { validateGitWorkDir } from '../shared/workDirValidation.js';
+import { getWorkflowRunCapIssues } from '../../shared/workflowRunPolicy.js';
 
 export const createJobSchema = z.object({
   title: z.string().max(200).optional(),
@@ -61,6 +62,9 @@ export const createWorkflowSchema = z.object({
     if (!result.ok) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['workDir'], message: result.error });
     }
+  }
+  for (const issue of getWorkflowRunCapIssues(data)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: [issue.field], message: issue.message });
   }
 });
 

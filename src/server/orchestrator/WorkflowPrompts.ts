@@ -1,6 +1,5 @@
 // Workflow prompts - generates phase-specific prompts for autonomous agent runs
 import type { Workflow } from '../../shared/types.js';
-import { effectiveMaxTurns } from '../../shared/types.js';
 
 // ─── Inline Context ──────────────────────────────────────────────────────────
 
@@ -165,7 +164,7 @@ ${workflow.work_dir ?? '(not specified)'}
 1. **Read the codebase** — scan the project structure, key files, tests, dependencies, and configuration.
 2. **Assess quality** — note any issues, patterns, tech debt, missing tests, or areas for improvement relevant to the task.
 3. **Write a plan** with concrete milestones as markdown checkboxes. Each milestone should be achievable in a single implementation cycle.
-4. **Size milestones for the turn budget** — the implement phase has approximately **${effectiveMaxTurns(workflow.stop_mode_implement, workflow.stop_value_implement)} turns** per cycle. Size each milestone to be completable within ~30-40 tool calls. If a milestone seems too large, split it into smaller sub-milestones.
+4. **Size milestones for reviewable implementation cycles** — each milestone should be a coherent chunk that can be implemented, tested, and reviewed in one cycle. If a milestone seems too large, split it into smaller sub-milestones.
 
 ## Plan Format
 
@@ -186,8 +185,8 @@ Write the plan to the shared scratchpad using \`write_note\` with key \`${planKe
 - [ ] **M3: <title>** [L] — <description with clear acceptance criteria>
 (add as many as needed, but keep each achievable in one cycle)
 
-Annotate each milestone with a complexity estimate: [S] ~10 tool calls, [M] ~25, [L] ~40, [XL] ~60+.
-Total estimated tool calls across all milestones should not exceed ${effectiveMaxTurns(workflow.stop_mode_implement, workflow.stop_value_implement)} × ${workflow.max_cycles} cycles = ${effectiveMaxTurns(workflow.stop_mode_implement, workflow.stop_value_implement) * workflow.max_cycles} total. If over budget, reduce scope or split milestones.
+Annotate each milestone with a complexity estimate: [S] small, [M] medium, [L] large, [XL] needs splitting or careful sequencing.
+Create as many milestones as needed for the requested outcome. Do not reduce scope to fit a turn cap; split large work into independently reviewable milestones instead.
 
 ## Priority Order
 <which milestone to tackle first and why>
@@ -463,8 +462,8 @@ ${workflow.task}
 ## Working Directory
 ${workflow.work_dir ?? '(not specified)'}
 
-## Budget
-You have approximately **${effectiveMaxTurns(workflow.stop_mode_implement, workflow.stop_value_implement)} turns** for this implementation cycle. Plan your work accordingly. If you are making good progress but sense you are running low on turns, commit your current work, update the plan with partial progress notes, and write a worklog entry describing what remains.
+## Scope
+This implementation cycle is not turn-capped. Complete the top unchecked milestone to a reviewable state, run the relevant checks, commit your current work, and write a worklog entry describing what changed and what remains.
 
 ## Instructions
 

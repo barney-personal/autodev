@@ -214,6 +214,21 @@ describe('POST /api/workflows', () => {
     expect(res.body.workflow.title).toBe('Auth Refactor');
     expect(res.body.workflow.implementer_model).toBe('claude-opus-4-6');
     expect(res.body.workflow.max_cycles).toBe(5);
+    expect(res.body.workflow.stop_mode_assess).toBe('completion');
+    expect(res.body.workflow.stop_value_assess).toBeNull();
+    expect(res.body.workflow.max_turns_assess).toBe(10_000);
+  });
+
+  it('rejects workflow turn caps', async () => {
+    const res = await request(app)
+      .post('/api/workflows')
+      .send({
+        task: 'Refactor auth',
+        useWorktree: false,
+        maxTurnsAssess: 8,
+      });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/maxTurnsAssess is disabled/);
   });
 
   it('rejects missing task', async () => {
@@ -273,20 +288,65 @@ describe('POST /api/workflows/:id/cancel', () => {
   beforeEach(async () => { await setupTestDb(); vi.clearAllMocks(); app = createTestApp(); });
   afterEach(async () => { await cleanupTestDb(); });
 
-  it('cancels a running workflow', async () => {
+  it('blocks a running workflow and preserves it for resume', async () => {
     const project = await insertTestProject();
     const wf = await insertTestWorkflow({ project_id: project.id, status: 'running' });
     const res = await request(app).post(`/api/workflows/${wf.id}/cancel`);
     expect(res.status).toBe(200);
-    expect(res.body.status).toBe('cancelled');
+    expect(res.body.status).toBe('blocked');
+    expect(res.body.blocked_reason).toMatch(/preserved for resume/);
   });
 
-  it('cancels a blocked workflow', async () => {
+  it('keeps a blocked workflow blocked', async () => {
     const project = await insertTestProject();
     const wf = await insertTestWorkflow({ project_id: project.id, status: 'blocked' });
     const res = await request(app).post(`/api/workflows/${wf.id}/cancel`);
     expect(res.status).toBe(200);
-    expect(res.body.status).toBe('cancelled');
+    expect(res.body.status).toBe('blocked');
+  });
+
+  it('stops active phase jobs without cleaning up the worktree', async () => {
+    const { cleanupWorktree } = await import('../../server/orchestrator/WorkflowManager.js');
+    const { cancelledAgents } = await import('../../server/orchestrator/AgentRunner.js');
+    const { getFileLockRegistry } = await import('../../server/orchestrator/FileLockRegistry.js');
+    const { disconnectAgent, isTmuxSessionAlive, saveSnapshot } = await import('../../server/orchestrator/PtyManager.js');
+    const { execFileSync } = await import('child_process');
+    const queries = await import('../../server/db/queries.js');
+
+    vi.mocked(isTmuxSessionAlive).mockReturnValue(true);
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true as any);
+    try {
+      const project = await insertTestProject();
+      const wf = await insertTestWorkflow({ project_id: project.id, status: 'running', current_phase: 'assess' });
+      queries.updateWorkflow(wf.id, {
+        worktree_path: '/tmp/worktree',
+        worktree_branch: 'workflow/test-branch',
+      });
+      const job = await insertTestJob({ workflow_id: wf.id, workflow_phase: 'assess', workflow_cycle: 0, status: 'running' });
+      const agent = await insertAgent(job.id, { id: 'cancel-running-agent', status: 'running', pid: 4321 });
+
+      const res = await request(app).post(`/api/workflows/${wf.id}/cancel`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('blocked');
+      expect(cancelledAgents.has(agent.id)).toBe(true);
+      expect(vi.mocked(isTmuxSessionAlive)).toHaveBeenCalledWith(agent.id);
+      expect(vi.mocked(saveSnapshot)).toHaveBeenCalledWith(agent.id);
+      expect(killSpy).toHaveBeenCalledWith(-4321, 'SIGTERM');
+      expect(vi.mocked(execFileSync)).toHaveBeenCalledWith(
+        'tmux',
+        ['kill-session', '-t', `orchestrator-${agent.id}`],
+        { stdio: 'pipe' },
+      );
+      const registry = vi.mocked(getFileLockRegistry).mock.results[0]?.value;
+      expect(registry.releaseAll).toHaveBeenCalledWith(agent.id);
+      expect(vi.mocked(disconnectAgent)).toHaveBeenCalledWith(agent.id);
+      expect(queries.getAgentById(agent.id)?.status).toBe('cancelled');
+      expect(queries.getJobById(job.id)?.status).toBe('cancelled');
+      expect(cleanupWorktree).not.toHaveBeenCalled();
+    } finally {
+      killSpy.mockRestore();
+    }
   });
 
   it('rejects cancelling a completed workflow', async () => {

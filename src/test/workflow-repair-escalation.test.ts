@@ -90,7 +90,7 @@ vi.mock('../server/orchestrator/FailureClassifier.js', () => ({
   _resetWarnedUnclassifiedForTest: vi.fn(),
 }));
 
-describe('WorkflowManager: escalating repair budget (M16/4B)', () => {
+describe('WorkflowManager: escalating repair attempts (M16/4B)', () => {
   beforeEach(async () => {
     await setupTestDb();
     await resetManagerState();
@@ -101,7 +101,7 @@ describe('WorkflowManager: escalating repair budget (M16/4B)', () => {
     await cleanupTestDb();
   });
 
-  it('escalates through 3 repair levels with increasing turn budgets', async () => {
+  it('escalates through 3 repair levels without adding turn caps in completion mode', async () => {
     const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
     const { upsertNote, getWorkflowById, getJobsForWorkflow } = await import('../server/db/queries.js');
 
@@ -145,7 +145,7 @@ describe('WorkflowManager: escalating repair budget (M16/4B)', () => {
     expect(repairJobs).toHaveLength(2);
     expect(repairJobs[1].title).toContain('diagnostic repair');
     const diagnosticTurns = repairJobs[1].max_turns;
-    expect(diagnosticTurns).toBeGreaterThan(quickTurns!);
+    expect(diagnosticTurns).toBe(quickTurns);
 
     // Third repair attempt: full re-assess repair
     const job3 = await insertTestJob({
@@ -161,7 +161,7 @@ describe('WorkflowManager: escalating repair budget (M16/4B)', () => {
     expect(repairJobs).toHaveLength(3);
     expect(repairJobs[2].title).toContain('full re-assess repair');
     const fullTurns = repairJobs[2].max_turns;
-    expect(fullTurns).toBeGreaterThan(diagnosticTurns!);
+    expect(fullTurns).toBe(diagnosticTurns);
   });
 
   it('blocks workflow after 3 repair attempts are exhausted', async () => {

@@ -25,8 +25,8 @@ describe('getPhaseConfig', () => {
 
   it('verify phase has stop mode overrides', () => {
     const config = getPhaseConfig('verify');
-    expect(config.overrides?.stopMode).toBe('turns');
-    expect(config.overrides?.stopValue).toBe(40);
+    expect(config.overrides?.stopMode).toBe('completion');
+    expect(config.overrides?.stopValue).toBeNull();
   });
 
   it('assess uses implementer_model as modelKey', () => {

@@ -13,6 +13,61 @@ import { createWorkflowSchema, resumeWorkflowSchema, validateBody } from './vali
 
 const router = Router();
 
+function stopWorkflowJobs(workflowId: string, pendingQuestionAnswer: string): void {
+  const jobs = queries.getJobsForWorkflow(workflowId);
+  for (const job of jobs) {
+    try {
+      if (job.status === 'running' || job.status === 'assigned') {
+        const agents = queries.getAgentsWithJobByJobId(job.id);
+        for (const agent of agents) {
+          if (agent.status !== 'running' && agent.status !== 'starting' && agent.status !== 'waiting_user') continue;
+          try {
+            cancelledAgents.add(agent.id);
+
+            if (isTmuxSessionAlive(agent.id)) {
+              try { saveSnapshot(agent.id); } catch { /* non-fatal */ }
+            }
+
+            if (agent.pid) {
+              try { process.kill(-agent.pid, 'SIGTERM'); } catch { /* already gone */ }
+            }
+            try { execFileSync('tmux', ['kill-session', '-t', `orchestrator-${agent.id}`], { stdio: 'pipe' }); } catch { /* ok */ }
+            queries.updateAgent(agent.id, { status: 'cancelled', finished_at: Date.now() });
+            getFileLockRegistry().releaseAll(agent.id);
+            disconnectAgent(agent.id);
+
+            const pendingQ = queries.getPendingQuestion(agent.id);
+            if (pendingQ) {
+              queries.updateQuestion(pendingQ.id, {
+                status: 'timeout',
+                answer: pendingQuestionAnswer,
+                answered_at: Date.now(),
+              });
+            }
+
+            const updatedAgent = queries.getAgentWithJob(agent.id);
+            if (updatedAgent) socket.emitAgentUpdate(updatedAgent);
+          } catch (agentErr) {
+            console.warn(`[workflow-cancel] Failed to stop agent ${agent.id} in job ${job.id}:`, agentErr);
+            try { getFileLockRegistry().releaseAll(agent.id); } catch { /* best effort */ }
+            try { disconnectAgent(agent.id); } catch { /* best effort */ }
+            try { queries.updateAgent(agent.id, { status: 'cancelled', finished_at: Date.now() }); } catch { cancelledAgents.delete(agent.id); }
+          }
+        }
+        queries.updateJobStatus(job.id, 'cancelled');
+        const updatedJob = queries.getJobById(job.id);
+        if (updatedJob) socket.emitJobUpdate(updatedJob);
+      } else if (job.status === 'queued') {
+        queries.updateJobStatus(job.id, 'cancelled');
+        const updatedJob = queries.getJobById(job.id);
+        if (updatedJob) socket.emitJobUpdate(updatedJob);
+      }
+    } catch (jobErr) {
+      console.warn(`[workflow-cancel] Failed to stop job ${job.id}:`, jobErr);
+    }
+  }
+}
+
 // GET /api/workflows — list all workflows
 router.get('/', (_req, res) => {
   res.json(queries.listWorkflows());
@@ -89,7 +144,7 @@ router.post('/', (req, res) => {
   }
 });
 
-// POST /api/workflows/:id/cancel — cancel a running workflow
+// POST /api/workflows/:id/cancel — stop active work and preserve the workflow for resume
 router.post('/:id/cancel', (req, res) => {
   const workflow = queries.getWorkflowById(req.params.id);
   if (!workflow) { res.status(404).json({ error: 'not found' }); return; }
@@ -98,21 +153,13 @@ router.post('/:id/cancel', (req, res) => {
     return;
   }
 
-  const updated = queries.updateWorkflow(workflow.id, { status: 'cancelled' });
+  stopWorkflowJobs(workflow.id, '[TIMEOUT] Workflow paused via cancel; agent stopped and worktree preserved.');
+  const updated = queries.updateWorkflow(workflow.id, {
+    status: 'blocked',
+    current_phase: workflow.current_phase,
+    blocked_reason: workflow.blocked_reason ?? 'Workflow paused via cancel; active phase stopped and worktree preserved for resume.',
+  });
   if (updated) socket.emitWorkflowUpdate(updated);
-
-  // Cancel any queued/running workflow jobs
-  const jobs = queries.getJobsForWorkflow(workflow.id);
-  for (const job of jobs) {
-    if (job.status === 'queued' || job.status === 'assigned') {
-      queries.updateJobStatus(job.id, 'cancelled');
-      const updatedJob = queries.getJobById(job.id);
-      if (updatedJob) socket.emitJobUpdate(updatedJob);
-    }
-  }
-
-  // Clean up the worktree (no PR for cancellations)
-  if (updated) cleanupWorktree(updated);
 
   res.json(updated);
 });
@@ -369,13 +416,13 @@ router.post('/:id/resume', (req, res) => {
 
   const force = req.body?.force === true;
 
-  if (workflow.status === 'running' && force) {
+  if ((workflow.status === 'running' || workflow.status === 'cancelled') && force) {
     // Force-resume: mark as blocked first so resumeWorkflow accepts it, then emit update
     const blocked = queries.updateWorkflow(workflow.id, { status: 'blocked' });
     if (blocked) socket.emitWorkflowUpdate(blocked);
     workflow = blocked ?? workflow;
   } else if (workflow.status !== 'blocked') {
-    res.status(400).json({ error: `Workflow is ${workflow.status}, can only resume blocked workflows (use force=true for stuck running workflows)` });
+    res.status(400).json({ error: `Workflow is ${workflow.status}, can only resume blocked workflows (use force=true for stuck running/cancelled workflows)` });
     return;
   }
 

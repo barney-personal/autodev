@@ -3,6 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { WORKFLOW_UNBOUNDED_MAX_TURNS } from '../../shared/workflowRunPolicy.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -448,9 +449,9 @@ export function initDb(dbPath: string): DatabaseSync {
       milestones_total    INTEGER NOT NULL DEFAULT 0,
       milestones_done     INTEGER NOT NULL DEFAULT 0,
       project_id          TEXT REFERENCES projects(id),
-      max_turns_assess    INTEGER NOT NULL DEFAULT 50,
-      max_turns_review    INTEGER NOT NULL DEFAULT 30,
-      max_turns_implement INTEGER NOT NULL DEFAULT 100,
+      max_turns_assess    INTEGER NOT NULL DEFAULT 10000,
+      max_turns_review    INTEGER NOT NULL DEFAULT 10000,
+      max_turns_implement INTEGER NOT NULL DEFAULT 10000,
       template_id         TEXT REFERENCES templates(id),
       use_worktree        INTEGER NOT NULL DEFAULT 1,
       created_at          INTEGER NOT NULL,
@@ -473,17 +474,38 @@ export function initDb(dbPath: string): DatabaseSync {
   // Workflow-level worktree columns (single worktree shared across all phases)
   const workflowCols = getColumnNames(db, 'workflows');
   if (!workflowCols.includes('stop_mode_assess')) {
-    db.exec("ALTER TABLE workflows ADD COLUMN stop_mode_assess TEXT NOT NULL DEFAULT 'turns'");
+    db.exec("ALTER TABLE workflows ADD COLUMN stop_mode_assess TEXT NOT NULL DEFAULT 'completion'");
     db.exec('ALTER TABLE workflows ADD COLUMN stop_value_assess REAL');
-    db.exec("ALTER TABLE workflows ADD COLUMN stop_mode_review TEXT NOT NULL DEFAULT 'turns'");
+    db.exec("ALTER TABLE workflows ADD COLUMN stop_mode_review TEXT NOT NULL DEFAULT 'completion'");
     db.exec('ALTER TABLE workflows ADD COLUMN stop_value_review REAL');
-    db.exec("ALTER TABLE workflows ADD COLUMN stop_mode_implement TEXT NOT NULL DEFAULT 'turns'");
+    db.exec("ALTER TABLE workflows ADD COLUMN stop_mode_implement TEXT NOT NULL DEFAULT 'completion'");
     db.exec('ALTER TABLE workflows ADD COLUMN stop_value_implement REAL');
-    // Backfill: existing rows get stop_value = max_turns per phase
-    db.exec("UPDATE workflows SET stop_value_assess = max_turns_assess WHERE stop_mode_assess = 'turns' AND stop_value_assess IS NULL");
-    db.exec("UPDATE workflows SET stop_value_review = max_turns_review WHERE stop_mode_review = 'turns' AND stop_value_review IS NULL");
-    db.exec("UPDATE workflows SET stop_value_implement = max_turns_implement WHERE stop_mode_implement = 'turns' AND stop_value_implement IS NULL");
   }
+  db.exec(`
+    UPDATE workflows
+    SET
+      max_turns_assess = ${WORKFLOW_UNBOUNDED_MAX_TURNS},
+      max_turns_review = ${WORKFLOW_UNBOUNDED_MAX_TURNS},
+      max_turns_implement = ${WORKFLOW_UNBOUNDED_MAX_TURNS},
+      stop_mode_assess = 'completion',
+      stop_value_assess = NULL,
+      stop_mode_review = 'completion',
+      stop_value_review = NULL,
+      stop_mode_implement = 'completion',
+      stop_value_implement = NULL
+    WHERE status IN ('running', 'blocked')
+      AND (
+        max_turns_assess < ${WORKFLOW_UNBOUNDED_MAX_TURNS}
+        OR max_turns_review < ${WORKFLOW_UNBOUNDED_MAX_TURNS}
+        OR max_turns_implement < ${WORKFLOW_UNBOUNDED_MAX_TURNS}
+        OR stop_mode_assess <> 'completion'
+        OR stop_mode_review <> 'completion'
+        OR stop_mode_implement <> 'completion'
+        OR stop_value_assess IS NOT NULL
+        OR stop_value_review IS NOT NULL
+        OR stop_value_implement IS NOT NULL
+      )
+  `);
   if (!workflowCols.includes('worktree_path')) {
     db.exec('ALTER TABLE workflows ADD COLUMN worktree_path TEXT');
   }
