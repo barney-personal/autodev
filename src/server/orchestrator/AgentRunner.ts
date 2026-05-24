@@ -51,6 +51,9 @@ import { registerCompletionHandler } from './JobCompletionNotifier.js';
 import { getCircuitBreaker } from './ModelClassifier.js';
 import { classifyJobFailure } from './FailureClassifier.js';
 import * as jobWatcher from './JobWatcherManager.js';
+import { handleStreamEvent, storeOutput } from './AgentStreamProcessor.js';
+import { AgentLogTailer } from './AgentLogTailer.js';
+import { buildPrompt } from './AgentPromptBuilder.js';
 import {
   CLAUDE,
   CODEX,
@@ -71,8 +74,8 @@ export { HOOK_SETTINGS, SYSTEM_PROMPT, MEMORY_BUDGET, cancelledAgents, readClaud
 // handleJobCompletion is a hoisted function declaration, so this reference is safe at module level.
 registerCompletionHandler(handleJobCompletion);
 
-// Map of agentId → active tailer cleanup handles
-const _tailers = new Map<string, { watcher?: fs.FSWatcher; interval: NodeJS.Timeout }>();
+// Map of agentId → active tailer instances
+const _tailers = new Map<string, AgentLogTailer>();
 
 
 
@@ -316,79 +319,27 @@ export function startTailing(
   // Stop any previous tailer for this agent (shouldn't happen, but be safe)
   stopTailing(agentId);
 
-  let seq = skipLines;     // next seq number to assign
-  let skipped = 0;         // lines consumed but not stored
-  let filePos = 0;         // byte offset read so far
-  let lineBuf = '';        // incomplete last line
-
-  function readNewContent(): void {
-    if (!isDbInitialized()) return;
-
-    let size: number;
-    try {
-      size = fs.statSync(logPath).size;
-    } catch {
-      return; // file not created yet
-    }
-    if (size <= filePos) return;
-
-    let buf: Buffer;
-    let bytesRead: number;
-    try {
-      buf = Buffer.alloc(size - filePos);
-      const fd = fs.openSync(logPath, 'r');
+  const tailer = new AgentLogTailer(
+    logPath,
+    skipLines,
+    (raw, seq) => {
       try {
-        bytesRead = fs.readSync(fd, buf, 0, buf.length, filePos);
-      } finally {
-        fs.closeSync(fd);
-      }
-    } catch (err) {
-      agentLogger(agentId).warn({ err }, 'readNewContent error');
-      return;
-    }
-    filePos += bytesRead;
-
-    lineBuf += buf.toString('utf8');
-    const parts = lineBuf.split('\n');
-    lineBuf = parts.pop() ?? ''; // keep partial last line for next read
-
-    for (const line of parts) {
-      if (!line.trim()) continue;
-      if (skipped < skipLines) {
-        skipped++;
-        continue; // already stored in a previous session
-      }
-      try {
-        const event: ClaudeStreamEvent = JSON.parse(line);
-        handleStreamEvent(agentId, event, line, seq++);
+        const event: ClaudeStreamEvent | CodexStreamEvent = JSON.parse(raw);
+        handleStreamEvent(agentId, event, raw, seq);
       } catch {
-        storeOutput(agentId, seq++, 'raw', line);
+        storeOutput(agentId, seq, 'raw', raw);
       }
-    }
-  }
-
-  // Initial read (catches output written before we set up the watcher)
-  readNewContent();
-
-  // Watch for new data; fall back to polling every 2s in case fs.watch misses events
-  let watcher: fs.FSWatcher | undefined;
-  try {
-    let debounce: NodeJS.Timeout | null = null;
-    watcher = fs.watch(logPath, { persistent: false }, () => {
-      if (debounce) clearTimeout(debounce);
-      debounce = setTimeout(readNewContent, 50);
-    });
-  } catch { /* log file may not exist yet; the interval will catch up */ }
-
-  const interval = setInterval(readNewContent, 2000);
-  _tailers.set(agentId, { watcher, interval });
+    },
+    isDbInitialized,
+  );
+  _tailers.set(agentId, tailer);
 
   if (child) {
     // Normal spawn: wait for the process to exit via child event
     child.on('close', (code) => {
       setTimeout(() => {
         try {
-          readNewContent(); // flush any remaining output
+          tailer.readAndFlush(); // flush any remaining output
           stopTailing(agentId);
           handleAgentExit(agentId, job, code);
         } catch (err) {
@@ -424,9 +375,8 @@ export function startTailing(
         clearInterval(pidPoll);
         setTimeout(() => {
           try {
-            readNewContent();
+            tailer.readAndFlush();
             stopTailing(agentId);
-            // Read exit code from stderr file if available; use 0 if result event was 'success'
             handleAgentExit(agentId, job, null);
           } catch (err) {
             agentLogger(agentId).error({ err }, 'reattach exit error');
@@ -441,8 +391,7 @@ export function startTailing(
 export function stopTailing(agentId: string): void {
   const t = _tailers.get(agentId);
   if (t) {
-    t.watcher?.close();
-    clearInterval(t.interval);
+    t.stop();
     _tailers.delete(agentId);
   }
 }
@@ -904,134 +853,3 @@ function handleAgentExit(agentId: string, job: Job, exitCode: number | null): vo
   });
 }
 
-function handleStreamEvent(agentId: string, event: ClaudeStreamEvent | CodexStreamEvent, raw: string, seq: number): void {
-  if (!isDbInitialized()) return;
-
-  storeOutput(agentId, seq, event.type, raw);
-
-  // Claude: capture session_id from system init event
-  if (event.type === 'system' && (event as ClaudeStreamEvent).session_id) {
-    queries.updateAgent(agentId, { session_id: (event as ClaudeStreamEvent).session_id });
-  }
-
-  // Codex: capture thread_id as session_id from thread.started event
-  if (event.type === 'thread.started' && (event as CodexStreamEvent).thread_id) {
-    queries.updateAgent(agentId, { session_id: (event as CodexStreamEvent).thread_id });
-  }
-
-  // Token accumulation for cost estimation (budget stop mode)
-  extractAndAccumulateTokens(agentId, event, raw);
-
-  // Live watcher: notify on tool_use / turn results so it can interpret progress.
-  try { jobWatcher.onAgentEvent(agentId, event); } catch (err) { agentLogger(agentId).debug({ err }, 'watcher onAgentEvent failed'); }
-
-  const latestRow = queries.getLatestAgentOutput(agentId);
-  if (latestRow) socket.emitAgentOutput(agentId, latestRow);
-}
-
-/**
- * Extract token usage from Claude assistant events and Codex usage events,
- * then accumulate on the agent row for cost estimation.
- */
-function extractAndAccumulateTokens(agentId: string, event: ClaudeStreamEvent | CodexStreamEvent, raw: string): void {
-  let inputTokens = 0;
-  let outputTokens = 0;
-
-  if (event.type === 'assistant') {
-    // Claude assistant events carry usage in the raw JSON (not on the typed interface)
-    try {
-      const parsed = JSON.parse(raw);
-      const usage = parsed.usage;
-      if (usage) {
-        inputTokens = (usage.input_tokens ?? 0)
-          + (usage.cache_creation_input_tokens ?? 0)
-          + (usage.cache_read_input_tokens ?? 0);
-        outputTokens = usage.output_tokens ?? 0;
-      }
-    } catch { /* malformed JSON — skip */ }
-  }
-
-  // Codex emits a top-level usage object on certain events
-  const codexUsage = (event as CodexStreamEvent).usage;
-  if (codexUsage) {
-    inputTokens = (codexUsage.input_tokens ?? 0) + (codexUsage.cached_input_tokens ?? 0);
-    outputTokens = codexUsage.output_tokens ?? 0;
-  }
-
-  if (inputTokens > 0 || outputTokens > 0) {
-    queries.accumulateAgentTokens(agentId, inputTokens, outputTokens);
-  }
-}
-
-function storeOutput(agentId: string, seq: number, eventType: string, content: string): void {
-  if (!isDbInitialized()) return;
-
-  queries.insertAgentOutput({
-    agent_id: agentId,
-    seq,
-    event_type: eventType,
-    content,
-    created_at: Date.now(),
-  });
-}
-
-/**
- * Read CLAUDE.md and any docs it references from .claude/docs/ in the given directory.
- * Claude Code reads these natively; Codex does not, so we inject them into the prompt.
- */
-
-function buildPrompt(job: Job): string {
-  const model: string | null = job.model ?? null;
-  let prompt = '';
-
-  // Codex has no --append-system-prompt flag, so prepend it to the prompt
-  if (isCodexModel(model)) {
-    prompt += SYSTEM_PROMPT + '\n\n---\n\n';
-  }
-
-  prompt += `# Task: ${job.title}\n\n`;
-
-  // Pre-debate summary (stored separately from description)
-  if (job.pre_debate_summary) {
-    prompt += job.pre_debate_summary + '\n\n## Original Task\n';
-  }
-
-  const templateId = job.template_id;
-  if (templateId) {
-    const template = queries.getTemplateById(templateId);
-    if (template) {
-      prompt += `## Guidelines\n\n${template.content}`;
-      if (job.description.trim()) {
-        prompt += `\n\n## Task Description\n\n`;
-      }
-    }
-  }
-
-  if (job.description.trim()) {
-    prompt += job.description;
-  }
-
-  if (job.context) {
-    try {
-      const ctx = JSON.parse(job.context);
-      prompt += '\n\n## Additional Context\n';
-      for (const [k, v] of Object.entries(ctx)) {
-        prompt += `- **${k}**: ${v}\n`;
-      }
-    } catch { /* ignore */ }
-  }
-
-  // Inject CLAUDE.md for Codex agents (Claude reads it natively)
-  const workDir = job.work_dir ?? process.cwd();
-  if (isCodexModel(model)) {
-    const claudeMd = readClaudeMd(workDir);
-    if (claudeMd) {
-      prompt += `\n\n## Project Instructions (from CLAUDE.md)\n\n${claudeMd}`;
-    }
-  }
-
-  // Inject relevant memories from knowledge base (2000-char budget)
-  prompt += buildMemorySection(job);
-
-  return prompt;
-}
