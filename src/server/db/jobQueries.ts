@@ -166,7 +166,7 @@ export function getQueueSnapshotStats(): { queued: number; running: number; bloc
         OR EXISTS (
           SELECT 1 FROM json_each(COALESCE(j.depends_on, '[]')) dep
           JOIN jobs d ON d.id = dep.value
-          WHERE d.status NOT IN ('done','failed','cancelled')
+          WHERE d.status != 'done'
         )
         OR (
           j.pre_debate_id IS NOT NULL

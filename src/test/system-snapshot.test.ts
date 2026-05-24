@@ -279,6 +279,56 @@ describe('GET /api/system/snapshot', () => {
     expect(res.body.queue).toEqual({ queued: 1, running: 0, blocked: 1 });
   });
 
+  it('queue: jobs with failed or cancelled dependencies stay blocked until cascade-fail runs', async () => {
+    const { insertJob } = await import('../server/db/queries.js');
+    const failedParent = insertJob({
+      id: randomUUID(),
+      title: 'failed-parent',
+      description: 'failed dependency',
+      context: null,
+      priority: 0,
+      status: 'failed',
+    });
+    const cancelledParent = insertJob({
+      id: randomUUID(),
+      title: 'cancelled-parent',
+      description: 'cancelled dependency',
+      context: null,
+      priority: 0,
+      status: 'cancelled',
+    });
+    insertJob({
+      id: randomUUID(),
+      title: 'blocked-on-failed',
+      description: 'blocked',
+      context: null,
+      priority: 0,
+      status: 'queued',
+      depends_on: JSON.stringify([failedParent.id]),
+    });
+    insertJob({
+      id: randomUUID(),
+      title: 'blocked-on-cancelled',
+      description: 'blocked',
+      context: null,
+      priority: 0,
+      status: 'queued',
+      depends_on: JSON.stringify([cancelledParent.id]),
+    });
+    insertJob({
+      id: randomUUID(),
+      title: 'dispatchable',
+      description: 'ready',
+      context: null,
+      priority: 0,
+      status: 'queued',
+    });
+
+    const res = await getJson(app, '/api/system/snapshot');
+    expect(res.status).toBe(200);
+    expect(res.body.queue).toEqual({ queued: 1, running: 0, blocked: 2 });
+  });
+
   it('routing_brain: 0 decisions when only older-than-30d decisions exist', async () => {
     const project = await insertTestProject();
     const wf = await insertTestWorkflow({ project_id: project.id });
