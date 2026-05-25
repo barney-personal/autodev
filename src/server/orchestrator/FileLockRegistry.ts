@@ -127,18 +127,28 @@ class FileLockRegistry {
    *
    * `file` must already be normalized via normalizeLockPath.
    * Returns raw conflicting lock rows; callers map to BlockedEntry as needed.
+   *
+   * Compatibility note: pre-normalization rows may live in the DB with
+   * non-canonical paths (e.g. `/repo/src/./foo.ts`, `/repo/src/foo.ts/`).
+   * We therefore never trust an exact `file_path = ?` match alone — direct
+   * row sweeps always re-normalize each row before deciding equivalence.
    */
   private findConflictingLocks(excludeAgent: string, file: string): Array<{ file: string; lock: FileLock }> {
     const conflicts: Array<{ file: string; lock: FileLock }> = [];
 
     if (isCheckoutLock(file)) {
       const dir = checkoutDirOf(file);
-      // (a) Other checkout locks on the same checkout path.
-      for (const lock of queries.getActiveLocksForFile(file)) {
-        if (lock.agent_id !== excludeAgent) conflicts.push({ file, lock });
+      // (a) Any checkout lock whose normalized path equals `file`.
+      for (const lock of queries.getAllActiveCheckoutLocks()) {
+        if (lock.agent_id === excludeAgent) continue;
+        if (normalizeCheckoutLockPath(lock.file_path) === file) {
+          conflicts.push({ file, lock });
+        }
       }
-      // (b) Any file lock held by another agent under the checkout directory.
-      for (const lock of queries.getActiveFileLocksUnderPath(dir)) {
+      // (b) Any direct file lock under the checkout directory (or exactly at it).
+      //     Scans ALL active direct locks rather than the LIKE-pattern helper so
+      //     legacy non-canonical rows and direct locks equal to `dir` are caught.
+      for (const lock of queries.getAllActiveDirectFileLocks()) {
         if (lock.agent_id === excludeAgent) continue;
         const lockedPath = normalizeLockPath(lock.file_path);
         if (isPathWithin(dir, lockedPath)) {
@@ -146,9 +156,12 @@ class FileLockRegistry {
         }
       }
     } else {
-      // (a) Direct lock on this file.
-      for (const lock of queries.getActiveLocksForFile(file)) {
-        if (lock.agent_id !== excludeAgent) conflicts.push({ file, lock });
+      // (a) Any direct lock whose normalized path equals `file`.
+      for (const lock of queries.getAllActiveDirectFileLocks()) {
+        if (lock.agent_id === excludeAgent) continue;
+        if (normalizeLockPath(lock.file_path) === file) {
+          conflicts.push({ file, lock });
+        }
       }
       // (b) Any checkout:: lock by another agent that covers this file.
       for (const lock of queries.getAllActiveCheckoutLocks()) {
@@ -159,6 +172,27 @@ class FileLockRegistry {
     }
 
     return conflicts;
+  }
+
+  /**
+   * Find all active rows whose normalized path equals `file` (which must
+   * already be normalized). Used by release() so that callers can release
+   * legacy non-canonical rows by passing a normalized path.
+   */
+  private findOwnedLocksMatching(agentId: string, file: string): FileLock[] {
+    const matches: FileLock[] = [];
+    if (isCheckoutLock(file)) {
+      for (const lock of queries.getAllActiveCheckoutLocks()) {
+        if (lock.agent_id !== agentId) continue;
+        if (normalizeCheckoutLockPath(lock.file_path) === file) matches.push(lock);
+      }
+    } else {
+      for (const lock of queries.getAllActiveDirectFileLocks()) {
+        if (lock.agent_id !== agentId) continue;
+        if (normalizeLockPath(lock.file_path) === file) matches.push(lock);
+      }
+    }
+    return matches;
   }
 
   // Attempt a single non-blocking acquire. Returns null if any file is blocked.
@@ -428,12 +462,10 @@ class FileLockRegistry {
     const released: string[] = [];
     for (const rawFile of files) {
       const file = normalizeLockPath(rawFile);
-      for (const lock of queries.getActiveLocksForFile(file)) {
-        if (lock.agent_id === agentId) {
-          queries.releaseLock(lock.id);
-          socket.emitLockReleased(lock.id, lock.file_path);
-          released.push(file);
-        }
+      for (const lock of this.findOwnedLocksMatching(agentId, file)) {
+        queries.releaseLock(lock.id);
+        socket.emitLockReleased(lock.id, lock.file_path);
+        released.push(file);
       }
     }
     if (released.length > 0) this.notifyWaiters();

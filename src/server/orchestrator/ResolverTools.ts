@@ -389,7 +389,12 @@ export function execEditWorktreeFile(run: ResolverRun, input: EditWorktreeFileIn
   // moment of transition is possible: an agent's final turn writes the file
   // while the Resolver also tries to edit it. Yield to any active lock —
   // the operator can re-dispatch once the lock is released.
-  const activeLocks = queries.getActiveLocksForFile(normalizeLockPath(resolved.absolute));
+  const normFile = normalizeLockPath(resolved.absolute);
+  // Scan all active direct rows and re-normalize so legacy non-canonical lock
+  // rows are still treated as a conflict by the Resolver.
+  const activeLocks = queries
+    .getAllActiveDirectFileLocks()
+    .filter(l => normalizeLockPath(l.file_path) === normFile);
   if (activeLocks.length > 0) {
     const lock = activeLocks[0];
     return failAction(

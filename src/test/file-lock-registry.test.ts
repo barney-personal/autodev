@@ -227,3 +227,85 @@ describe('FileLockRegistry - conflict detection', () => {
     expect(r.success).toBe(true);
   });
 });
+
+describe('FileLockRegistry - legacy non-canonical row compatibility', () => {
+  beforeEach(async () => {
+    await setupTestDb();
+    const { _resetForTest } = await import('../server/orchestrator/FileLockRegistry.js');
+    _resetForTest();
+  });
+
+  afterEach(async () => {
+    await cleanupTestDb();
+  });
+
+  it('legacy non-canonical direct row blocks a normalized acquire', async () => {
+    await insertAgentForLock('agent-a');
+    await insertAgentForLock('agent-b');
+    // Simulate a row inserted before normalization landed — raw, non-canonical path.
+    await insertLockRow({ agentId: 'agent-a', filePath: '/repo/src/./foo.ts' });
+
+    const { getFileLockRegistry } = await import('../server/orchestrator/FileLockRegistry.js');
+    const r = await getFileLockRegistry().acquire('agent-b', ['/repo/src/foo.ts'], null, 60_000, 50);
+    expect(r.success).toBe(false);
+    expect(r.timed_out).toBe(true);
+    expect(r.blocked[0]?.held_by).toBe('agent-a');
+  });
+
+  it('release() with normalized input releases a legacy non-canonical row', async () => {
+    await insertAgentForLock('agent-a');
+    await insertLockRow({ agentId: 'agent-a', filePath: '/repo/src/foo.ts/' });
+    const { getFileLockRegistry } = await import('../server/orchestrator/FileLockRegistry.js');
+    const reg = getFileLockRegistry();
+    const released = reg.release('agent-a', ['/repo/src/foo.ts']);
+    expect(released).toEqual(['/repo/src/foo.ts']);
+    // And the legacy row must now be releasable a second time as a no-op.
+    expect(reg.release('agent-a', ['/repo/src/foo.ts'])).toEqual([]);
+  });
+
+  it('legacy non-canonical child row blocks a new checkout acquire', async () => {
+    await insertAgentForLock('agent-a');
+    await insertAgentForLock('agent-b');
+    await insertLockRow({ agentId: 'agent-a', filePath: '/repo/./src/foo.ts' });
+    const { getFileLockRegistry } = await import('../server/orchestrator/FileLockRegistry.js');
+    const r = await getFileLockRegistry().acquire('agent-b', ['checkout::/repo'], null, 60_000, 50);
+    expect(r.success).toBe(false);
+    expect(r.blocked.some(b => b.held_by === 'agent-a')).toBe(true);
+  });
+
+  it('direct lock exactly at the checkout dir blocks the checkout acquire', async () => {
+    await insertAgentForLock('agent-a');
+    await insertAgentForLock('agent-b');
+    // Acquiring a non-checkout lock on the directory itself is unusual but
+    // legal — it must still conflict with a checkout of the same path.
+    await insertLockRow({ agentId: 'agent-a', filePath: '/repo' });
+    const { getFileLockRegistry } = await import('../server/orchestrator/FileLockRegistry.js');
+    const r = await getFileLockRegistry().acquire('agent-b', ['checkout::/repo'], null, 60_000, 50);
+    expect(r.success).toBe(false);
+    expect(r.blocked.some(b => b.held_by === 'agent-a' && b.file === '/repo')).toBe(true);
+  });
+
+  it('sibling-prefix legacy row still does not collide', async () => {
+    await insertAgentForLock('agent-a');
+    await insertAgentForLock('agent-b');
+    await insertLockRow({ agentId: 'agent-a', filePath: '/repo/src2/./foo.ts' });
+    const { getFileLockRegistry } = await import('../server/orchestrator/FileLockRegistry.js');
+    const r = await getFileLockRegistry().acquire('agent-b', ['/repo/src/foo.ts'], null, 60_000, 50);
+    expect(r.success).toBe(true);
+  });
+
+  it('/api/locks/check returns locked:true for a legacy row owned by the agent', async () => {
+    const queries = await import('../server/db/queries.js');
+    const { normalizeLockPath } = await import('../server/orchestrator/FileLockRegistry.js');
+    await insertAgentForLock('agent-a');
+    await insertLockRow({ agentId: 'agent-a', filePath: '/repo/src/./foo.ts/' });
+
+    // Simulate what /api/locks/check does after normalizing the file param.
+    const normFile = normalizeLockPath('/repo/src/foo.ts');
+    const directLocks = queries.getAllActiveDirectFileLocks();
+    const locked = directLocks.some(
+      l => l.agent_id === 'agent-a' && normalizeLockPath(l.file_path) === normFile,
+    );
+    expect(locked).toBe(true);
+  });
+});

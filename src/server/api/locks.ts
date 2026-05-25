@@ -24,8 +24,10 @@ router.get('/check', (req, res) => {
     return;
   }
   const normFile = normalizeLockPath(file);
-  const activeLocks = queries.getActiveLocksForFile(normFile);
-  if (activeLocks.some(l => l.agent_id === agent_id)) {
+  // Scan all active direct rows and compare normalized form so legacy
+  // non-canonical rows (e.g. `/repo/src/./foo.ts`) are still authoritative.
+  const directLocks = queries.getAllActiveDirectFileLocks();
+  if (directLocks.some(l => l.agent_id === agent_id && normalizeLockPath(l.file_path) === normFile)) {
     res.json({ locked: true });
     return;
   }
