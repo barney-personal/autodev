@@ -72,19 +72,23 @@ vi.mock('../server/instrument.js', () => ({
   Sentry: { captureException: vi.fn() },
 }));
 
-const execSyncMock = vi.fn((cmd: string) => {
-  if (typeof cmd === 'string' && cmd.includes('rev-parse --abbrev-ref HEAD')) {
-    return Buffer.from('expected-branch\n');
-  }
-  if (typeof cmd === 'string' && cmd.includes('rev-parse --verify') && cmd.includes('refs/heads/')) {
+const execSyncMock = vi.fn((_cmd: string) => Buffer.from(''));
+
+// WorkflowWorktreeManager git calls go through execFileSync with argv arrays.
+const execFileSyncMock = vi.fn((_cmd: string, args: string[]) => {
+  const joined = (args ?? []).join(' ');
+  if (joined.includes('rev-parse --abbrev-ref HEAD')) return Buffer.from('expected-branch\n');
+  if (joined.includes('rev-parse --verify') && joined.includes('refs/heads/')) {
     throw new Error('fatal: Needed a single revision');
   }
+  if (joined.includes('--is-inside-work-tree')) return Buffer.from('true\n');
   return Buffer.from('');
 });
 
 vi.mock('child_process', () => ({
   exec: vi.fn(),
   execSync: (...args: any[]) => execSyncMock(...args),
+  execFileSync: (...args: any[]) => execFileSyncMock(...args),
 }));
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -142,8 +146,8 @@ describe('WorkflowManager: spawnPhaseJob worktree safety guard', () => {
     expect(reviewJob).toBeDefined();
     expect(reviewJob!.work_dir).toBe(updated!.worktree_path);
 
-    const worktreeAddCalls = execSyncMock.mock.calls.filter(
-      (c: any[]) => typeof c[0] === 'string' && c[0].includes('git worktree add'),
+    const worktreeAddCalls = execFileSyncMock.mock.calls.filter(
+      (c: any[]) => Array.isArray(c[1]) && (c[1] as string[]).join(' ').includes('worktree add'),
     );
     expect(worktreeAddCalls.length).toBeGreaterThan(0);
   });

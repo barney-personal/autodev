@@ -28,6 +28,7 @@ import { validateGitWorkDir as _validateGitWorkDir } from '../shared/workDirVali
 // ─── Sub-module imports ────────────────────────────────────────────────────
 import { parseMilestones, meetsCompletionThreshold, recoverPlanFromAgentOutput } from './WorkflowMilestoneParser.js';
 import { ensureWorktreeBranch, verifyWorktreeHealth, createWorkflowWorktree, restoreWorkflowWorktree } from './WorkflowWorktreeManager.js';
+import { getWorkflowWorktreeIdentity } from './WorkflowWorktreeIdentity.js';
 import { pushAndCreatePr as _pushAndCreatePr, finalizeWorkflow as _finalizeWorkflow, reconcileBlockedPRs as _reconcileBlockedPRs } from './WorkflowPRCreator.js';
 import { diagnoseWriteNoteInOutput, formatWriteNoteDiagnostic, writeBlockedDiagnostic } from './WorkflowBlockedDiagnostics.js';
 import { decideRouteForCycle, getRoutingBrainMode } from './RoutingBrain.js';
@@ -684,17 +685,7 @@ function getMissingRequiredWorktreeFields(workflow: Workflow): string[] {
 }
 
 function getExpectedWorkflowWorktree(workflow: Workflow): { worktree_path: string; worktree_branch: string } | null {
-  if (!workflow.work_dir) return null;
-  const shortId = workflow.id.slice(0, 8);
-  const slug = workflow.title
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '')
-    .slice(0, 40);
-  const worktree_branch = `workflow/${slug}-${shortId}`;
-  const repoName = path.basename(workflow.work_dir);
-  const worktree_path = path.resolve(workflow.work_dir, '..', '.orchestrator-worktrees', repoName, `wf-${shortId}`);
-  return { worktree_path, worktree_branch };
+  return getWorkflowWorktreeIdentity(workflow);
 }
 
 function blockForWorktreeRepairFailure(

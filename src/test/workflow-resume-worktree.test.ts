@@ -87,23 +87,29 @@ vi.mock('../server/orchestrator/ResilienceLogger.js', () => ({
   logResilienceEvent: (...args: any[]) => _logResilienceEvent(...args),
 }));
 
-const execSyncMock = vi.fn((cmd: string) => {
-  if (typeof cmd === 'string' && cmd.includes('rev-parse --abbrev-ref HEAD')) {
+const execSyncMock = vi.fn((_cmd: string) => Buffer.from(''));
+
+// All WorkflowWorktreeManager git calls now go through execFileSync with
+// argument arrays. The mock returns sensible defaults: rev-parse --verify
+// throws (branch missing) so restore takes the -b path, rev-parse --abbrev-ref
+// returns the expected branch, --is-inside-work-tree returns true.
+const execFileSyncMock = vi.fn((_cmd: string, args: string[]) => {
+  const joined = (args ?? []).join(' ');
+  if (joined.includes('rev-parse --abbrev-ref HEAD')) {
     return Buffer.from('expected-branch\n');
   }
-  if (typeof cmd === 'string' && cmd.includes('rev-parse --verify') && cmd.includes('refs/heads/')) {
+  if (joined.includes('rev-parse --verify') && joined.includes('refs/heads/')) {
     throw new Error('fatal: Needed a single revision');
   }
-  return Buffer.from('');
-});
-
-const execFileSyncMock = vi.fn((_cmd: string, args: string[]) => {
-  // Default: git rev-parse --is-inside-work-tree succeeds
-  if (args && args.includes('rev-parse') && args.includes('--is-inside-work-tree')) {
+  if (joined.includes('--is-inside-work-tree')) {
     return Buffer.from('true\n');
   }
   return Buffer.from('');
 });
+
+function joinedExecFileCmds(): string[] {
+  return execFileSyncMock.mock.calls.map(c => `git ${(c[1] as string[] | undefined ?? []).join(' ')}`);
+}
 
 vi.mock('child_process', () => ({
   exec: vi.fn(),
@@ -157,13 +163,10 @@ describe('WorkflowManager: resumeWorkflow worktree restoration', () => {
     // The spawned job should use the restored worktree_path, not work_dir
     expect(job.work_dir).toBe(after!.worktree_path);
 
-    // git worktree add should have been called
-    const worktreeAddCalls = execSyncMock.mock.calls.filter(
-      (c: any[]) => typeof c[0] === 'string' && c[0].includes('git worktree add'),
-    );
+    // git worktree add should have been called (via execFileSync arg array)
+    const worktreeAddCalls = joinedExecFileCmds().filter(c => c.includes('worktree add'));
     expect(worktreeAddCalls.length).toBe(1);
-    const addCmd = worktreeAddCalls[0][0] as string;
-    expect(addCmd).toContain(' -b ');
+    expect(worktreeAddCalls[0]).toContain(' -b ');
 
     // Resilience event should be logged for successful worktree restoration (Fix-C12c)
     expect(_logResilienceEvent).toHaveBeenCalledWith(
@@ -186,10 +189,16 @@ describe('WorkflowManager: resumeWorkflow worktree restoration', () => {
     });
 
     // Make git worktree add fail
-    execSyncMock.mockImplementation((cmd: string) => {
-      if (typeof cmd === 'string' && cmd.includes('git worktree add')) {
+    execFileSyncMock.mockImplementation((_cmd: string, args: string[]) => {
+      const joined = (args ?? []).join(' ');
+      if (joined.includes('worktree add')) {
         throw new Error('fatal: branch already exists');
       }
+      if (joined.includes('rev-parse --abbrev-ref HEAD')) return Buffer.from('expected-branch\n');
+      if (joined.includes('rev-parse --verify') && joined.includes('refs/heads/')) {
+        throw new Error('fatal: Needed a single revision');
+      }
+      if (joined.includes('--is-inside-work-tree')) return Buffer.from('true\n');
       return Buffer.from('');
     });
 
@@ -259,13 +268,13 @@ describe('WorkflowManager: resumeWorkflow worktree restoration', () => {
     queries.upsertNote(`workflow/${workflow.id}/contract`, '# contract', null);
 
     // rev-parse --verify succeeds → branch exists; worktree add without -b should succeed
-    execSyncMock.mockImplementation((cmd: string) => {
-      if (typeof cmd === 'string' && cmd.includes('rev-parse --verify') && cmd.includes('refs/heads/')) {
-        return Buffer.from('abc1234\n'); // branch exists
+    execFileSyncMock.mockImplementation((_cmd: string, args: string[]) => {
+      const joined = (args ?? []).join(' ');
+      if (joined.includes('rev-parse --verify') && joined.includes('refs/heads/')) {
+        return Buffer.from('abc1234\n');
       }
-      if (typeof cmd === 'string' && cmd.includes('rev-parse --abbrev-ref HEAD')) {
-        return Buffer.from('expected-branch\n');
-      }
+      if (joined.includes('rev-parse --abbrev-ref HEAD')) return Buffer.from('expected-branch\n');
+      if (joined.includes('--is-inside-work-tree')) return Buffer.from('true\n');
       return Buffer.from('');
     });
 
@@ -276,13 +285,10 @@ describe('WorkflowManager: resumeWorkflow worktree restoration', () => {
     expect(after!.worktree_branch).toBeTruthy();
     expect(after!.status).toBe('running');
 
-    // Verify git worktree add was called WITHOUT -b
-    const worktreeAddCalls = execSyncMock.mock.calls.filter(
-      (c: any[]) => typeof c[0] === 'string' && c[0].includes('git worktree add'),
-    );
+    // Verify git worktree add was called WITHOUT -b (via execFileSync argv)
+    const worktreeAddCalls = joinedExecFileCmds().filter(c => c.includes('worktree add'));
     expect(worktreeAddCalls.length).toBe(1);
-    const addCmd = worktreeAddCalls[0][0] as string;
-    expect(addCmd).not.toContain(' -b ');
+    expect(worktreeAddCalls[0]).not.toContain(' -b ');
 
     // Resilience event should be logged for successful worktree restoration (Fix-C13a)
     expect(_logResilienceEvent).toHaveBeenCalledWith(
@@ -327,9 +333,7 @@ describe('WorkflowManager: resumeWorkflow worktree restoration', () => {
       expect(job.work_dir).toBe(existingWorktreePath);
       expect(restoreWorkflowWorktree).not.toHaveBeenCalled();
 
-      const worktreeAddCalls = execSyncMock.mock.calls.filter(
-        (c: any[]) => typeof c[0] === 'string' && c[0].includes('git worktree add'),
-      );
+      const worktreeAddCalls = joinedExecFileCmds().filter(c => c.includes('worktree add'));
       expect(worktreeAddCalls).toHaveLength(0);
     } finally {
       rmSync(existingWorktreePath, { recursive: true, force: true });
@@ -399,9 +403,7 @@ describe('WorkflowManager: resumeWorkflow worktree restoration', () => {
     const job = resumeWorkflow(workflow);
 
     // No worktree restoration should have been attempted
-    const worktreeAddCalls = execSyncMock.mock.calls.filter(
-      (c: any[]) => typeof c[0] === 'string' && c[0].includes('git worktree add'),
-    );
+    const worktreeAddCalls = joinedExecFileCmds().filter(c => c.includes('worktree add'));
     expect(worktreeAddCalls.length).toBe(0);
 
     // Job should use work_dir

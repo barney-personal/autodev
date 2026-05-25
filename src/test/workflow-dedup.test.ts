@@ -46,6 +46,13 @@ vi.mock('child_process', () => ({
     }
     return Buffer.from('');
   }),
+  execFileSync: vi.fn((_bin: string, args: string[]) => {
+    const joined = (args ?? []).join(' ');
+    if (joined.includes('--is-inside-work-tree')) return Buffer.from('true\n');
+    if (joined.includes('rev-parse HEAD') && !joined.includes('--abbrev-ref')) return Buffer.from('abc123\n');
+    if (joined.includes('rev-parse --abbrev-ref HEAD')) return Buffer.from('expected-branch\n');
+    return Buffer.from('');
+  }),
 }));
 
 // Mock SocketManager before any module that imports it
@@ -1557,39 +1564,37 @@ describe('WorkflowManager: worktree branch verification (M5)', () => {
 
   it('ensureWorktreeBranch detects drift and corrects it', async () => {
     const { ensureWorktreeBranch } = await import('../server/orchestrator/WorkflowManager.js');
-    const { execSync } = await import('child_process');
+    const { execFileSync } = await import('child_process');
 
-    // First call: rev-parse returns wrong branch; second call: checkout succeeds
-    vi.mocked(execSync)
-      .mockReturnValueOnce(Buffer.from('main\n'))        // rev-parse → wrong branch
+    vi.mocked(execFileSync)
+      .mockReturnValueOnce(Buffer.from('main\n'))        // rev-parse --abbrev-ref → wrong branch
       .mockReturnValueOnce(Buffer.from(''));              // checkout → ok
 
     const result = ensureWorktreeBranch('/tmp/wt', 'feature-branch');
     expect(result.ok).toBe(true);
 
-    // Should have called rev-parse then checkout
-    expect(execSync).toHaveBeenCalledTimes(2);
-    expect(vi.mocked(execSync).mock.calls[0][0]).toContain('rev-parse --abbrev-ref HEAD');
-    expect(vi.mocked(execSync).mock.calls[1][0]).toContain('git checkout');
-    expect(vi.mocked(execSync).mock.calls[1][0]).toContain('feature-branch');
+    expect(execFileSync).toHaveBeenCalledTimes(2);
+    expect((vi.mocked(execFileSync).mock.calls[0][1] as string[]).join(' ')).toContain('rev-parse --abbrev-ref HEAD');
+    expect((vi.mocked(execFileSync).mock.calls[1][1] as string[]).join(' ')).toContain('checkout');
+    expect(vi.mocked(execFileSync).mock.calls[1][1]).toContain('feature-branch');
   });
 
   it('ensureWorktreeBranch returns ok when already on correct branch', async () => {
     const { ensureWorktreeBranch } = await import('../server/orchestrator/WorkflowManager.js');
-    const { execSync } = await import('child_process');
+    const { execFileSync } = await import('child_process');
 
-    vi.mocked(execSync).mockReturnValueOnce(Buffer.from('feature-branch\n'));
+    vi.mocked(execFileSync).mockReturnValueOnce(Buffer.from('feature-branch\n'));
 
     const result = ensureWorktreeBranch('/tmp/wt', 'feature-branch');
     expect(result.ok).toBe(true);
-    expect(execSync).toHaveBeenCalledTimes(1); // only rev-parse, no checkout
+    expect(execFileSync).toHaveBeenCalledTimes(1); // only rev-parse, no checkout
   });
 
   it('ensureWorktreeBranch returns error when checkout fails', async () => {
     const { ensureWorktreeBranch } = await import('../server/orchestrator/WorkflowManager.js');
-    const { execSync } = await import('child_process');
+    const { execFileSync } = await import('child_process');
 
-    vi.mocked(execSync)
+    vi.mocked(execFileSync)
       .mockReturnValueOnce(Buffer.from('main\n'))        // rev-parse → wrong branch
       .mockImplementationOnce(() => { throw new Error('checkout conflict'); }); // checkout fails
 
@@ -1604,7 +1609,7 @@ describe('WorkflowManager: worktree branch verification (M5)', () => {
     const socket = await import('../server/socket/SocketManager.js');
     const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
     const { upsertNote, getWorkflowById, updateWorkflow } = await import('../server/db/queries.js');
-    const { execSync } = await import('child_process');
+    const { execFileSync } = await import('child_process');
 
     const project = await insertTestProject();
     const workflow = await insertTestWorkflow({
@@ -1613,7 +1618,6 @@ describe('WorkflowManager: worktree branch verification (M5)', () => {
       current_phase: 'assess',
       current_cycle: 0,
     });
-    // Set worktree fields so branch verification triggers
     updateWorkflow(workflow.id, {
       worktree_path: '/tmp/test-wt',
       worktree_branch: 'workflow/test-branch',
@@ -1621,12 +1625,11 @@ describe('WorkflowManager: worktree branch verification (M5)', () => {
     upsertNote(`workflow/${workflow.id}/plan`, '- [ ] M1\n- [ ] M2', null);
     upsertNote(`workflow/${workflow.id}/contract`, '# contract', null);
 
-    // Mock: ensureWorktreeBranch: rev-parse --abbrev-ref → drifted, checkout → ok
-    vi.mocked(execSync)
+    // ensureWorktreeBranch via execFileSync: rev-parse --abbrev-ref → drifted, checkout → ok
+    vi.mocked(execFileSync)
       .mockReturnValueOnce(Buffer.from('main\n'))    // rev-parse --abbrev-ref HEAD → drifted
       .mockReturnValueOnce(Buffer.from(''));          // checkout → ok
 
-    // Trigger assess→review transition (which calls spawnPhaseJob for review)
     const assessJob = await insertTestJob({
       workflow_id: workflow.id,
       workflow_cycle: 0,
@@ -1635,7 +1638,6 @@ describe('WorkflowManager: worktree branch verification (M5)', () => {
     });
     onJobCompleted(assessJob);
 
-    // Branch was corrected, so a review job should have been spawned
     const emitJobNewCalls = vi.mocked(socket.emitJobNew).mock.calls;
     expect(emitJobNewCalls.length).toBe(1);
     expect(emitJobNewCalls[0][0].workflow_phase).toBe('review');
@@ -1648,7 +1650,7 @@ describe('WorkflowManager: worktree branch verification (M5)', () => {
   it('checkout failure blocks workflow with descriptive reason', async () => {
     const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
     const { upsertNote, getWorkflowById, updateWorkflow } = await import('../server/db/queries.js');
-    const { execSync } = await import('child_process');
+    const { execFileSync } = await import('child_process');
 
     const project = await insertTestProject();
     const workflow = await insertTestWorkflow({
@@ -1664,8 +1666,8 @@ describe('WorkflowManager: worktree branch verification (M5)', () => {
     upsertNote(`workflow/${workflow.id}/plan`, '- [ ] M1\n- [ ] M2', null);
     upsertNote(`workflow/${workflow.id}/contract`, '# contract', null);
 
-    // Mock: ensureWorktreeBranch: rev-parse → wrong branch, checkout throws
-    vi.mocked(execSync)
+    // ensureWorktreeBranch via execFileSync: rev-parse → wrong branch, checkout throws
+    vi.mocked(execFileSync)
       .mockReturnValueOnce(Buffer.from('main\n'))    // rev-parse --abbrev-ref HEAD → wrong branch
       .mockImplementationOnce(() => { throw new Error('cannot checkout: uncommitted changes'); });
 
@@ -1688,7 +1690,7 @@ describe('WorkflowManager: worktree branch verification (M5)', () => {
     const socket = await import('../server/socket/SocketManager.js');
     const { resumeWorkflow } = await import('../server/orchestrator/WorkflowManager.js');
     const { upsertNote, getWorkflowById, updateWorkflow } = await import('../server/db/queries.js');
-    const { execSync } = await import('child_process');
+    const { execFileSync, execSync } = await import('child_process');
 
     const project = await insertTestProject();
     const workflow = await insertTestWorkflow({
@@ -1704,38 +1706,36 @@ describe('WorkflowManager: worktree branch verification (M5)', () => {
     upsertNote(`workflow/${workflow.id}/plan`, '- [ ] M1\n- [x] M2', null);
     upsertNote(`workflow/${workflow.id}/contract`, '# contract', null);
 
-    // Mock: verifyWorktreeHealth runs --is-inside-work-tree, rev-parse HEAD,
-    // then ensureWorktreeBranch runs rev-parse --abbrev-ref HEAD → drifted, checkout → ok,
-    // then preReadWorkflowContext runs git diff --stat for M9/2A context injection
-    vi.mocked(execSync)
+    // verifyWorktreeHealth + ensureWorktreeBranch use execFileSync (argument arrays)
+    vi.mocked(execFileSync)
       .mockReturnValueOnce(Buffer.from('true\n'))    // --is-inside-work-tree
       .mockReturnValueOnce(Buffer.from('abc123\n'))  // rev-parse HEAD
       .mockReturnValueOnce(Buffer.from('main\n'))    // rev-parse --abbrev-ref HEAD → drifted
-      .mockReturnValueOnce(Buffer.from(''))           // checkout → ok
-      .mockReturnValueOnce(Buffer.from(''));           // git diff --stat (M9 context injection)
+      .mockReturnValueOnce(Buffer.from(''));          // checkout → ok
+    // preReadWorkflowContext still uses execSync for git diff --stat
+    vi.mocked(execSync).mockReturnValueOnce(Buffer.from(''));
 
     const job = resumeWorkflow(workflow);
 
-    // Branch was corrected, job should have been created
     expect(job).toBeDefined();
     expect(job.workflow_phase).toBe('implement');
     const emitJobNewCalls = vi.mocked(socket.emitJobNew).mock.calls;
     expect(emitJobNewCalls.length).toBeGreaterThanOrEqual(1);
 
-    // Verify the health-check + branch-correction path ran, without depending on
-    // unrelated extra git probes from surrounding setup.
-    const execCommands = vi.mocked(execSync).mock.calls.map(call => String(call[0]));
-    expect(execCommands.length).toBeGreaterThanOrEqual(4);
-    expect(execCommands.some(cmd => cmd.includes('rev-parse --is-inside-work-tree'))).toBe(true);
-    expect(execCommands.some(cmd => cmd.includes('rev-parse HEAD'))).toBe(true);
-    expect(execCommands.some(cmd => cmd.includes('rev-parse --abbrev-ref HEAD'))).toBe(true);
-    expect(execCommands.some(cmd => cmd.includes('git checkout'))).toBe(true);
+    const execFileCommands = vi.mocked(execFileSync).mock.calls.map(
+      call => `git ${(call[1] as string[]).join(' ')}`,
+    );
+    expect(execFileCommands.length).toBeGreaterThanOrEqual(4);
+    expect(execFileCommands.some(cmd => cmd.includes('rev-parse --is-inside-work-tree'))).toBe(true);
+    expect(execFileCommands.some(cmd => cmd.includes('rev-parse HEAD'))).toBe(true);
+    expect(execFileCommands.some(cmd => cmd.includes('rev-parse --abbrev-ref HEAD'))).toBe(true);
+    expect(execFileCommands.some(cmd => cmd.includes('checkout'))).toBe(true);
   });
 
   it('resumeWorkflow throws when worktree checkout fails', async () => {
     const { resumeWorkflow } = await import('../server/orchestrator/WorkflowManager.js');
     const { upsertNote, updateWorkflow } = await import('../server/db/queries.js');
-    const { execSync } = await import('child_process');
+    const { execFileSync } = await import('child_process');
 
     const project = await insertTestProject();
     const workflow = await insertTestWorkflow({
@@ -1751,9 +1751,9 @@ describe('WorkflowManager: worktree branch verification (M5)', () => {
     upsertNote(`workflow/${workflow.id}/plan`, '- [ ] M1\n- [x] M2', null);
     upsertNote(`workflow/${workflow.id}/contract`, '# contract', null);
 
-    // Mock: verifyWorktreeHealth checks pass, then ensureWorktreeBranch:
+    // verifyWorktreeHealth + ensureWorktreeBranch via execFileSync:
     // rev-parse --abbrev-ref → drifted, checkout → throws
-    vi.mocked(execSync)
+    vi.mocked(execFileSync)
       .mockReturnValueOnce(Buffer.from('true\n'))    // --is-inside-work-tree
       .mockReturnValueOnce(Buffer.from('abc123\n'))  // rev-parse HEAD
       .mockReturnValueOnce(Buffer.from('main\n'))    // rev-parse --abbrev-ref HEAD → drifted
