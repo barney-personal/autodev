@@ -10,9 +10,9 @@
     "client:dev": "vite",
     "build": "tsc -p tsconfig.server.json && vite build",
     "server:start": "node --import ./dist/server/instrument.js dist/server/index.js",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test": "NODE_ENV=test vitest run",
+    "test:watch": "NODE_ENV=test vitest",
+    "test:coverage": "NODE_ENV=test vitest run --coverage"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",

@@ -62,8 +62,6 @@ import {
   HOOK_SETTINGS,
   SYSTEM_PROMPT,
   cancelledAgents,
-  readClaudeMd,
-  buildMemorySection,
   ensureCodexTrusted,
 } from './AgentConfig.js';
 import type { RunOptions } from './AgentConfig.js';

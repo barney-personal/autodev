@@ -1,6 +1,17 @@
 import { defineConfig } from 'vitest/config';
 import path from 'path';
 
+// Hermetic test env: strip inherited auth/provider tokens before workers spawn
+// so `npm test` behaves the same in a developer shell, CI, and an orchestrator
+// agent that may have AUTH_TOKEN / ANTHROPIC_API_KEY / GITHUB_PERSONAL_ACCESS_TOKEN
+// set for the running server.
+delete process.env.AUTH_TOKEN;
+delete process.env.ANTHROPIC_API_KEY;
+delete process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
+// React Testing Library requires React's dev/test build; force it even if the
+// caller shell has NODE_ENV=production.
+process.env.NODE_ENV = 'test';
+
 export default defineConfig({
   resolve: {
     alias: {
