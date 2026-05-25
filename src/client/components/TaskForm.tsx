@@ -1,13 +1,9 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import type { CreateTaskRequest, TaskPreset, Template, RetryPolicy, StopMode, Job } from '@shared/types';
-import {
-  DEFAULT_DEBATE_CLAUDE_MODEL,
-  DEFAULT_DEBATE_CODEX_MODEL,
-  DEFAULT_WORKFLOW_REVIEWER_MODEL,
-} from '@shared/models';
+import type { CreateTaskRequest, TaskPreset, Template, RetryPolicy, Job } from '@shared/types';
 import { TemplateModelStats } from './TemplateModelStats';
 import { StopModePicker } from './StopModePicker';
 import { useModels } from '../hooks/useModels';
+import { useTaskFormState } from '../hooks/useTaskFormState';
 
 interface TaskFormProps {
   onSubmit: (req: CreateTaskRequest) => Promise<void>;
@@ -29,165 +25,46 @@ const PRESET_DESCRIPTIONS: Record<TaskPreset, string> = {
 
 export function TaskForm({ onSubmit, onClose, availableJobs = [] }: TaskFormProps) {
   const { claude: claudeModels, codex: codexModels } = useModels();
+  const form = useTaskFormState();
+  const { state, config, set, applyPreset, setIterations, toggleDepend, toggleReviewModel } = form;
+  const routesTo = config.routesTo;
 
-  // ── Preset ────────────────────────────────────────────────────────────────
-  const [preset, setPreset] = useState<TaskPreset>('quick');
-
-  // ── Core fields ───────────────────────────────────────────────────────────
-  const [title, setTitle] = useState('');
-  const [description, setDescription] = useState('');
-  const [workDir, setWorkDir] = useState('');
-  const [model, setModel] = useState('');
-  const [templateId, setTemplateId] = useState('');
+  // ── UI-only state (not part of the submitted request) ─────────────────────
   const [templates, setTemplates] = useState<Template[]>([]);
-
-  // ── Complexity dial ───────────────────────────────────────────────────────
-  const [review, setReview] = useState(false);
-  const [reviewerModel, setReviewerModel] = useState(DEFAULT_WORKFLOW_REVIEWER_MODEL);
-  const [iterations, setIterations] = useState(1);
-  const [useWorktree, setUseWorktree] = useState(false);
-
-  // ── Job-only: stopping, scheduling, retry ─────────────────────────────────
-  const [stopMode, setStopMode] = useState<StopMode>('completion');
-  const [stopValue, setStopValue] = useState<number | null>(null);
-  const [maxTurns, _setMaxTurns] = useState<number | ''>('');
-  const [priority, setPriority] = useState(0);
-  const [dependsOn, setDependsOn] = useState<string[]>([]);
-  const [interactive, setInteractive] = useState(true);
-  const [repeatSeconds, setRepeatSeconds] = useState<number | ''>('');
-  const [retryPolicy, setRetryPolicy] = useState<RetryPolicy>('none');
-  const [maxRetries, setMaxRetries] = useState(3);
-  const [checkDiffNotEmpty, setCheckDiffNotEmpty] = useState(false);
-  const [checkNoErrors, setCheckNoErrors] = useState(false);
-  const [customCheckCmd, setCustomCheckCmd] = useState('');
-
-  // ── Job-only: review config (for reviewed preset) ─────────────────────────
-  const [reviewModels, setReviewModels] = useState<string[]>([]);
-  const [reviewAuto, setReviewAuto] = useState(true);
-
-  // ── Job-only: debate ──────────────────────────────────────────────────────
-  const [debateEnabled, setDebateEnabled] = useState(false);
-  const [debateClaudeModel, setDebateClaudeModel] = useState(DEFAULT_DEBATE_CLAUDE_MODEL);
-  const [debateCodexModel, setDebateCodexModel] = useState(DEFAULT_DEBATE_CODEX_MODEL);
-  const [debateMaxRounds, setDebateMaxRounds] = useState(3);
-
-  // ── Workflow-only: start command (for verify agent) ──────────────────────
-  const [verifyEnabled, setVerifyEnabled] = useState(true);
-  const [startCommand, setStartCommand] = useState<string>('npm run dev');
-
-  // ── UI state ──────────────────────────────────────────────────────────────
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  // ── Derived routing ───────────────────────────────────────────────────────
-  const routesTo = iterations > 1 ? 'workflow' : 'job';
 
   const pendingJobs = availableJobs.filter(
     j => j.status === 'queued' || j.status === 'assigned' || j.status === 'running'
   );
 
-  // ── Template loading ──────────────────────────────────────────────────────
   useEffect(() => {
     fetch('/api/templates').then(r => r.json()).then(setTemplates).catch(console.error);
   }, []);
 
   const selectedTemplate = useMemo(
-    () => templates.find(t => t.id === templateId) ?? null,
-    [templates, templateId],
+    () => templates.find(t => t.id === state.templateId) ?? null,
+    [templates, state.templateId],
   );
 
-  // ── Preset application ────────────────────────────────────────────────────
-  const applyPreset = (p: TaskPreset) => {
-    setPreset(p);
-    switch (p) {
-      case 'quick':
-        setReview(false);
-        setIterations(1);
-        setUseWorktree(false);
-        setInteractive(true);
-        break;
-      case 'reviewed':
-        setReview(true);
-        setIterations(1);
-        setUseWorktree(true);
-        break;
-      case 'autonomous':
-        setReview(true);
-        setIterations(10);
-        setUseWorktree(true);
-        setInteractive(false);
-        break;
-    }
-  };
-
   const handleTemplateChange = (newTemplateId: string) => {
-    setTemplateId(newTemplateId);
     const tpl = templates.find(t => t.id === newTemplateId);
-    if (tpl?.work_dir) setWorkDir(tpl.work_dir);
-    if (tpl?.model) setModel(tpl.model);
+    set({
+      templateId: newTemplateId,
+      ...(tpl?.work_dir ? { workDir: tpl.work_dir } : {}),
+      ...(tpl?.model ? { model: tpl.model } : {}),
+    });
   };
 
-  const toggleDepend = (id: string) => {
-    setDependsOn(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
-  };
-
-  // ── Submit ────────────────────────────────────────────────────────────────
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!description.trim() && !templateId) return;
+    if (!state.description.trim() && !state.templateId) return;
     setLoading(true);
     setError(null);
 
     try {
-      const req: CreateTaskRequest = {
-        description: description.trim(),
-        title: title.trim() || undefined,
-        preset,
-        model: model.trim() || undefined,
-        workDir: workDir.trim() || undefined,
-        templateId: templateId || undefined,
-        review,
-        iterations,
-        useWorktree: useWorktree || undefined,
-      };
-
-      if (routesTo === 'job') {
-        // Job-specific fields
-        req.reviewerModel = review ? (reviewerModel || undefined) : undefined;
-        req.stopMode = stopMode;
-        req.stopValue = stopValue ?? undefined;
-        req.maxTurns = maxTurns ? Number(maxTurns) : undefined;
-        req.priority = priority || undefined;
-        req.dependsOn = dependsOn.length > 0 ? dependsOn : undefined;
-        req.interactive = interactive || undefined;
-        req.repeatIntervalMs = repeatSeconds ? (repeatSeconds as number) * 1000 : undefined;
-        req.retryPolicy = retryPolicy !== 'none' ? retryPolicy : undefined;
-        req.maxRetries = retryPolicy !== 'none' ? maxRetries : undefined;
-
-        const completionChecks: string[] = [];
-        if (checkDiffNotEmpty) completionChecks.push('diff_not_empty');
-        if (checkNoErrors) completionChecks.push('no_error_in_output');
-        if (customCheckCmd.trim()) completionChecks.push(`custom_command:${customCheckCmd.trim()}`);
-        if (completionChecks.length > 0) req.completionChecks = completionChecks;
-
-        if (review && reviewModels.length > 0) {
-          req.reviewConfig = { models: reviewModels, auto: reviewAuto };
-        }
-
-        if (debateEnabled) {
-          req.debate = true;
-          req.debateClaudeModel = debateClaudeModel;
-          req.debateCodexModel = debateCodexModel;
-          req.debateMaxRounds = debateMaxRounds;
-        }
-      } else {
-        // Workflow-specific fields
-        req.reviewerModel = reviewerModel || undefined;
-        req.startCommand = verifyEnabled && startCommand.trim() ? startCommand.trim() : undefined;
-      }
-
-      await onSubmit(req);
+      await onSubmit(form.buildRequest());
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create task');
@@ -212,7 +89,7 @@ export function TaskForm({ onSubmit, onClose, availableJobs = [] }: TaskFormProp
                 <button
                   key={p}
                   type="button"
-                  className={`stop-mode-btn${preset === p ? ' active' : ''}`}
+                  className={`stop-mode-btn${state.preset === p ? ' active' : ''}`}
                   onClick={() => applyPreset(p)}
                   title={PRESET_DESCRIPTIONS[p]}
                 >
@@ -221,7 +98,7 @@ export function TaskForm({ onSubmit, onClose, availableJobs = [] }: TaskFormProp
               ))}
             </div>
             <span className="form-label-hint" style={{ marginTop: 4, display: 'block' }}>
-              {PRESET_DESCRIPTIONS[preset]} {routesTo === 'workflow' ? '(workflow)' : '(job)'}
+              {PRESET_DESCRIPTIONS[state.preset]} {routesTo === 'workflow' ? '(workflow)' : '(job)'}
             </span>
           </div>
 
@@ -231,8 +108,8 @@ export function TaskForm({ onSubmit, onClose, availableJobs = [] }: TaskFormProp
             <input
               id="task-title"
               type="text"
-              value={title}
-              onChange={e => setTitle(e.target.value)}
+              value={state.title}
+              onChange={e => set({ title: e.target.value })}
               placeholder="Leave blank to auto-generate from description"
               autoFocus
             />
@@ -241,7 +118,7 @@ export function TaskForm({ onSubmit, onClose, availableJobs = [] }: TaskFormProp
           {/* ── Template ─────────────────────────────────────────────── */}
           <div className="form-group">
             <label htmlFor="task-template">Template <span className="form-label-hint">(optional)</span></label>
-            <select id="task-template" value={templateId} onChange={e => handleTemplateChange(e.target.value)}>
+            <select id="task-template" value={state.templateId} onChange={e => handleTemplateChange(e.target.value)}>
               <option value="">None</option>
               {templates.map(t => (
                 <option key={t.id} value={t.id}>{t.name}</option>
@@ -259,22 +136,22 @@ export function TaskForm({ onSubmit, onClose, availableJobs = [] }: TaskFormProp
           <div className="form-group">
             <label htmlFor="task-description">
               Task Description
-              {templateId && routesTo === 'job' && <span className="form-label-hint"> (optional when template is provided)</span>}
+              {state.templateId && routesTo === 'job' && <span className="form-label-hint"> (optional when template is provided)</span>}
               {routesTo === 'workflow' && <span className="form-label-hint"> (required for autonomous tasks)</span>}
             </label>
             <textarea
               id="task-description"
-              value={description}
-              onChange={e => setDescription(e.target.value)}
+              value={state.description}
+              onChange={e => set({ description: e.target.value })}
               placeholder={
                 routesTo === 'workflow'
                   ? 'Describe what the agents should accomplish across multiple cycles...'
-                  : templateId
+                  : state.templateId
                     ? 'Additional instructions (optional)...'
                     : 'Detailed instructions for the agent...'
               }
               rows={5}
-              required={routesTo === 'workflow' || !templateId}
+              required={routesTo === 'workflow' || !state.templateId}
             />
           </div>
 
@@ -284,8 +161,8 @@ export function TaskForm({ onSubmit, onClose, availableJobs = [] }: TaskFormProp
             <input
               id="task-workdir"
               type="text"
-              value={workDir}
-              onChange={e => setWorkDir(e.target.value)}
+              value={state.workDir}
+              onChange={e => set({ workDir: e.target.value })}
               placeholder="/path/to/project (optional)"
             />
           </div>
@@ -296,16 +173,16 @@ export function TaskForm({ onSubmit, onClose, availableJobs = [] }: TaskFormProp
                 {routesTo === 'workflow' ? 'Implementer Model' : 'Model'}
                 <span className="form-label-hint"> (leave blank to auto-select)</span>
               </label>
-              <select id="task-model" value={model} onChange={e => setModel(e.target.value)}>
+              <select id="task-model" value={state.model} onChange={e => set({ model: e.target.value })}>
                 <option value="">{routesTo === 'workflow' ? 'Default (Opus 4.7)' : 'Auto-select (Haiku classifies)'}</option>
                 {claudeModels.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
                 {routesTo === 'job' && codexModels.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
               </select>
             </div>
-            {review && (
+            {state.review && (
               <div className="form-group">
                 <label htmlFor="task-reviewer">Reviewer Model</label>
-                <select id="task-reviewer" value={reviewerModel} onChange={e => setReviewerModel(e.target.value)}>
+                <select id="task-reviewer" value={state.reviewerModel} onChange={e => set({ reviewerModel: e.target.value })}>
                   {codexModels.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
                   {claudeModels.map(m => <option key={`c-${m.value}`} value={m.value}>{m.label}</option>)}
                 </select>
@@ -313,15 +190,15 @@ export function TaskForm({ onSubmit, onClose, availableJobs = [] }: TaskFormProp
             )}
           </div>
 
-          <TemplateModelStats templateId={templateId} model={model} />
+          <TemplateModelStats templateId={state.templateId} model={state.model} />
 
           {/* ── Review toggle ────────────────────────────────────────── */}
           <div className="form-group">
             <label className="form-checkbox-label">
               <input
                 type="checkbox"
-                checked={review}
-                onChange={e => setReview(e.target.checked)}
+                checked={state.review}
+                onChange={e => set({ review: e.target.checked })}
                 disabled={routesTo === 'workflow'}
               />
               Review on completion
@@ -341,24 +218,16 @@ export function TaskForm({ onSubmit, onClose, availableJobs = [] }: TaskFormProp
                 type="number"
                 min={1}
                 max={50}
-                value={iterations}
-                onChange={e => {
-                  const v = parseInt(e.target.value, 10);
-                  const n = Number.isNaN(v) || v < 1 ? 1 : Math.min(v, 50);
-                  setIterations(n);
-                  if (n > 1) {
-                    setReview(true);
-                    setUseWorktree(true);
-                  }
-                }}
+                value={state.iterations}
+                onChange={e => setIterations(parseInt(e.target.value, 10))}
               />
             </div>
             <div className="form-group">
               <label className="form-checkbox-label" style={{ marginTop: 22 }}>
                 <input
                   type="checkbox"
-                  checked={useWorktree}
-                  onChange={e => setUseWorktree(e.target.checked)}
+                  checked={state.useWorktree}
+                  onChange={e => set({ useWorktree: e.target.checked })}
                 />
                 Use worktree
                 <span className="tooltip-icon" data-tip="Creates a git worktree so the agent works in an isolated checkout on a new branch">?</span>
@@ -367,7 +236,7 @@ export function TaskForm({ onSubmit, onClose, availableJobs = [] }: TaskFormProp
           </div>
 
           {/* ── Job-only: review config (when review enabled on job route) */}
-          {routesTo === 'job' && review && (
+          {routesTo === 'job' && state.review && (
             <div className="form-group" style={{ paddingLeft: 20 }}>
               <label>Review Models</label>
               <div className="completion-checks-list">
@@ -379,10 +248,8 @@ export function TaskForm({ onSubmit, onClose, availableJobs = [] }: TaskFormProp
                   <label key={m.value} className="form-checkbox-label">
                     <input
                       type="checkbox"
-                      checked={reviewModels.includes(m.value)}
-                      onChange={e => setReviewModels(prev =>
-                        e.target.checked ? [...prev, m.value] : prev.filter(x => x !== m.value)
-                      )}
+                      checked={state.reviewModels.includes(m.value)}
+                      onChange={() => toggleReviewModel(m.value)}
                     />
                     {m.label}
                   </label>
@@ -391,8 +258,8 @@ export function TaskForm({ onSubmit, onClose, availableJobs = [] }: TaskFormProp
               <label className="form-checkbox-label" style={{ marginTop: 8 }}>
                 <input
                   type="checkbox"
-                  checked={reviewAuto}
-                  onChange={e => setReviewAuto(e.target.checked)}
+                  checked={state.reviewAuto}
+                  onChange={e => set({ reviewAuto: e.target.checked })}
                 />
                 Auto-trigger reviews
               </label>
@@ -413,22 +280,20 @@ export function TaskForm({ onSubmit, onClose, availableJobs = [] }: TaskFormProp
 
               {showAdvanced && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                  {priority !== undefined && (
-                    <div className="form-group form-group-sm">
-                      <label htmlFor="task-priority">
-                        Priority
-                        <span className="tooltip-icon" data-tip="Controls dispatch order when multiple jobs are waiting. Higher = started sooner (range: -10 to 10).">?</span>
-                      </label>
-                      <input
-                        id="task-priority"
-                        type="number"
-                        value={priority}
-                        onChange={e => setPriority(Number(e.target.value))}
-                        min={-10}
-                        max={10}
-                      />
-                    </div>
-                  )}
+                  <div className="form-group form-group-sm">
+                    <label htmlFor="task-priority">
+                      Priority
+                      <span className="tooltip-icon" data-tip="Controls dispatch order when multiple jobs are waiting. Higher = started sooner (range: -10 to 10).">?</span>
+                    </label>
+                    <input
+                      id="task-priority"
+                      type="number"
+                      value={state.priority}
+                      onChange={e => set({ priority: Number(e.target.value) })}
+                      min={-10}
+                      max={10}
+                    />
+                  </div>
 
                   {pendingJobs.length > 0 && (
                     <div className="form-group">
@@ -440,7 +305,7 @@ export function TaskForm({ onSubmit, onClose, availableJobs = [] }: TaskFormProp
                           <label key={j.id} className="depends-on-item">
                             <input
                               type="checkbox"
-                              checked={dependsOn.includes(j.id)}
+                              checked={state.dependsOn.includes(j.id)}
                               onChange={() => toggleDepend(j.id)}
                             />
                             <span className={`depends-on-status status-${j.status}`}>{j.status}</span>
@@ -455,8 +320,8 @@ export function TaskForm({ onSubmit, onClose, availableJobs = [] }: TaskFormProp
                     <label className="form-checkbox-label">
                       <input
                         type="checkbox"
-                        checked={interactive}
-                        onChange={e => setInteractive(e.target.checked)}
+                        checked={state.interactive}
+                        onChange={e => set({ interactive: e.target.checked })}
                       />
                       Interactive session
                       <span className="tooltip-icon" data-tip="Keeps terminal open for direct conversation">?</span>
@@ -465,10 +330,10 @@ export function TaskForm({ onSubmit, onClose, availableJobs = [] }: TaskFormProp
 
                   <StopModePicker
                     label="Stopping condition"
-                    mode={stopMode}
-                    value={stopValue}
-                    onModeChange={setStopMode}
-                    onValueChange={setStopValue}
+                    mode={state.stopMode}
+                    value={state.stopValue}
+                    onModeChange={mode => set({ stopMode: mode })}
+                    onValueChange={value => set({ stopValue: value })}
                   />
 
                   <div className="form-group">
@@ -480,8 +345,8 @@ export function TaskForm({ onSubmit, onClose, availableJobs = [] }: TaskFormProp
                       <input
                         id="task-repeat"
                         type="number"
-                        value={repeatSeconds}
-                        onChange={e => setRepeatSeconds(e.target.value === '' ? '' : Number(e.target.value))}
+                        value={state.repeatSeconds}
+                        onChange={e => set({ repeatSeconds: e.target.value === '' ? '' : Number(e.target.value) })}
                         placeholder="no repeat"
                         min={1}
                       />
@@ -497,22 +362,22 @@ export function TaskForm({ onSubmit, onClose, availableJobs = [] }: TaskFormProp
                       </label>
                       <select
                         id="task-retry"
-                        value={retryPolicy}
-                        onChange={e => setRetryPolicy(e.target.value as RetryPolicy)}
+                        value={state.retryPolicy}
+                        onChange={e => set({ retryPolicy: e.target.value as RetryPolicy })}
                       >
                         <option value="none">No retry</option>
                         <option value="same">Retry same</option>
                         <option value="analyze">Analyze & retry</option>
                       </select>
                     </div>
-                    {retryPolicy !== 'none' && (
+                    {state.retryPolicy !== 'none' && (
                       <div className="form-group form-group-sm">
                         <label htmlFor="task-max-retries">Max Retries</label>
                         <input
                           id="task-max-retries"
                           type="number"
-                          value={maxRetries}
-                          onChange={e => setMaxRetries(Number(e.target.value))}
+                          value={state.maxRetries}
+                          onChange={e => set({ maxRetries: Number(e.target.value) })}
                           min={1}
                           max={10}
                         />
@@ -529,24 +394,24 @@ export function TaskForm({ onSubmit, onClose, availableJobs = [] }: TaskFormProp
                       <label className="form-checkbox-label">
                         <input
                           type="checkbox"
-                          checked={checkDiffNotEmpty}
-                          onChange={e => setCheckDiffNotEmpty(e.target.checked)}
+                          checked={state.checkDiffNotEmpty}
+                          onChange={e => set({ checkDiffNotEmpty: e.target.checked })}
                         />
                         Diff not empty
                       </label>
                       <label className="form-checkbox-label">
                         <input
                           type="checkbox"
-                          checked={checkNoErrors}
-                          onChange={e => setCheckNoErrors(e.target.checked)}
+                          checked={state.checkNoErrors}
+                          onChange={e => set({ checkNoErrors: e.target.checked })}
                         />
                         No errors in output
                       </label>
                     </div>
                     <input
                       type="text"
-                      value={customCheckCmd}
-                      onChange={e => setCustomCheckCmd(e.target.value)}
+                      value={state.customCheckCmd}
+                      onChange={e => set({ customCheckCmd: e.target.value })}
                       placeholder="Custom check command (exit 0 = pass)"
                       style={{ marginTop: 6 }}
                     />
@@ -556,20 +421,20 @@ export function TaskForm({ onSubmit, onClose, availableJobs = [] }: TaskFormProp
                     <label className="form-checkbox-label">
                       <input
                         type="checkbox"
-                        checked={debateEnabled}
-                        onChange={e => setDebateEnabled(e.target.checked)}
+                        checked={state.debateEnabled}
+                        onChange={e => set({ debateEnabled: e.target.checked })}
                       />
                       Debate before start
                       <span className="tooltip-icon" data-tip="Two models argue about the best approach before the job starts. The debate outcome enriches the job description.">?</span>
                     </label>
                   </div>
 
-                  {debateEnabled && (
+                  {state.debateEnabled && (
                     <div className="form-group" style={{ paddingLeft: 20 }}>
                       <div className="form-row">
                         <div className="form-group">
                           <label htmlFor="task-debate-claude">Claude Model</label>
-                          <select id="task-debate-claude" value={debateClaudeModel} onChange={e => setDebateClaudeModel(e.target.value)}>
+                          <select id="task-debate-claude" value={state.debateClaudeModel} onChange={e => set({ debateClaudeModel: e.target.value })}>
                             <option value="claude-opus-4-7[1m]">claude-opus-4-7[1m] — default, higher cost</option>
                             <option value="claude-opus-4-6[1m]">claude-opus-4-6[1m]</option>
                             <option value="claude-sonnet-4-6[1m]">claude-sonnet-4-6[1m]</option>
@@ -578,7 +443,7 @@ export function TaskForm({ onSubmit, onClose, availableJobs = [] }: TaskFormProp
                         </div>
                         <div className="form-group">
                           <label htmlFor="task-debate-codex">Codex Model</label>
-                          <select id="task-debate-codex" value={debateCodexModel} onChange={e => setDebateCodexModel(e.target.value)}>
+                          <select id="task-debate-codex" value={state.debateCodexModel} onChange={e => set({ debateCodexModel: e.target.value })}>
                             {codexModels.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
                           </select>
                         </div>
@@ -591,8 +456,8 @@ export function TaskForm({ onSubmit, onClose, availableJobs = [] }: TaskFormProp
                         <input
                           id="task-debate-rounds"
                           type="number"
-                          value={debateMaxRounds}
-                          onChange={e => setDebateMaxRounds(Number(e.target.value))}
+                          value={state.debateMaxRounds}
+                          onChange={e => set({ debateMaxRounds: Number(e.target.value) })}
                           min={1}
                           max={10}
                         />
@@ -622,18 +487,18 @@ export function TaskForm({ onSubmit, onClose, availableJobs = [] }: TaskFormProp
                     <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
                       <input
                         type="checkbox"
-                        checked={verifyEnabled}
-                        onChange={e => setVerifyEnabled(e.target.checked)}
+                        checked={state.verifyEnabled}
+                        onChange={e => set({ verifyEnabled: e.target.checked })}
                       />
                       Verify before PR
                     </label>
-                    {verifyEnabled && (
+                    {state.verifyEnabled && (
                       <>
                         <input
                           id="task-start-cmd"
                           type="text"
-                          value={startCommand}
-                          onChange={e => setStartCommand(e.target.value)}
+                          value={state.startCommand}
+                          onChange={e => set({ startCommand: e.target.value })}
                           placeholder="e.g. npm run dev, docker compose up"
                           style={{ fontFamily: 'var(--font-mono)', fontSize: 12, marginTop: 4 }}
                         />
