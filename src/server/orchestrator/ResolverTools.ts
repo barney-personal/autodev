@@ -25,6 +25,7 @@ import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
 import { logResilienceEvent } from './ResilienceLogger.js';
 import { stripControlChars } from './watcherTools.js';
+import { normalizeLockPath } from './FileLockRegistry.js';
 import { RecoveryKeys } from './WorkflowRecovery.js';
 import { PTY_LOG_DIR } from './PtyDiskLogger.js';
 import type {
@@ -388,7 +389,7 @@ export function execEditWorktreeFile(run: ResolverRun, input: EditWorktreeFileIn
   // moment of transition is possible: an agent's final turn writes the file
   // while the Resolver also tries to edit it. Yield to any active lock —
   // the operator can re-dispatch once the lock is released.
-  const activeLocks = queries.getActiveLocksForFile(resolved.absolute);
+  const activeLocks = queries.getActiveLocksForFile(normalizeLockPath(resolved.absolute));
   if (activeLocks.length > 0) {
     const lock = activeLocks[0];
     return failAction(
