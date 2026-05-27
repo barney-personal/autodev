@@ -21,12 +21,14 @@ export class AgentLogTailer {
    * @param onLine    Called for each new, non-skipped line with (rawLine, seqNumber).
    * @param isReady   Guard called before reading; if false the read is deferred to next tick.
    *                  Defaults to always-ready. Pass `isDbInitialized` from database.ts.
+   * @param onError   Called for unexpected log-read errors; missing files are ignored.
    */
   constructor(
     private logPath: string,
     private skipLines: number,
     private onLine: (raw: string, seq: number) => void,
     private isReady: () => boolean = () => true,
+    private onError: (err: unknown) => void = (err) => console.warn('AgentLogTailer read error:', err),
   ) {
     this.seq = skipLines;
     this.readAndFlush();
@@ -64,7 +66,8 @@ export class AgentLogTailer {
       } finally {
         fs.closeSync(fd);
       }
-    } catch {
+    } catch (err) {
+      this.onError(err);
       return;
     }
     this.filePos += bytesRead;

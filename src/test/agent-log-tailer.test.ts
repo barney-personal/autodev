@@ -16,6 +16,7 @@ describe('AgentLogTailer', () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -120,6 +121,17 @@ describe('AgentLogTailer', () => {
 
     tailer.stop();
     expect(received).toEqual(['first', 'second']);
+  });
+
+  it('reports unexpected read errors through the error callback', () => {
+    const dirLogPath = path.join(tmpDir, 'log-dir');
+    fs.mkdirSync(dirLogPath);
+
+    const onError = vi.fn();
+    const tailer = new AgentLogTailer(dirLogPath, 0, () => {}, () => true, onError);
+
+    tailer.stop();
+    expect(onError).toHaveBeenCalledWith(expect.any(Error));
   });
 });
 

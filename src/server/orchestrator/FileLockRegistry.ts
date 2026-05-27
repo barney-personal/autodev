@@ -47,7 +47,8 @@ export function normalizeCheckoutLockPath(p: string): string {
  * True iff `candidate` is the same path as `base` or strictly nested under it.
  * Uses path.relative to compute containment, so sibling-prefix paths like
  * `/repo/src2` are correctly NOT considered within `/repo/src`. Both inputs
- * are normalized first; callers may pass raw or normalized paths.
+ * must be absolute paths; callers may pass raw or already-normalized absolute
+ * paths.
  */
 export function isPathWithin(base: string, candidate: string): boolean {
   const nBase = stripTrailingSep(path.normalize(base));

@@ -329,6 +329,7 @@ export function startTailing(
       }
     },
     isDbInitialized,
+    (err) => agentLogger(agentId).warn({ err }, 'readNewContent error'),
   );
   _tailers.set(agentId, tailer);
 
@@ -850,4 +851,3 @@ function handleAgentExit(agentId: string, job: Job, exitCode: number | null): vo
     captureWithContext(err, { agent_id: agentId, job_id: job.id, component: 'AgentRunner' });
   });
 }
-
