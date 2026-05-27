@@ -11,6 +11,7 @@ export class AgentLogTailer {
   private skipped = 0;
   private seq: number;
   private watcher?: fs.FSWatcher;
+  private debounce: NodeJS.Timeout | null = null;
   private interval: NodeJS.Timeout;
   private stopped = false;
 
@@ -31,10 +32,9 @@ export class AgentLogTailer {
     this.readAndFlush();
 
     try {
-      let debounce: NodeJS.Timeout | null = null;
       this.watcher = fs.watch(logPath, { persistent: false }, () => {
-        if (debounce) clearTimeout(debounce);
-        debounce = setTimeout(() => this.readAndFlush(), 50);
+        if (this.debounce) clearTimeout(this.debounce);
+        this.debounce = setTimeout(() => this.readAndFlush(), 50);
       });
     } catch { /* log file may not exist yet; the interval will catch up */ }
 
@@ -87,6 +87,10 @@ export class AgentLogTailer {
   stop(): void {
     if (this.stopped) return;
     this.stopped = true;
+    if (this.debounce) {
+      clearTimeout(this.debounce);
+      this.debounce = null;
+    }
     this.watcher?.close();
     clearInterval(this.interval);
   }
