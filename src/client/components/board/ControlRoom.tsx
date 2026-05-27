@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { Workflow, Job, AgentWithJob, VerifyRun, WorkflowPhase, WorkflowStatus } from '@shared/types';
+import type { Workflow, Job, AgentWithJob, VerifyRun, WorkflowStatus } from '@shared/types';
 import { type LaneTone } from './lanes';
 import { fmtDur, fmtRel, fmtCost } from './format';
 import { ResolverPanel } from '../ResolverPanel';
@@ -9,6 +9,7 @@ import { MilestonesTab } from './MilestonesTab';
 import { ActivityTab } from './ActivityTab';
 import { DiffTab } from './DiffTab';
 import { SidePanel } from './SidePanel';
+import { formatWorkflowPhase } from './phases';
 
 interface WorkflowDetail extends Workflow {
   plan: string | null;
@@ -34,14 +35,6 @@ function useNowTick(enabled: boolean): number {
   return now;
 }
 
-const PHASE_LABEL: Record<WorkflowPhase, string> = {
-  idle: 'Idle',
-  assess: 'Assess',
-  review: 'Review',
-  implement: 'Implement',
-  verify: 'Verify',
-};
-
 const STATUS_BADGE_TONE: Record<WorkflowStatus, LaneTone> = {
   running: 'active',
   blocked: 'attn',
@@ -55,7 +48,7 @@ function statusLabel(w: Workflow): string {
   if (w.status === 'failed') return 'Run failed';
   if (w.status === 'complete') return w.pr_url ? 'Merged' : 'Complete';
   if (w.status === 'cancelled') return 'Cancelled';
-  if (w.status === 'running') return `Running · ${PHASE_LABEL[w.current_phase] ?? w.current_phase}`;
+  if (w.status === 'running') return `Running · ${formatWorkflowPhase(w.current_phase)}`;
   return 'Idle';
 }
 

@@ -1,13 +1,6 @@
-import type { Workflow, WorkflowPhase } from '@shared/types';
+import type { Workflow } from '@shared/types';
 import { fmtDur, fmtRel, fmtCost } from './format';
-
-const PHASE_LABEL: Record<WorkflowPhase, string> = {
-  idle: 'Idle',
-  assess: 'Assess',
-  review: 'Review',
-  implement: 'Implement',
-  verify: 'Verify',
-};
+import { formatWorkflowPhase } from './phases';
 
 export function SidePanel({ workflow, totalCost, totalDuration, lastActivityTs, onResume, onWrapUp, onCancel, acting }: {
   workflow: Workflow;
@@ -29,7 +22,7 @@ export function SidePanel({ workflow, totalCost, totalDuration, lastActivityTs, 
         <h3>Run state</h3>
         <dl className="kv">
           <dt>Phase</dt>
-          <dd><span className="pill">{PHASE_LABEL[workflow.current_phase] ?? workflow.current_phase}</span></dd>
+          <dd><span className="pill">{formatWorkflowPhase(workflow.current_phase)}</span></dd>
           <dt>Cycle</dt>
           <dd>{workflow.current_cycle} / {workflow.max_cycles}</dd>
           <dt>Elapsed</dt>

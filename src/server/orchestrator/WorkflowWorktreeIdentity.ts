@@ -18,11 +18,12 @@ export interface WorkflowWorktreeIdentity {
 }
 
 export function slugForWorkflow(title: string): string {
-  return title
+  const slug = title
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-|-$/g, '')
     .slice(0, 40);
+  return slug || 'task';
 }
 
 export function shortWorkflowId(id: string): string {
