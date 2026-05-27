@@ -31,7 +31,6 @@ export class AgentLogTailer {
     private onError: (err: unknown) => void = (err) => console.warn('AgentLogTailer read error:', err),
   ) {
     this.seq = skipLines;
-    this.readAndFlush();
 
     try {
       this.watcher = fs.watch(logPath, { persistent: false }, () => {
@@ -41,6 +40,11 @@ export class AgentLogTailer {
     } catch { /* log file may not exist yet; the interval will catch up */ }
 
     this.interval = setInterval(() => this.readAndFlush(), 2000);
+    try {
+      this.readAndFlush();
+    } catch (err) {
+      this.onError(err);
+    }
   }
 
   /** Read any new content from the log file and emit complete lines. */

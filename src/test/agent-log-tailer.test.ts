@@ -133,6 +133,22 @@ describe('AgentLogTailer', () => {
     tailer.stop();
     expect(onError).toHaveBeenCalledWith(expect.any(Error));
   });
+
+  it('reports initial onLine errors without aborting construction', () => {
+    fs.writeFileSync(logPath, 'first\n');
+
+    const onError = vi.fn();
+    const tailer = new AgentLogTailer(
+      logPath,
+      0,
+      () => { throw new Error('callback failed'); },
+      () => true,
+      onError,
+    );
+
+    expect(() => tailer.stop()).not.toThrow();
+    expect(onError).toHaveBeenCalledWith(expect.any(Error));
+  });
 });
 
 // ── AgentStreamProcessor unit tests ──────────────────────────────────────────
