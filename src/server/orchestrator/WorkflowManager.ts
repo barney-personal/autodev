@@ -207,11 +207,9 @@ function handleReviewCompleted(job: Job, workflow: Workflow, planNote: WorkflowP
       return;
     }
     updateAndEmit(workflow.id, { milestones_total: milestones.total, milestones_done: milestones.done });
-    if (planNote?.value) {
-      const fixLines = planNote.value.split('\n').filter(line => /^- \[ \] \*\*Fix/.test(line));
-      if (fixLines.length > 0) {
-        queries.upsertNote(RecoveryKeys.reviewFeedback(workflow.id, job.workflow_cycle ?? workflow.current_cycle), fixLines.join('\n'), null);
-      }
+    const fixLines = planNote.value.split('\n').filter(line => /^- \[ \] \*\*Fix/.test(line));
+    if (fixLines.length > 0) {
+      queries.upsertNote(RecoveryKeys.reviewFeedback(workflow.id, job.workflow_cycle ?? workflow.current_cycle), fixLines.join('\n'), null);
     }
     const updated = queries.getWorkflowById(workflow.id)!;
     if (milestones.total > 0 && meetsCompletionThreshold(milestones, updated.completion_threshold)) {

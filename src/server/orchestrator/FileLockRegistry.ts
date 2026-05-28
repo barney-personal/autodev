@@ -158,6 +158,8 @@ class FileLockRegistry {
       }
     } else {
       // (a) Any direct lock whose normalized path equals `file`.
+      //     Full scan + re-normalize (rather than a SQL `WHERE file_path = ?` seek) so legacy
+      //     non-canonical rows written before normalize-on-store still match a canonical query.
       for (const lock of queries.getAllActiveDirectFileLocks()) {
         if (lock.agent_id === excludeAgent) continue;
         if (normalizeLockPath(lock.file_path) === file) {

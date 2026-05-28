@@ -86,6 +86,9 @@ export class AgentLogTailer {
         this.skipped++;
         continue;
       }
+      // Post-increment: callback receives the value before the increment,
+      // matching the legacy `storeOutput(agentId, seq++, ...)` semantics so
+      // existing rows in `agent_outputs.(agent_id, seq)` keep their indices.
       this.onLine(line, this.seq++);
     }
   }
