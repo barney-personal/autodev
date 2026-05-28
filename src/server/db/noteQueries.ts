@@ -137,19 +137,6 @@ export function getAllActiveDirectFileLocks(): FileLock[] {
   return rows.map((r: any) => cast<FileLock>(r));
 }
 
-// Returns all active non-checkout file locks whose path starts with dirPath + '/'.
-// Used when acquiring a checkout lock to find blocking file locks under that directory.
-export function getActiveFileLocksUnderPath(dirPath: string): FileLock[] {
-  const db = getDb();
-  const now = Date.now();
-  const rows = db.prepare(`
-    SELECT * FROM file_locks
-    WHERE file_path LIKE ? AND file_path NOT LIKE 'checkout::%'
-      AND released_at IS NULL AND expires_at > ?
-  `).all(dirPath + '/%', now);
-  return rows.map((r: any) => cast<FileLock>(r));
-}
-
 // ─── Templates ────────────────────────────────────────────────────────────────
 
 export function insertTemplate(template: Template): Template {
