@@ -35,11 +35,18 @@ export class AgentLogTailer {
     try {
       this.watcher = fs.watch(logPath, { persistent: false }, () => {
         if (this.debounce) clearTimeout(this.debounce);
-        this.debounce = setTimeout(() => this.readAndFlush(), 50);
+        this.debounce = setTimeout(() => this.safeReadAndFlush(), 50);
       });
     } catch { /* log file may not exist yet; the interval will catch up */ }
 
-    this.interval = setInterval(() => this.readAndFlush(), 2000);
+    this.interval = setInterval(() => this.safeReadAndFlush(), 2000);
+    this.safeReadAndFlush();
+  }
+
+  // Periodic-callback wrapper: any throw from readAndFlush (e.g. an onLine
+  // consumer that mishandles a malformed line) is routed to onError instead
+  // of bubbling out of a timer/watcher callback as an unhandled rejection.
+  private safeReadAndFlush(): void {
     try {
       this.readAndFlush();
     } catch (err) {

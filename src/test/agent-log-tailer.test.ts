@@ -149,6 +149,37 @@ describe('AgentLogTailer', () => {
     expect(() => tailer.stop()).not.toThrow();
     expect(onError).toHaveBeenCalledWith(expect.any(Error));
   });
+
+  it('safeReadAndFlush (interval/watcher path) routes onLine throws through onError instead of escaping the timer', () => {
+    // The constructor wires setInterval and fs.watch callbacks to this.safeReadAndFlush()
+    // so that an onLine throw becomes onError(err) rather than an unhandled exception
+    // from a timer/watcher tick. Verify the wrapper directly.
+    fs.writeFileSync(logPath, 'a\nb\n');
+
+    const onError = vi.fn();
+    const tailer = new AgentLogTailer(
+      logPath,
+      0,
+      () => { throw new Error('consumer mishandled line'); },
+      () => true,
+      onError,
+    );
+
+    // Constructor's initial flush already exercised the wrapper once.
+    const callsAfterCtor = onError.mock.calls.length;
+    expect(callsAfterCtor).toBeGreaterThanOrEqual(1);
+    onError.mockClear();
+
+    // Append more content so safeReadAndFlush has real work to do, then invoke
+    // the wrapper directly the way the timer/watcher does. It must not throw.
+    fs.appendFileSync(logPath, 'c\n');
+    expect(() => {
+      (tailer as unknown as { safeReadAndFlush: () => void }).safeReadAndFlush();
+    }).not.toThrow();
+    expect(onError).toHaveBeenCalledWith(expect.any(Error));
+
+    tailer.stop();
+  });
 });
 
 // ── AgentStreamProcessor unit tests ──────────────────────────────────────────

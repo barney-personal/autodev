@@ -329,6 +329,9 @@ class FileLockRegistry {
         for (const { lock } of this.findConflictingLocks(agentId, file)) {
           if (agentSet.has(lock.agent_id) && lock.agent_id !== agentId) {
             if (!oldest || lock.acquired_at < oldest.lock.acquired_at) {
+              // Store the raw DB `file_path` (not normalized): release() will
+              // re-normalize on the way in, so this survives legacy non-canonical
+              // rows that an upfront normalize would lose track of.
               oldest = { agentId: lock.agent_id, file: lock.file_path, lock };
             }
           }
