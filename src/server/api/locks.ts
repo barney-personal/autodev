@@ -1,7 +1,12 @@
 import { Router } from 'express';
 import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
-import { CHECKOUT_PREFIX } from '../orchestrator/FileLockRegistry.js';
+import {
+  CHECKOUT_PREFIX,
+  normalizeLockPath,
+  normalizeCheckoutLockPath,
+  isPathWithin,
+} from '../orchestrator/FileLockRegistry.js';
 
 const router = Router();
 
@@ -18,17 +23,20 @@ router.get('/check', (req, res) => {
     res.status(400).json({ error: 'agent_id and file required' });
     return;
   }
-  const activeLocks = queries.getActiveLocksForFile(file);
-  if (activeLocks.some(l => l.agent_id === agent_id)) {
+  const normFile = normalizeLockPath(file);
+  // Scan all active direct rows and compare normalized form so legacy
+  // non-canonical rows (e.g. `/repo/src/./foo.ts`) are still authoritative.
+  const directLocks = queries.getAllActiveDirectFileLocks();
+  if (directLocks.some(l => l.agent_id === agent_id && normalizeLockPath(l.file_path) === normFile)) {
     res.json({ locked: true });
     return;
   }
-  // Also accept a checkout:: lock covering this file
+  // Also accept a checkout:: lock covering this file.
   const checkoutLocks = queries.getAllActiveCheckoutLocks();
   const hasCheckout = checkoutLocks.some(l => {
     if (l.agent_id !== agent_id) return false;
-    const dir = l.file_path.slice(CHECKOUT_PREFIX.length);
-    return file.startsWith(dir + '/') || file === dir;
+    const dir = normalizeCheckoutLockPath(l.file_path).slice(CHECKOUT_PREFIX.length);
+    return isPathWithin(dir, normFile);
   });
   res.json({ locked: hasCheckout });
 });
@@ -42,12 +50,14 @@ router.get('/check-checkout', (req, res) => {
     res.status(400).json({ error: 'agent_id and dir required' });
     return;
   }
+  const normDir = normalizeLockPath(dir);
   const checkoutLocks = queries.getAllActiveCheckoutLocks();
-  // The agent must hold checkout::X where X is a prefix of (or equal to) dir
+  // The agent must hold checkout::X where X is a prefix of (or equal to) dir,
+  // OR where dir is a prefix of (or equal to) X (i.e. either side covers the other).
   const locked = checkoutLocks.some(l => {
     if (l.agent_id !== agent_id) return false;
-    const lockDir = l.file_path.slice(CHECKOUT_PREFIX.length);
-    return dir.startsWith(lockDir + '/') || dir === lockDir || lockDir.startsWith(dir + '/') || lockDir === dir;
+    const lockDir = normalizeCheckoutLockPath(l.file_path).slice(CHECKOUT_PREFIX.length);
+    return isPathWithin(lockDir, normDir) || isPathWithin(normDir, lockDir);
   });
   res.json({ locked });
 });

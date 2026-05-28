@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import * as path from 'path';
 import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
 import { logResilienceEvent } from './ResilienceLogger.js';
@@ -8,40 +9,59 @@ import type { FileLock } from '../../shared/types.js';
 // e.g. "checkout::/home/user/project" locks the entire git working tree at that path.
 export const CHECKOUT_PREFIX = 'checkout::';
 
-function isCheckoutLock(path: string): boolean {
-  return path.startsWith(CHECKOUT_PREFIX);
+export function isCheckoutLock(p: string): boolean {
+  return p.startsWith(CHECKOUT_PREFIX);
 }
 
-function checkoutPath(lockPath: string): string {
+function stripTrailingSep(p: string): string {
+  return p.length > 1 && p.endsWith(path.sep) ? p.slice(0, -1) : p;
+}
+
+/**
+ * Normalize a non-checkout file lock path. Returns an absolute POSIX-normalized
+ * path with no trailing separator and with `.`/`..` segments collapsed. Relative
+ * paths are resolved against the current working directory — this matches what
+ * scripts/check-lock-hook.mjs does before calling /api/locks/check so stored vs.
+ * query keys stay consistent.
+ *
+ * If the input already carries the `checkout::` prefix, it is delegated to
+ * normalizeCheckoutLockPath so callers can normalize either kind safely.
+ */
+export function normalizeLockPath(p: string): string {
+  if (isCheckoutLock(p)) return normalizeCheckoutLockPath(p);
+  const absolute = path.isAbsolute(p) ? p : path.resolve(p);
+  return stripTrailingSep(path.normalize(absolute));
+}
+
+/**
+ * Normalize a checkout:: lock path. Accepts either `checkout::/abs/dir` or a
+ * bare directory path and always returns `checkout::<normalized-absolute-dir>`.
+ */
+export function normalizeCheckoutLockPath(p: string): string {
+  const inner = p.startsWith(CHECKOUT_PREFIX) ? p.slice(CHECKOUT_PREFIX.length) : p;
+  const absolute = path.isAbsolute(inner) ? inner : path.resolve(inner);
+  return CHECKOUT_PREFIX + stripTrailingSep(path.normalize(absolute));
+}
+
+/**
+ * True iff `candidate` is the same path as `base` or strictly nested under it.
+ * Uses path.relative to compute containment, so sibling-prefix paths like
+ * `/repo/src2` are correctly NOT considered within `/repo/src`. Both inputs
+ * must be absolute paths; callers may pass raw or already-normalized absolute
+ * paths.
+ */
+export function isPathWithin(base: string, candidate: string): boolean {
+  const nBase = stripTrailingSep(path.normalize(base));
+  const nCand = stripTrailingSep(path.normalize(candidate));
+  if (nBase === nCand) return true;
+  const rel = path.relative(nBase, nCand);
+  if (rel === '' || rel === '.') return true;
+  if (rel === '..' || rel.startsWith('..' + path.sep)) return false;
+  return !path.isAbsolute(rel);
+}
+
+function checkoutDirOf(lockPath: string): string {
   return lockPath.slice(CHECKOUT_PREFIX.length);
-}
-
-/**
- * Given a normal file path, return all active checkout:: locks held by OTHER
- * agents that cover this file (i.e. the file is under their checkout directory).
- */
-function getConflictingCheckoutLocks(agentId: string, filePath: string): Array<{ lock: FileLock; file: string }> {
-  const checkoutLocks = queries.getAllActiveCheckoutLocks();
-  const conflicts: Array<{ lock: FileLock; file: string }> = [];
-  for (const lock of checkoutLocks) {
-    if (lock.agent_id === agentId) continue;
-    const dir = checkoutPath(lock.file_path);
-    if (filePath.startsWith(dir + '/') || filePath === dir) {
-      conflicts.push({ lock, file: filePath });
-    }
-  }
-  return conflicts;
-}
-
-/**
- * Given a checkout lock path (e.g. "checkout::/path"), return all active
- * file locks held by OTHER agents for files under that directory.
- */
-function getConflictingFileLocksUnderCheckout(agentId: string, dir: string): Array<{ lock: FileLock; file: string }> {
-  const fileLocks = queries.getActiveFileLocksUnderPath(dir);
-  return fileLocks
-    .filter(lock => lock.agent_id !== agentId)
-    .map(lock => ({ lock, file: lock.file_path }));
 }
 
 export interface AcquireResult {
@@ -51,6 +71,8 @@ export interface AcquireResult {
   timed_out?: boolean;
   deadlock_detected?: boolean;
 }
+
+type BlockedEntry = AcquireResult['blocked'][number];
 
 // Max sleep per waitForRelease cycle — short so missed notifications don't
 // cause multi-minute stalls. We rely on the deadline check in acquire() to
@@ -73,7 +95,8 @@ class FileLockRegistry {
   private waiters = new Set<() => void>();
 
   // Tracks which files each agent is currently blocked waiting to acquire.
-  // Used for deadlock (cycle) detection in the wait-for graph.
+  // Used for deadlock (cycle) detection in the wait-for graph. Stored values
+  // are always normalized via normalizeLockPath.
   private waitingFor = new Map<string, string[]>();
 
   // Counter for automatic deadlock resolutions (observable via getDeadlockResolutionCount).
@@ -87,48 +110,112 @@ class FileLockRegistry {
     setInterval(() => this.notifyWaiters(), 2_000).unref();
   }
 
+  private toBlocked(file: string, lock: FileLock): BlockedEntry {
+    const holder = queries.getAgentById(lock.agent_id);
+    return {
+      file,
+      held_by: lock.agent_id,
+      expires_at: lock.expires_at,
+      held_by_status: holder?.status_message ?? null,
+      lock_reason: lock.reason ?? null,
+    };
+  }
+
+  /**
+   * Single source of truth for "who else is currently blocking `file`?"
+   * Used by tryAcquireOnce, buildBlockedList, holdersOf, and the deadlock
+   * oldest-lock selector so direct and checkout conflicts cannot drift.
+   *
+   * `file` must already be normalized via normalizeLockPath.
+   * Returns raw conflicting lock rows; callers map to BlockedEntry as needed.
+   *
+   * Compatibility note: pre-normalization rows may live in the DB with
+   * non-canonical paths (e.g. `/repo/src/./foo.ts`, `/repo/src/foo.ts/`).
+   * We therefore never trust an exact `file_path = ?` match alone — direct
+   * row sweeps always re-normalize each row before deciding equivalence.
+   */
+  private findConflictingLocks(excludeAgent: string, file: string): Array<{ file: string; lock: FileLock }> {
+    const conflicts: Array<{ file: string; lock: FileLock }> = [];
+
+    if (isCheckoutLock(file)) {
+      const dir = checkoutDirOf(file);
+      // (a) Any checkout lock whose normalized path equals `file`.
+      for (const lock of queries.getAllActiveCheckoutLocks()) {
+        if (lock.agent_id === excludeAgent) continue;
+        if (normalizeCheckoutLockPath(lock.file_path) === file) {
+          conflicts.push({ file, lock });
+        }
+      }
+      // (b) Any direct file lock under the checkout directory (or exactly at it).
+      //     Scans ALL active direct locks rather than the LIKE-pattern helper so
+      //     legacy non-canonical rows and direct locks equal to `dir` are caught.
+      for (const lock of queries.getAllActiveDirectFileLocks()) {
+        if (lock.agent_id === excludeAgent) continue;
+        const lockedPath = normalizeLockPath(lock.file_path);
+        if (isPathWithin(dir, lockedPath)) {
+          conflicts.push({ file: lockedPath, lock });
+        }
+      }
+    } else {
+      // (a) Any direct lock whose normalized path equals `file`.
+      //     Full scan + re-normalize (rather than a SQL `WHERE file_path = ?` seek) so legacy
+      //     non-canonical rows written before normalize-on-store still match a canonical query.
+      for (const lock of queries.getAllActiveDirectFileLocks()) {
+        if (lock.agent_id === excludeAgent) continue;
+        if (normalizeLockPath(lock.file_path) === file) {
+          conflicts.push({ file, lock });
+        }
+      }
+      // (b) Any checkout:: lock by another agent that covers this file.
+      for (const lock of queries.getAllActiveCheckoutLocks()) {
+        if (lock.agent_id === excludeAgent) continue;
+        const dir = checkoutDirOf(normalizeCheckoutLockPath(lock.file_path));
+        if (isPathWithin(dir, file)) conflicts.push({ file, lock });
+      }
+    }
+
+    return conflicts;
+  }
+
+  /**
+   * Find all active rows whose normalized path equals `file` (which must
+   * already be normalized). Used by release() so that callers can release
+   * legacy non-canonical rows by passing a normalized path.
+   */
+  private findOwnedLocksMatching(agentId: string, file: string): FileLock[] {
+    const matches: FileLock[] = [];
+    if (isCheckoutLock(file)) {
+      for (const lock of queries.getAllActiveCheckoutLocks()) {
+        if (lock.agent_id !== agentId) continue;
+        if (normalizeCheckoutLockPath(lock.file_path) === file) matches.push(lock);
+      }
+    } else {
+      for (const lock of queries.getAllActiveDirectFileLocks()) {
+        if (lock.agent_id !== agentId) continue;
+        if (normalizeLockPath(lock.file_path) === file) matches.push(lock);
+      }
+    }
+    return matches;
+  }
+
   // Attempt a single non-blocking acquire. Returns null if any file is blocked.
+  // `files` must already be normalized via normalizeLockPath.
   private tryAcquireOnce(
     agentId: string,
     files: string[],
     reason: string | null,
     ttlMs: number,
   ): AcquireResult | null {
-    const blocked: AcquireResult['blocked'] = [];
+    const blocked: BlockedEntry[] = [];
     for (const file of files) {
-      if (isCheckoutLock(file)) {
-        // Checkout lock: blocked by (a) another checkout lock on same path,
-        // and (b) any file lock held by another agent under the checkout directory.
-        const dir = checkoutPath(file);
-        for (const lock of queries.getActiveLocksForFile(file)) {
-          if (lock.agent_id !== agentId) {
-            const holder = queries.getAgentById(lock.agent_id);
-            blocked.push({ file, held_by: lock.agent_id, expires_at: lock.expires_at, held_by_status: holder?.status_message ?? null, lock_reason: lock.reason ?? null });
-          }
-        }
-        for (const { lock } of getConflictingFileLocksUnderCheckout(agentId, dir)) {
-          const holder = queries.getAgentById(lock.agent_id);
-          blocked.push({ file: lock.file_path, held_by: lock.agent_id, expires_at: lock.expires_at, held_by_status: holder?.status_message ?? null, lock_reason: lock.reason ?? null });
-        }
-      } else {
-        // Normal file lock: blocked by (a) direct lock on this file, and
-        // (b) any checkout:: lock by another agent that covers this file.
-        for (const lock of queries.getActiveLocksForFile(file)) {
-          if (lock.agent_id !== agentId) {
-            const holder = queries.getAgentById(lock.agent_id);
-            blocked.push({ file, held_by: lock.agent_id, expires_at: lock.expires_at, held_by_status: holder?.status_message ?? null, lock_reason: lock.reason ?? null });
-          }
-        }
-        for (const { lock } of getConflictingCheckoutLocks(agentId, file)) {
-          const holder = queries.getAgentById(lock.agent_id);
-          blocked.push({ file, held_by: lock.agent_id, expires_at: lock.expires_at, held_by_status: holder?.status_message ?? null, lock_reason: lock.reason ?? null });
-        }
+      for (const { file: conflictFile, lock } of this.findConflictingLocks(agentId, file)) {
+        blocked.push(this.toBlocked(conflictFile, lock));
       }
     }
 
     if (blocked.length > 0) return null;
 
-    // All clear — insert all locks atomically
+    // All clear — insert all locks atomically.
     const now = Date.now();
     const acquired: string[] = [];
     for (const file of files) {
@@ -151,58 +238,27 @@ class FileLockRegistry {
 
   /**
    * Build the blocked-by list for the given agent and files (used in failure results).
+   * `files` must already be normalized.
    */
-  private buildBlockedList(agentId: string, files: string[]): AcquireResult['blocked'] {
-    const blocked: AcquireResult['blocked'] = [];
+  private buildBlockedList(agentId: string, files: string[]): BlockedEntry[] {
+    const blocked: BlockedEntry[] = [];
     for (const file of files) {
-      if (isCheckoutLock(file)) {
-        const dir = checkoutPath(file);
-        for (const lock of queries.getActiveLocksForFile(file)) {
-          if (lock.agent_id !== agentId) {
-            const holder = queries.getAgentById(lock.agent_id);
-            blocked.push({ file, held_by: lock.agent_id, expires_at: lock.expires_at, held_by_status: holder?.status_message ?? null, lock_reason: lock.reason ?? null });
-          }
-        }
-        for (const { lock } of getConflictingFileLocksUnderCheckout(agentId, dir)) {
-          const holder = queries.getAgentById(lock.agent_id);
-          blocked.push({ file: lock.file_path, held_by: lock.agent_id, expires_at: lock.expires_at, held_by_status: holder?.status_message ?? null, lock_reason: lock.reason ?? null });
-        }
-      } else {
-        for (const lock of queries.getActiveLocksForFile(file)) {
-          if (lock.agent_id !== agentId) {
-            const holder = queries.getAgentById(lock.agent_id);
-            blocked.push({ file, held_by: lock.agent_id, expires_at: lock.expires_at, held_by_status: holder?.status_message ?? null, lock_reason: lock.reason ?? null });
-          }
-        }
-        for (const { lock } of getConflictingCheckoutLocks(agentId, file)) {
-          const holder = queries.getAgentById(lock.agent_id);
-          blocked.push({ file, held_by: lock.agent_id, expires_at: lock.expires_at, held_by_status: holder?.status_message ?? null, lock_reason: lock.reason ?? null });
-        }
+      for (const { file: conflictFile, lock } of this.findConflictingLocks(agentId, file)) {
+        blocked.push(this.toBlocked(conflictFile, lock));
       }
     }
     return blocked;
   }
 
   /**
-   * Return all agents (other than `excludeAgent`) that are currently blocking
-   * access to the given file path, considering both direct file locks and
-   * checkout:: locks that cover the file.
+   * Return all agents (other than `excludeAgent`) currently blocking access
+   * to `filePath` (normalized). Considers both direct file locks and checkout::
+   * locks that cover the file.
    */
   private holdersOf(filePath: string, excludeAgent: string): string[] {
     const holders = new Set<string>();
-    for (const lock of queries.getActiveLocksForFile(filePath)) {
-      if (lock.agent_id !== excludeAgent) holders.add(lock.agent_id);
-    }
-    if (!isCheckoutLock(filePath)) {
-      for (const { lock } of getConflictingCheckoutLocks(excludeAgent, filePath)) {
-        holders.add(lock.agent_id);
-      }
-    } else {
-      // For checkout locks, also include holders of file locks under the directory
-      const dir = checkoutPath(filePath);
-      for (const { lock } of getConflictingFileLocksUnderCheckout(excludeAgent, dir)) {
-        holders.add(lock.agent_id);
-      }
+    for (const { lock } of this.findConflictingLocks(excludeAgent, filePath)) {
+      holders.add(lock.agent_id);
     }
     return [...holders];
   }
@@ -224,34 +280,32 @@ class FileLockRegistry {
     if (!myFiles || myFiles.length === 0) return null;
 
     const visited = new Set<string>();
-    const path: string[] = [];
+    const dfsPath: string[] = [];
 
-    // Returns true if we can reach agentId by following wait-for edges from `current`.
     const canReachSelf = (current: string): boolean => {
       if (current === agentId) return true;
       if (visited.has(current)) return false;
       visited.add(current);
-      path.push(current);
+      dfsPath.push(current);
 
       const waiting = this.waitingFor.get(current);
-      if (!waiting) { path.pop(); return false; }
+      if (!waiting) { dfsPath.pop(); return false; }
 
       for (const file of waiting) {
         for (const holder of this.holdersOf(file, current)) {
           if (canReachSelf(holder)) return true;
         }
       }
-      path.pop();
+      dfsPath.pop();
       return false;
     };
 
-    // Start DFS from each holder of the files agentId is blocked on.
     for (const file of myFiles) {
       for (const holder of this.holdersOf(file, agentId)) {
         visited.clear();
-        path.length = 0;
+        dfsPath.length = 0;
         if (canReachSelf(holder)) {
-          return [agentId, ...path];
+          return [agentId, ...dfsPath];
         }
       }
     }
@@ -272,10 +326,13 @@ class FileLockRegistry {
       if (!waitingFiles) continue;
 
       for (const file of waitingFiles) {
-        for (const lock of queries.getActiveLocksForFile(file)) {
+        for (const { lock } of this.findConflictingLocks(agentId, file)) {
           if (agentSet.has(lock.agent_id) && lock.agent_id !== agentId) {
             if (!oldest || lock.acquired_at < oldest.lock.acquired_at) {
-              oldest = { agentId: lock.agent_id, file, lock };
+              // Store the raw DB `file_path` (not normalized): release() will
+              // re-normalize on the way in, so this survives legacy non-canonical
+              // rows that an upfront normalize would lose track of.
+              oldest = { agentId: lock.agent_id, file: lock.file_path, lock };
             }
           }
         }
@@ -294,18 +351,13 @@ class FileLockRegistry {
     const oldest = this.getOldestLockInCycle(cycleAgents);
     if (!oldest) return false;
 
-    // Dynamic import to avoid import-time dependency on McpServer (which pulls
-    // in integrations/child_process and breaks test mocks that don't include it).
     const { hasActiveTransport } = await import('../mcp/McpServer.js');
 
-    // Don't force-release if the holder is actively connected
     if (hasActiveTransport(oldest.agentId)) return false;
 
-    // Don't force-release if the holder had recent activity (<5s ago)
     const agent = queries.getAgentById(oldest.agentId);
     if (agent && Date.now() - agent.updated_at < 5_000) return false;
 
-    // Safe to force-release
     this.release(oldest.agentId, [oldest.file]);
     this.deadlockResolutions++;
 
@@ -334,14 +386,6 @@ class FileLockRegistry {
    * Blocking acquire. Waits until all requested files are free, then grabs
    * them all at once (all-or-nothing). If timeoutMs elapses before the locks
    * become available, returns { success: false, timed_out: true }.
-   *
-   * Deadlock detection: before each sleep cycle the registry checks for a cycle
-   * in the wait-for graph. If Agent A holds file1 and waits for file2 while
-   * Agent B holds file2 and waits for file1, the cycle is detected immediately.
-   * The system first tries to auto-resolve by force-releasing the oldest lock
-   * held by an idle agent. If the holder is still active, the waiting agent
-   * receives { success: false, deadlock_detected: true } so it can release its
-   * held locks and retry.
    */
   async acquire(
     agentId: string,
@@ -350,58 +394,44 @@ class FileLockRegistry {
     ttlMs: number,
     timeoutMs: number,
   ): Promise<AcquireResult> {
+    const normFiles = files.map(normalizeLockPath);
     const deadline = Date.now() + timeoutMs;
 
     try {
       while (true) {
-        const result = this.tryAcquireOnce(agentId, files, reason, ttlMs);
+        const result = this.tryAcquireOnce(agentId, normFiles, reason, ttlMs);
         if (result) return result;
 
         const remaining = deadline - Date.now();
         if (remaining <= 0) {
-          // Re-check one more time — a release may have just happened
-          const last = this.tryAcquireOnce(agentId, files, reason, ttlMs);
+          const last = this.tryAcquireOnce(agentId, normFiles, reason, ttlMs);
           if (last) return last;
 
-          return { success: false, acquired: [], blocked: this.buildBlockedList(agentId, files), timed_out: true };
+          return { success: false, acquired: [], blocked: this.buildBlockedList(agentId, normFiles), timed_out: true };
         }
 
-        // Register this agent as waiting for these files so other agents'
-        // deadlock checks can traverse through us.
-        this.waitingFor.set(agentId, files);
+        this.waitingFor.set(agentId, normFiles);
 
-        // Check for a cycle in the wait-for graph. If detected, try to auto-
-        // resolve by force-releasing the oldest lock held by an idle agent.
-        // If the holder is still active, fall back to returning deadlock_detected
-        // so this agent can release its held locks and retry.
         const cycle = this.detectDeadlock(agentId);
         if (cycle) {
           try {
             if (await this.tryAutoResolveDeadlock(cycle)) {
-              // Lock was released — retry acquire on next iteration
               continue;
             }
           } catch (err) {
             console.error(`[file-lock] tryAutoResolveDeadlock failed:`, err);
-            // Fall through to deadlock_detected — don't let internal errors
-            // propagate as unhandled exceptions from acquire().
           }
           return {
             success: false,
             acquired: [],
-            blocked: this.buildBlockedList(agentId, files),
+            blocked: this.buildBlockedList(agentId, normFiles),
             deadlock_detected: true,
           };
         }
 
-        // Wait for any release event (or at most MAX_WAIT_CYCLE_MS, whichever comes
-        // first). The short cap means a missed notifyWaiters() causes at most a
-        // 5-second delay rather than a multi-minute stall.
         await this.waitForRelease(Math.min(remaining, MAX_WAIT_CYCLE_MS));
       }
     } finally {
-      // Always clean up our wait-for registration, whether we succeeded,
-      // timed out, or detected a deadlock.
       this.waitingFor.delete(agentId);
     }
   }
@@ -431,19 +461,17 @@ class FileLockRegistry {
   }
 
   private notifyWaiters(): void {
-    // Wake all waiters so each re-checks; they will re-sleep if still blocked.
     for (const wake of this.waiters) wake();
   }
 
   release(agentId: string, files: string[]): string[] {
     const released: string[] = [];
-    for (const file of files) {
-      for (const lock of queries.getActiveLocksForFile(file)) {
-        if (lock.agent_id === agentId) {
-          queries.releaseLock(lock.id);
-          socket.emitLockReleased(lock.id, lock.file_path);
-          released.push(file);
-        }
+    for (const rawFile of files) {
+      const file = normalizeLockPath(rawFile);
+      for (const lock of this.findOwnedLocksMatching(agentId, file)) {
+        queries.releaseLock(lock.id);
+        socket.emitLockReleased(lock.id, lock.file_path);
+        released.push(file);
       }
     }
     if (released.length > 0) this.notifyWaiters();
@@ -453,7 +481,6 @@ class FileLockRegistry {
   releaseAll(agentId: string): void {
     // Use getAllUnreleasedLocksForAgent (no TTL filter) so that locks whose TTL
     // has already expired still get released and emit lock:released events.
-    // Without this, expired locks accumulate in the UI forever.
     const locks = queries.getAllUnreleasedLocksForAgent(agentId);
     for (const lock of locks) {
       queries.releaseLock(lock.id);

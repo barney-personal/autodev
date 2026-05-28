@@ -152,20 +152,7 @@ export function validateTaskRequest(req: CreateTaskRequest): string | null {
  * WorkQueueManager.  Only valid when `resolveTaskConfig(req).routesTo === 'job'`.
  */
 export function taskToJobRequest(req: CreateTaskRequest, config?: ResolvedTaskConfig): CreateJobRequest {
-  const canonical = resolveTaskConfig(req);
-  if (config) {
-    // Reject any supplied config that disagrees with canonical on ANY normalized field.
-    // This prevents stale same-route configs from being silently accepted.
-    const mismatches: string[] = [];
-    if (config.routesTo !== canonical.routesTo) mismatches.push(`routesTo: supplied '${config.routesTo}' vs canonical '${canonical.routesTo}'`);
-    if (config.preset !== canonical.preset) mismatches.push(`preset: supplied '${config.preset}' vs canonical '${canonical.preset}'`);
-    if (config.review !== canonical.review) mismatches.push(`review: supplied ${config.review} vs canonical ${canonical.review}`);
-    if (config.iterations !== canonical.iterations) mismatches.push(`iterations: supplied ${config.iterations} vs canonical ${canonical.iterations}`);
-    if (config.useWorktree !== canonical.useWorktree) mismatches.push(`useWorktree: supplied ${config.useWorktree} vs canonical ${canonical.useWorktree}`);
-    if (mismatches.length > 0) {
-      throw new Error(`Supplied config does not match the request's resolved configuration: ${mismatches.join('; ')}`);
-    }
-  }
+  const canonical = assertConfigFresh(req, config);
   if (canonical.routesTo !== 'job') {
     throw new Error('Cannot convert autonomous task (iterations > 1) to a job request');
   }
@@ -212,20 +199,7 @@ export function taskToJobRequest(req: CreateTaskRequest, config?: ResolvedTaskCo
  * AutonomousAgentRunManager.  Only valid when `resolveTaskConfig(req).routesTo === 'workflow'`.
  */
 export function taskToWorkflowRequest(req: CreateTaskRequest, config?: ResolvedTaskConfig): CreateWorkflowRequest {
-  const canonical = resolveTaskConfig(req);
-  if (config) {
-    // Reject any supplied config that disagrees with canonical on ANY normalized field.
-    // This prevents stale same-route configs from being silently accepted.
-    const mismatches: string[] = [];
-    if (config.routesTo !== canonical.routesTo) mismatches.push(`routesTo: supplied '${config.routesTo}' vs canonical '${canonical.routesTo}'`);
-    if (config.preset !== canonical.preset) mismatches.push(`preset: supplied '${config.preset}' vs canonical '${canonical.preset}'`);
-    if (config.review !== canonical.review) mismatches.push(`review: supplied ${config.review} vs canonical ${canonical.review}`);
-    if (config.iterations !== canonical.iterations) mismatches.push(`iterations: supplied ${config.iterations} vs canonical ${canonical.iterations}`);
-    if (config.useWorktree !== canonical.useWorktree) mismatches.push(`useWorktree: supplied ${config.useWorktree} vs canonical ${canonical.useWorktree}`);
-    if (mismatches.length > 0) {
-      throw new Error(`Supplied config does not match the request's resolved configuration: ${mismatches.join('; ')}`);
-    }
-  }
+  const canonical = assertConfigFresh(req, config);
   if (canonical.routesTo !== 'workflow') {
     throw new Error('Cannot convert single-pass task (iterations = 1) to a workflow request');
   }
@@ -327,6 +301,27 @@ export function taskToWorkflowRequest(req: CreateTaskRequest, config?: ResolvedT
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
+
+/**
+ * Resolve the canonical config for `req` and, if a `supplied` config was
+ * provided, reject it when any normalized field disagrees with canonical.
+ * Centralizes the stale-config check shared by taskToJobRequest /
+ * taskToWorkflowRequest so the two conversion paths cannot drift.
+ */
+function assertConfigFresh(req: CreateTaskRequest, supplied?: ResolvedTaskConfig): ResolvedTaskConfig {
+  const canonical = resolveTaskConfig(req);
+  if (!supplied) return canonical;
+  const mismatches: string[] = [];
+  if (supplied.routesTo !== canonical.routesTo) mismatches.push(`routesTo: supplied '${supplied.routesTo}' vs canonical '${canonical.routesTo}'`);
+  if (supplied.preset !== canonical.preset) mismatches.push(`preset: supplied '${supplied.preset}' vs canonical '${canonical.preset}'`);
+  if (supplied.review !== canonical.review) mismatches.push(`review: supplied ${supplied.review} vs canonical ${canonical.review}`);
+  if (supplied.iterations !== canonical.iterations) mismatches.push(`iterations: supplied ${supplied.iterations} vs canonical ${canonical.iterations}`);
+  if (supplied.useWorktree !== canonical.useWorktree) mismatches.push(`useWorktree: supplied ${supplied.useWorktree} vs canonical ${canonical.useWorktree}`);
+  if (mismatches.length > 0) {
+    throw new Error(`Supplied config does not match the request's resolved configuration: ${mismatches.join('; ')}`);
+  }
+  return canonical;
+}
 
 function clampIterations(n: number): number {
   return Math.min(Math.max(Math.round(n), 1), 50);

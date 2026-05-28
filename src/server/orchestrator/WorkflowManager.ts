@@ -28,6 +28,7 @@ import { validateGitWorkDir as _validateGitWorkDir } from '../shared/workDirVali
 // ─── Sub-module imports ────────────────────────────────────────────────────
 import { parseMilestones, meetsCompletionThreshold, recoverPlanFromAgentOutput } from './WorkflowMilestoneParser.js';
 import { ensureWorktreeBranch, verifyWorktreeHealth, createWorkflowWorktree, restoreWorkflowWorktree } from './WorkflowWorktreeManager.js';
+import { getWorkflowWorktreeIdentity } from './WorkflowWorktreeIdentity.js';
 import { pushAndCreatePr as _pushAndCreatePr, finalizeWorkflow as _finalizeWorkflow, reconcileBlockedPRs as _reconcileBlockedPRs } from './WorkflowPRCreator.js';
 import { diagnoseWriteNoteInOutput, formatWriteNoteDiagnostic, writeBlockedDiagnostic } from './WorkflowBlockedDiagnostics.js';
 import { decideRouteForCycle, getRoutingBrainMode } from './RoutingBrain.js';
@@ -110,91 +111,17 @@ function _onJobCompleted(job: Job): void {
     return;
   }
 
-  let planNote = queries.getNote(RecoveryKeys.plan(workflow.id));
-  let milestones = parseMilestones(planNote?.value ?? '');
+  const planNote = queries.getNote(RecoveryKeys.plan(workflow.id));
+  const milestones = parseMilestones(planNote?.value ?? '');
 
   switch (job.workflow_phase) {
     case 'assess': {
-      try {
-        const contractNote = queries.getNote(RecoveryKeys.contract(workflow.id));
-        let missingArtifacts = [
-          !planNote?.value ? 'plan' : null,
-          !contractNote?.value ? 'contract' : null,
-        ].filter(Boolean) as string[];
-
-        if (missingArtifacts.includes('plan')) {
-          const recovered = recoverPlanFromAgentOutput(job, workflow.id);
-          if (recovered) {
-            planNote = queries.getNote(RecoveryKeys.plan(workflow.id));
-            milestones = parseMilestones(planNote?.value ?? '');
-            missingArtifacts = missingArtifacts.filter(a => a !== 'plan');
-            console.log(`[workflow ${workflow.id}] recovered plan from agent output (${milestones.total} milestones)`);
-          }
-        }
-
-        if (missingArtifacts.length > 0) {
-          const writeNoteDiag = diagnoseWriteNoteInOutput(job);
-          const diagContext = formatWriteNoteDiagnostic(writeNoteDiag);
-          console.warn(`[workflow ${workflow.id}] assess missing ${missingArtifacts.join(', ')}: ${writeNoteDiag.status}${writeNoteDiag.status === 'called_but_failed' ? ` — ${writeNoteDiag.failureSummary}` : ''}`);
-          if (spawnRepairJob(workflow, 'assess', job.workflow_cycle ?? 0, missingArtifacts, diagContext)) return;
-          const assessReason = `Assess phase completed but missing ${missingArtifacts.join(', ')}`;
-          console.log(`[workflow ${workflow.id}] ${assessReason} — marking blocked`);
-          updateAndEmit(workflow.id, { status: 'blocked', current_phase: 'assess' as WorkflowPhase, blocked_reason: assessReason });
-          return;
-        }
-        if (milestones.total === 0) {
-          if (spawnRepairJob(workflow, 'assess', job.workflow_cycle ?? 0, ['plan'])) return;
-          const zeroReason = 'Assess phase produced a plan with no milestones';
-          console.log(`[workflow ${workflow.id}] ${zeroReason} — marking blocked`);
-          updateAndEmit(workflow.id, { status: 'blocked', current_phase: 'assess' as WorkflowPhase, blocked_reason: zeroReason });
-          return;
-        }
-        updateAndEmit(workflow.id, { milestones_total: milestones.total, milestones_done: milestones.done, current_cycle: 1 });
-        spawnPhaseJob(queries.getWorkflowById(workflow.id)!, 'review', 1);
-      } catch (err) {
-        const errorMessage = errMsg(err);
-        console.error(`[workflow ${workflow.id}] error in assess handler (cycle ${job.workflow_cycle}):`, err);
-        captureWithContext(err, { job_id: job.id, workflow_id: workflow.id, component: 'WorkflowManager' });
-        updateAndEmit(workflow.id, { status: 'blocked', current_phase: 'assess' as WorkflowPhase, blocked_reason: `Internal error in assess handler: ${errorMessage}` });
-      }
+      handleAssessCompleted(job, workflow, planNote, milestones);
       break;
     }
 
     case 'review': {
-      try {
-        if (!planNote?.value) {
-          if (spawnRepairJob(workflow, 'review', job.workflow_cycle ?? workflow.current_cycle, ['plan'])) return;
-          const reviewReason = 'Review phase completed but plan note was deleted or empty';
-          console.log(`[workflow ${workflow.id}] ${reviewReason} — marking blocked`);
-          updateAndEmit(workflow.id, { status: 'blocked', current_phase: 'review' as WorkflowPhase, blocked_reason: reviewReason });
-          return;
-        }
-        updateAndEmit(workflow.id, { milestones_total: milestones.total, milestones_done: milestones.done });
-        if (planNote?.value) {
-          const fixLines = planNote.value.split('\n').filter(line => /^- \[ \] \*\*Fix/.test(line));
-          if (fixLines.length > 0) {
-            queries.upsertNote(RecoveryKeys.reviewFeedback(workflow.id, job.workflow_cycle ?? workflow.current_cycle), fixLines.join('\n'), null);
-          }
-        }
-        const updated = queries.getWorkflowById(workflow.id)!;
-        if (milestones.total > 0 && meetsCompletionThreshold(milestones, updated.completion_threshold)) {
-          if (updated.start_command) {
-            console.log(`[workflow ${workflow.id}] milestones meet completion threshold after review — spawning verify agent before finalization`);
-            spawnPhaseJob(updated, 'verify', updated.current_cycle);
-          } else {
-            console.log(`[workflow ${workflow.id}] milestones meet completion threshold (${milestones.done}/${milestones.total}, threshold ${updated.completion_threshold}) after review — marking complete`);
-            updateAndEmit(workflow.id, { status: 'complete', current_phase: 'idle' as WorkflowPhase });
-            finalizeWorkflow(queries.getWorkflowById(workflow.id)!).catch(err => console.error(`[workflow ${workflow.id}] finalizeWorkflow error:`, err));
-          }
-        } else {
-          void spawnImplementWithRouting(updated, updated.current_cycle);
-        }
-      } catch (err) {
-        const errorMessage = errMsg(err);
-        console.error(`[workflow ${workflow.id}] error in review handler (cycle ${job.workflow_cycle}):`, err);
-        captureWithContext(err, { job_id: job.id, workflow_id: workflow.id, component: 'WorkflowManager' });
-        updateAndEmit(workflow.id, { status: 'blocked', current_phase: 'review' as WorkflowPhase, blocked_reason: `Internal error in review handler: ${errorMessage}` });
-      }
+      handleReviewCompleted(job, workflow, planNote, milestones);
       break;
     }
 
@@ -211,66 +138,155 @@ function _onJobCompleted(job: Job): void {
     }
 
     case 'verify': {
-      try {
-        const cycle = job.workflow_cycle ?? workflow.current_cycle;
-        const resultNote = queries.getNote(RecoveryKeys.verifyResult(workflow.id, cycle));
-        const resultContent = resultNote?.value ?? '';
-        // Match "## Verify Result: PASS" on its own line (not "PASS | FAIL" template text)
-        const passed = /^## Verify Result:\s*PASS\s*$/mi.test(resultContent);
-
-        // Persist verify run record for dashboard
-        const previousRuns = queries.getVerifyRunsForCycle(workflow.id, cycle);
-        const attempt = previousRuns.length + 1;
-        queries.insertVerifyRun({
-          id: randomUUID(),
-          workflow_id: workflow.id,
-          cycle,
-          attempt,
-          command: 'verify-agent',
-          exit_code: passed ? 0 : 1,
-          stdout: resultContent || null,
-          stderr: null,
-          duration_ms: null,
-          created_at: Date.now(),
-        });
-
-        if (passed) {
-          console.log(`[workflow ${workflow.id}] verify agent PASSED (cycle ${cycle}, attempt ${attempt}) — finalizing workflow`);
-          queries.deleteNote(RecoveryKeys.verifyFailure(workflow.id, cycle));
-          updateAndEmit(workflow.id, { status: 'complete', current_phase: 'idle' as WorkflowPhase });
-          finalizeWorkflow(queries.getWorkflowById(workflow.id)!).catch(err => console.error(`[workflow ${workflow.id}] finalizeWorkflow error:`, err));
-        } else {
-          const maxRetries = workflow.max_verify_retries;
-          console.log(`[workflow ${workflow.id}] verify agent FAILED (cycle ${cycle}, attempt ${attempt}) — ${attempt}/${maxRetries + 1} failures`);
-
-          // Persist failure note for the next implement prompt
-          queries.upsertNote(RecoveryKeys.verifyFailure(workflow.id, cycle), resultContent, null);
-
-          if (attempt <= maxRetries) {
-            console.log(`[workflow ${workflow.id}] verify failure ${attempt}/${maxRetries} — re-spawning implement for cycle ${cycle} (verify retry)`);
-            spawnPhaseJob(queries.getWorkflowById(workflow.id)!, 'implement', cycle);
-          } else {
-            const summary = resultContent.slice(0, 300) || '(no result note)';
-            const verifyFailReason = `verify_failed: Verify agent failed ${attempt} time(s) on cycle ${cycle}: ${summary}`;
-            console.log(`[workflow ${workflow.id}] ${verifyFailReason} — marking blocked`);
-            updateAndEmit(workflow.id, {
-              status: 'blocked',
-              current_phase: 'verify' as WorkflowPhase,
-              blocked_reason: verifyFailReason,
-            });
-          }
-        }
-      } catch (err) {
-        const errorMessage = errMsg(err);
-        console.error(`[workflow ${workflow.id}] error in verify handler (cycle ${job.workflow_cycle}):`, err);
-        captureWithContext(err, { job_id: job.id, workflow_id: workflow.id, component: 'WorkflowManager' });
-        updateAndEmit(workflow.id, { status: 'blocked', current_phase: 'verify' as WorkflowPhase, blocked_reason: `Internal error in verify handler: ${errorMessage}` });
-      }
+      handleVerifyCompleted(job, workflow);
       break;
     }
 
     default:
       console.warn(`[workflow ${workflow.id}] unknown phase '${job.workflow_phase}' on job ${job.id}`);
+  }
+}
+
+type WorkflowPlanNote = ReturnType<typeof queries.getNote>;
+type WorkflowMilestoneCounts = { total: number; done: number };
+
+function handleAssessCompleted(job: Job, workflow: Workflow, planNote: WorkflowPlanNote, milestones: WorkflowMilestoneCounts): void {
+  try {
+    const contractNote = queries.getNote(RecoveryKeys.contract(workflow.id));
+    let currentPlanNote = planNote;
+    let currentMilestones = milestones;
+    let missingArtifacts = [
+      !currentPlanNote?.value ? 'plan' : null,
+      !contractNote?.value ? 'contract' : null,
+    ].filter(Boolean) as string[];
+
+    if (missingArtifacts.includes('plan')) {
+      const recovered = recoverPlanFromAgentOutput(job, workflow.id);
+      if (recovered) {
+        currentPlanNote = queries.getNote(RecoveryKeys.plan(workflow.id));
+        currentMilestones = parseMilestones(currentPlanNote?.value ?? '');
+        missingArtifacts = missingArtifacts.filter(a => a !== 'plan');
+        console.log(`[workflow ${workflow.id}] recovered plan from agent output (${currentMilestones.total} milestones)`);
+      }
+    }
+
+    if (missingArtifacts.length > 0) {
+      const writeNoteDiag = diagnoseWriteNoteInOutput(job);
+      const diagContext = formatWriteNoteDiagnostic(writeNoteDiag);
+      console.warn(`[workflow ${workflow.id}] assess missing ${missingArtifacts.join(', ')}: ${writeNoteDiag.status}${writeNoteDiag.status === 'called_but_failed' ? ` — ${writeNoteDiag.failureSummary}` : ''}`);
+      if (spawnRepairJob(workflow, 'assess', job.workflow_cycle ?? 0, missingArtifacts, diagContext)) return;
+      const assessReason = `Assess phase completed but missing ${missingArtifacts.join(', ')}`;
+      console.log(`[workflow ${workflow.id}] ${assessReason} — marking blocked`);
+      updateAndEmit(workflow.id, { status: 'blocked', current_phase: 'assess' as WorkflowPhase, blocked_reason: assessReason });
+      return;
+    }
+    if (currentMilestones.total === 0) {
+      if (spawnRepairJob(workflow, 'assess', job.workflow_cycle ?? 0, ['plan'])) return;
+      const zeroReason = 'Assess phase produced a plan with no milestones';
+      console.log(`[workflow ${workflow.id}] ${zeroReason} — marking blocked`);
+      updateAndEmit(workflow.id, { status: 'blocked', current_phase: 'assess' as WorkflowPhase, blocked_reason: zeroReason });
+      return;
+    }
+    updateAndEmit(workflow.id, { milestones_total: currentMilestones.total, milestones_done: currentMilestones.done, current_cycle: 1 });
+    spawnPhaseJob(queries.getWorkflowById(workflow.id)!, 'review', 1);
+  } catch (err) {
+    const errorMessage = errMsg(err);
+    console.error(`[workflow ${workflow.id}] error in assess handler (cycle ${job.workflow_cycle}):`, err);
+    captureWithContext(err, { job_id: job.id, workflow_id: workflow.id, component: 'WorkflowManager' });
+    updateAndEmit(workflow.id, { status: 'blocked', current_phase: 'assess' as WorkflowPhase, blocked_reason: `Internal error in assess handler: ${errorMessage}` });
+  }
+}
+
+function handleReviewCompleted(job: Job, workflow: Workflow, planNote: WorkflowPlanNote, milestones: WorkflowMilestoneCounts): void {
+  try {
+    if (!planNote?.value) {
+      if (spawnRepairJob(workflow, 'review', job.workflow_cycle ?? workflow.current_cycle, ['plan'])) return;
+      const reviewReason = 'Review phase completed but plan note was deleted or empty';
+      console.log(`[workflow ${workflow.id}] ${reviewReason} — marking blocked`);
+      updateAndEmit(workflow.id, { status: 'blocked', current_phase: 'review' as WorkflowPhase, blocked_reason: reviewReason });
+      return;
+    }
+    updateAndEmit(workflow.id, { milestones_total: milestones.total, milestones_done: milestones.done });
+    const fixLines = planNote.value.split('\n').filter(line => /^- \[ \] \*\*Fix/.test(line));
+    if (fixLines.length > 0) {
+      queries.upsertNote(RecoveryKeys.reviewFeedback(workflow.id, job.workflow_cycle ?? workflow.current_cycle), fixLines.join('\n'), null);
+    }
+    const updated = queries.getWorkflowById(workflow.id)!;
+    if (milestones.total > 0 && meetsCompletionThreshold(milestones, updated.completion_threshold)) {
+      if (updated.start_command) {
+        console.log(`[workflow ${workflow.id}] milestones meet completion threshold after review — spawning verify agent before finalization`);
+        spawnPhaseJob(updated, 'verify', updated.current_cycle);
+      } else {
+        console.log(`[workflow ${workflow.id}] milestones meet completion threshold (${milestones.done}/${milestones.total}, threshold ${updated.completion_threshold}) after review — marking complete`);
+        updateAndEmit(workflow.id, { status: 'complete', current_phase: 'idle' as WorkflowPhase });
+        finalizeWorkflow(queries.getWorkflowById(workflow.id)!).catch(err => console.error(`[workflow ${workflow.id}] finalizeWorkflow error:`, err));
+      }
+    } else {
+      void spawnImplementWithRouting(updated, updated.current_cycle);
+    }
+  } catch (err) {
+    const errorMessage = errMsg(err);
+    console.error(`[workflow ${workflow.id}] error in review handler (cycle ${job.workflow_cycle}):`, err);
+    captureWithContext(err, { job_id: job.id, workflow_id: workflow.id, component: 'WorkflowManager' });
+    updateAndEmit(workflow.id, { status: 'blocked', current_phase: 'review' as WorkflowPhase, blocked_reason: `Internal error in review handler: ${errorMessage}` });
+  }
+}
+
+function handleVerifyCompleted(job: Job, workflow: Workflow): void {
+  try {
+    const cycle = job.workflow_cycle ?? workflow.current_cycle;
+    const resultNote = queries.getNote(RecoveryKeys.verifyResult(workflow.id, cycle));
+    const resultContent = resultNote?.value ?? '';
+    // Match "## Verify Result: PASS" on its own line (not "PASS | FAIL" template text)
+    const passed = /^## Verify Result:\s*PASS\s*$/mi.test(resultContent);
+
+    // Persist verify run record for dashboard
+    const previousRuns = queries.getVerifyRunsForCycle(workflow.id, cycle);
+    const attempt = previousRuns.length + 1;
+    queries.insertVerifyRun({
+      id: randomUUID(),
+      workflow_id: workflow.id,
+      cycle,
+      attempt,
+      command: 'verify-agent',
+      exit_code: passed ? 0 : 1,
+      stdout: resultContent || null,
+      stderr: null,
+      duration_ms: null,
+      created_at: Date.now(),
+    });
+
+    if (passed) {
+      console.log(`[workflow ${workflow.id}] verify agent PASSED (cycle ${cycle}, attempt ${attempt}) — finalizing workflow`);
+      queries.deleteNote(RecoveryKeys.verifyFailure(workflow.id, cycle));
+      updateAndEmit(workflow.id, { status: 'complete', current_phase: 'idle' as WorkflowPhase });
+      finalizeWorkflow(queries.getWorkflowById(workflow.id)!).catch(err => console.error(`[workflow ${workflow.id}] finalizeWorkflow error:`, err));
+    } else {
+      const maxRetries = workflow.max_verify_retries;
+      console.log(`[workflow ${workflow.id}] verify agent FAILED (cycle ${cycle}, attempt ${attempt}) — ${attempt}/${maxRetries + 1} failures`);
+
+      // Persist failure note for the next implement prompt
+      queries.upsertNote(RecoveryKeys.verifyFailure(workflow.id, cycle), resultContent, null);
+
+      if (attempt <= maxRetries) {
+        console.log(`[workflow ${workflow.id}] verify failure ${attempt}/${maxRetries} — re-spawning implement for cycle ${cycle} (verify retry)`);
+        spawnPhaseJob(queries.getWorkflowById(workflow.id)!, 'implement', cycle);
+      } else {
+        const summary = resultContent.slice(0, 300) || '(no result note)';
+        const verifyFailReason = `verify_failed: Verify agent failed ${attempt} time(s) on cycle ${cycle}: ${summary}`;
+        console.log(`[workflow ${workflow.id}] ${verifyFailReason} — marking blocked`);
+        updateAndEmit(workflow.id, {
+          status: 'blocked',
+          current_phase: 'verify' as WorkflowPhase,
+          blocked_reason: verifyFailReason,
+        });
+      }
+    }
+  } catch (err) {
+    const errorMessage = errMsg(err);
+    console.error(`[workflow ${workflow.id}] error in verify handler (cycle ${job.workflow_cycle}):`, err);
+    captureWithContext(err, { job_id: job.id, workflow_id: workflow.id, component: 'WorkflowManager' });
+    updateAndEmit(workflow.id, { status: 'blocked', current_phase: 'verify' as WorkflowPhase, blocked_reason: `Internal error in verify handler: ${errorMessage}` });
   }
 }
 
@@ -667,17 +683,7 @@ function getMissingRequiredWorktreeFields(workflow: Workflow): string[] {
 }
 
 function getExpectedWorkflowWorktree(workflow: Workflow): { worktree_path: string; worktree_branch: string } | null {
-  if (!workflow.work_dir) return null;
-  const shortId = workflow.id.slice(0, 8);
-  const slug = workflow.title
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '')
-    .slice(0, 40);
-  const worktree_branch = `workflow/${slug}-${shortId}`;
-  const repoName = path.basename(workflow.work_dir);
-  const worktree_path = path.resolve(workflow.work_dir, '..', '.orchestrator-worktrees', repoName, `wf-${shortId}`);
-  return { worktree_path, worktree_branch };
+  return getWorkflowWorktreeIdentity(workflow);
 }
 
 function blockForWorktreeRepairFailure(

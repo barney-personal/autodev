@@ -2,15 +2,24 @@
  * Git worktree creation, cleanup, branch management, and health verification
  * for the workflow engine.
  * Extracted from WorkflowManager.ts.
+ *
+ * All git invocations use execFileSync with argument arrays so branch names
+ * containing shell-sensitive characters are passed safely.
  */
 
-import { execSync } from 'child_process';
+import { execFileSync, type ExecFileSyncOptions } from 'child_process';
 import { existsSync, mkdirSync, renameSync, writeFileSync } from 'fs';
 import path from 'path';
 import * as queries from '../db/queries.js';
 import type { Workflow } from '../../shared/types.js';
 import { logResilienceEvent } from './ResilienceLogger.js';
 import { errMsg } from '../../shared/errors.js';
+import { getWorkflowWorktreeIdentity } from './WorkflowWorktreeIdentity.js';
+
+function git(cwd: string, args: string[], opts: { timeout?: number } = {}): Buffer {
+  const options: ExecFileSyncOptions = { cwd, stdio: 'pipe', timeout: opts.timeout ?? 10000 };
+  return execFileSync('git', args, options) as Buffer;
+}
 
 // ─── Worktree Health & Branch Verification ─────────────────────────────────
 
@@ -23,14 +32,12 @@ export function ensureWorktreeBranch(
   expectedBranch: string,
 ): { ok: true } | { ok: false; error: string } {
   try {
-    const currentBranch = execSync('git rev-parse --abbrev-ref HEAD', {
-      cwd: worktreePath, stdio: 'pipe', timeout: 5000,
-    }).toString().trim();
+    const currentBranch = git(worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD'], { timeout: 5000 })
+      .toString()
+      .trim();
     if (currentBranch !== expectedBranch) {
       console.warn(`[worktree] on '${currentBranch}' instead of '${expectedBranch}' — switching`);
-      execSync(`git checkout ${JSON.stringify(expectedBranch)}`, {
-        cwd: worktreePath, stdio: 'pipe', timeout: 10000,
-      });
+      git(worktreePath, ['checkout', expectedBranch], { timeout: 10000 });
     }
     return { ok: true };
   } catch (err) {
@@ -78,17 +85,13 @@ export function verifyWorktreeHealth(
 
   // Check 3: git rev-parse --is-inside-work-tree
   try {
-    execSync('git rev-parse --is-inside-work-tree', {
-      cwd: worktreePath, stdio: 'pipe', timeout: 5000,
-    });
+    git(worktreePath, ['rev-parse', '--is-inside-work-tree'], { timeout: 5000 });
   } catch {
     logResilienceEvent('worktree_repair', 'worktree', worktreePath, {
       check: 'not_inside_work_tree', action: 'force_checkout', branch: expectedBranch,
     });
     try {
-      execSync(`git checkout -f ${JSON.stringify(expectedBranch)}`, {
-        cwd: worktreePath, stdio: 'pipe', timeout: 10000,
-      });
+      git(worktreePath, ['checkout', '-f', expectedBranch], { timeout: 10000 });
     } catch (err) {
       logResilienceEvent('worktree_repair', 'worktree', worktreePath, {
         check: 'not_inside_work_tree', action: 'force_checkout', outcome: 'failed', error: errMsg(err),
@@ -99,17 +102,13 @@ export function verifyWorktreeHealth(
 
   // Check 4: HEAD is valid
   try {
-    execSync('git rev-parse HEAD', {
-      cwd: worktreePath, stdio: 'pipe', timeout: 5000,
-    });
+    git(worktreePath, ['rev-parse', 'HEAD'], { timeout: 5000 });
   } catch {
     logResilienceEvent('worktree_repair', 'worktree', worktreePath, {
       check: 'invalid_head', action: 'force_checkout', branch: expectedBranch,
     });
     try {
-      execSync(`git checkout -f ${JSON.stringify(expectedBranch)}`, {
-        cwd: worktreePath, stdio: 'pipe', timeout: 10000,
-      });
+      git(worktreePath, ['checkout', '-f', expectedBranch], { timeout: 10000 });
     } catch (err) {
       logResilienceEvent('worktree_repair', 'worktree', worktreePath, {
         check: 'invalid_head', action: 'force_checkout', outcome: 'failed', error: errMsg(err),
@@ -132,15 +131,11 @@ function recreateWorktree(
 ): { ok: true } | { ok: false; error: string } {
   try {
     try {
-      execSync(`git worktree remove --force ${JSON.stringify(worktreePath)}`, {
-        cwd: mainRepoDir, stdio: 'pipe', timeout: 15000,
-      });
+      git(mainRepoDir, ['worktree', 'remove', '--force', worktreePath], { timeout: 15000 });
     } catch { /* may not be registered — fine */ }
-    execSync('git worktree prune', { cwd: mainRepoDir, stdio: 'pipe', timeout: 10000 });
+    git(mainRepoDir, ['worktree', 'prune'], { timeout: 10000 });
     mkdirSync(path.dirname(worktreePath), { recursive: true });
-    execSync(`git worktree add ${JSON.stringify(worktreePath)} ${JSON.stringify(branch)}`, {
-      cwd: mainRepoDir, stdio: 'pipe', timeout: 30000,
-    });
+    git(mainRepoDir, ['worktree', 'add', worktreePath, branch], { timeout: 30000 });
     logResilienceEvent('worktree_repair', 'worktree', worktreePath, {
       action: 'recreate', outcome: 'success', branch,
     });
@@ -164,21 +159,13 @@ export function createWorkflowWorktree(
   updateAndEmit: (id: string, fields: Parameters<typeof queries.updateWorkflow>[1]) => void,
 ): Workflow | null {
   try {
-    const shortId = workflow.id.slice(0, 8);
-    const slug = workflow.title
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-|-$/g, '')
-      .slice(0, 40);
-    const branchName = `workflow/${slug}-${shortId}`;
-    const repoName = path.basename(workflow.work_dir!);
-    const worktreePath = path.resolve(workflow.work_dir!, '..', '.orchestrator-worktrees', repoName, `wf-${shortId}`);
+    const identity = getWorkflowWorktreeIdentity(workflow);
+    if (!identity) {
+      throw new Error('cannot resolve worktree identity (missing work_dir)');
+    }
+    const { worktree_path: worktreePath, worktree_branch: branchName } = identity;
     mkdirSync(path.dirname(worktreePath), { recursive: true });
-    execSync(`git worktree add ${JSON.stringify(worktreePath)} -b ${JSON.stringify(branchName)}`, {
-      cwd: workflow.work_dir!,
-      timeout: 30000,
-      stdio: 'pipe',
-    });
+    git(workflow.work_dir!, ['worktree', 'add', worktreePath, '-b', branchName], { timeout: 30000 });
     const activeWorkflow = queries.updateWorkflow(workflow.id, {
       worktree_path: worktreePath,
       worktree_branch: branchName,
@@ -198,35 +185,25 @@ export function createWorkflowWorktree(
  * Throws on failure so the caller can propagate the error.
  */
 export function restoreWorkflowWorktree(workflow: Workflow): void {
-  const shortId = workflow.id.slice(0, 8);
-  const slug = workflow.title
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '')
-    .slice(0, 40);
-  const branchName = `workflow/${slug}-${shortId}`;
-  const repoName = path.basename(workflow.work_dir!);
-  const worktreePath = path.resolve(workflow.work_dir!, '..', '.orchestrator-worktrees', repoName, `wf-${shortId}`);
+  const identity = getWorkflowWorktreeIdentity(workflow);
+  if (!identity) {
+    throw new Error('Worktree restoration failed during resume: missing work_dir');
+  }
+  const { worktree_path: worktreePath, worktree_branch: branchName } = identity;
   try {
     mkdirSync(path.dirname(worktreePath), { recursive: true });
     try {
-      execSync('git worktree prune', { cwd: workflow.work_dir!, stdio: 'pipe', timeout: 10000 });
+      git(workflow.work_dir!, ['worktree', 'prune'], { timeout: 10000 });
     } catch { /* prune failure is non-fatal */ }
     let branchExists = false;
     try {
-      execSync(`git rev-parse --verify ${JSON.stringify(`refs/heads/${branchName}`)}`, {
-        cwd: workflow.work_dir!, stdio: 'pipe', timeout: 10000,
-      });
+      git(workflow.work_dir!, ['rev-parse', '--verify', `refs/heads/${branchName}`], { timeout: 10000 });
       branchExists = true;
     } catch { /* branch doesn't exist — will create with -b */ }
     if (branchExists) {
-      execSync(`git worktree add ${JSON.stringify(worktreePath)} ${JSON.stringify(branchName)}`, {
-        cwd: workflow.work_dir!, timeout: 30000, stdio: 'pipe',
-      });
+      git(workflow.work_dir!, ['worktree', 'add', worktreePath, branchName], { timeout: 30000 });
     } else {
-      execSync(`git worktree add ${JSON.stringify(worktreePath)} -b ${JSON.stringify(branchName)}`, {
-        cwd: workflow.work_dir!, timeout: 30000, stdio: 'pipe',
-      });
+      git(workflow.work_dir!, ['worktree', 'add', worktreePath, '-b', branchName], { timeout: 30000 });
     }
     queries.updateWorkflow(workflow.id, { worktree_path: worktreePath, worktree_branch: branchName });
     logResilienceEvent('worktree_restore', 'workflow', workflow.id, {
@@ -311,7 +288,7 @@ export function quarantineWorktree(
   // Prune the git worktree registration so a future `git worktree list` does
   // not see a stale entry pointing at the now-moved directory.
   try {
-    execSync('git worktree prune', { cwd: work_dir, stdio: 'pipe', timeout: 10000 });
+    git(work_dir, ['worktree', 'prune'], { timeout: 10000 });
   } catch (err) {
     console.warn(`[workflow ${id}] git worktree prune failed during quarantine: ${errMsg(err)}`);
   }
@@ -334,21 +311,17 @@ export function removeWorktree(workflow: Workflow): void {
   const { worktree_path, work_dir } = workflow;
   if (!worktree_path || !work_dir) return;
   try {
-    const status = execSync('git status --porcelain', {
-      cwd: worktree_path, stdio: 'pipe', timeout: 5000,
-    }).toString().trim();
+    const status = git(worktree_path, ['status', '--porcelain'], { timeout: 5000 })
+      .toString()
+      .trim();
     if (status) {
       console.log(`[workflow ${workflow.id}] saving uncommitted work before worktree removal`);
-      execSync('git add -A', { cwd: worktree_path, stdio: 'pipe', timeout: 10000 });
-      execSync('git commit -m "wip: auto-saved uncommitted work before worktree cleanup"', {
-        cwd: worktree_path, stdio: 'pipe', timeout: 10000,
-      });
+      git(worktree_path, ['add', '-A'], { timeout: 10000 });
+      git(worktree_path, ['commit', '-m', 'wip: auto-saved uncommitted work before worktree cleanup'], { timeout: 10000 });
       const branch = workflow.worktree_branch;
       if (branch) {
         try {
-          execSync(`git push origin ${JSON.stringify(branch)}`, {
-            cwd: worktree_path, stdio: 'pipe', timeout: 30000,
-          });
+          git(worktree_path, ['push', 'origin', branch], { timeout: 30000 });
         } catch { /* push failed — work is still in local branch */ }
       }
     }
@@ -367,9 +340,7 @@ export function removeWorktree(workflow: Workflow): void {
   }
 
   try {
-    execSync(`git worktree remove --force ${JSON.stringify(worktree_path)}`, {
-      cwd: work_dir, stdio: 'pipe', timeout: 15000,
-    });
+    git(work_dir, ['worktree', 'remove', '--force', worktree_path], { timeout: 15000 });
     pruneWorktreeRegistrations(work_dir);
     console.log(`[workflow ${workflow.id}] worktree removed`);
   } catch (err) {
@@ -385,6 +356,6 @@ export function removeWorktree(workflow: Workflow): void {
 
 function pruneWorktreeRegistrations(workDir: string): void {
   try {
-    execSync('git worktree prune', { cwd: workDir, stdio: 'pipe', timeout: 10000 });
+    git(workDir, ['worktree', 'prune'], { timeout: 10000 });
   } catch { /* prune is best-effort */ }
 }

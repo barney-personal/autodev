@@ -33,18 +33,15 @@ vi.mock('child_process', () => ({
   exec: vi.fn(),
   execSync: vi.fn((cmd: string, opts?: any) => {
     execSyncCalls.push({ cmd, opts });
-    if (cmd.includes('git worktree add')) {
-      if (worktreeAddShouldFail) {
-        throw new Error('fatal: branch already exists');
-      }
-      return Buffer.from('');
-    }
     return Buffer.from('');
   }),
   execFileSync: vi.fn((file: string, args: string[], opts?: any) => {
     execFileSyncCalls.push({ file, args, opts });
     if (file === 'git' && args[0] === 'rev-parse' && gitShouldFail) {
       throw new Error('fatal: not a git repository');
+    }
+    if (file === 'git' && args.includes('worktree') && args.includes('add') && worktreeAddShouldFail) {
+      throw new Error('fatal: branch already exists');
     }
     return Buffer.from('');
   }),

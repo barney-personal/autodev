@@ -13,13 +13,16 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-// Track calls to execSync for assertion
-const execSyncMock = vi.fn();
+// Track calls to execFileSync for assertion. The worktree manager uses
+// argument-array execFileSync('git', [...]) so branch names with shell-sensitive
+// characters cannot reach a shell.
+const execFileSyncMock = vi.fn();
 const existsSyncMock = vi.fn();
 
 vi.mock('child_process', () => ({
   exec: vi.fn(),
-  execSync: (...args: any[]) => execSyncMock(...args),
+  execSync: vi.fn(),
+  execFileSync: (...args: any[]) => execFileSyncMock(...args),
 }));
 
 vi.mock('fs', async (importOriginal) => {
@@ -112,13 +115,23 @@ vi.mock('../server/orchestrator/ResilienceLogger.js', () => ({
 
 import { setupTestDb, cleanupTestDb, resetManagerState } from './helpers.js';
 
+// Helper: argument-array matcher. The first execFileSync arg is always 'git';
+// the second is an args array. This converts an args array to a "joined cmd"
+// string so existing assertions like .includes('worktree add') still work.
+function calledArgs(): string[] {
+  return execFileSyncMock.mock.calls.map(c => {
+    const args = (c[1] as string[]) ?? [];
+    return `git ${args.join(' ')}`;
+  });
+}
+
 describe('verifyWorktreeHealth', () => {
   let verifyWorktreeHealth: typeof import('../server/orchestrator/WorkflowManager.js').verifyWorktreeHealth;
 
   beforeEach(async () => {
     await setupTestDb();
     await resetManagerState();
-    execSyncMock.mockReset();
+    execFileSyncMock.mockReset();
     existsSyncMock.mockReset();
     logResilienceEventMock.mockReset();
     const mod = await import('../server/orchestrator/WorkflowManager.js');
@@ -130,34 +143,29 @@ describe('verifyWorktreeHealth', () => {
   });
 
   it('passes when all checks succeed and branch matches', () => {
-    // existsSync returns true for directory and .git
     existsSyncMock.mockReturnValue(true);
-    // execSync succeeds for all git commands
-    execSyncMock.mockImplementation((cmd: string) => {
+    execFileSyncMock.mockImplementation((_bin: string, args: string[]) => {
+      const cmd = args.join(' ');
       if (cmd.includes('--is-inside-work-tree')) return Buffer.from('true\n');
-      if (cmd.includes('rev-parse HEAD')) return Buffer.from('abc123\n');
+      if (cmd === 'rev-parse HEAD') return Buffer.from('abc123\n');
       if (cmd.includes('rev-parse --abbrev-ref HEAD')) return Buffer.from('my-branch\n');
       return Buffer.from('');
     });
 
     const result = verifyWorktreeHealth('/tmp/wt', 'my-branch');
     expect(result).toEqual({ ok: true });
-    // No resilience events should be logged for a healthy worktree
     expect(logResilienceEventMock).not.toHaveBeenCalled();
   });
 
   it('recreates worktree when directory is missing', () => {
-    // First call for directory check returns false; subsequent calls for .git after recreation succeed
     existsSyncMock.mockImplementation((p: string) => {
       if (p === '/tmp/wt') return false;
       return true;
     });
-    // execSync succeeds for worktree add
-    execSyncMock.mockReturnValue(Buffer.from(''));
+    execFileSyncMock.mockReturnValue(Buffer.from(''));
 
     const result = verifyWorktreeHealth('/tmp/wt', 'my-branch', '/repo');
     expect(result).toEqual({ ok: true });
-    // Should log recreation events
     expect(logResilienceEventMock).toHaveBeenCalledWith(
       'worktree_repair', 'worktree', '/tmp/wt',
       expect.objectContaining({ check: 'directory_missing', action: 'recreate' }),
@@ -166,9 +174,10 @@ describe('verifyWorktreeHealth', () => {
       'worktree_repair', 'worktree', '/tmp/wt',
       expect.objectContaining({ action: 'recreate', outcome: 'success' }),
     );
-    // Verify worktree add was called
-    expect(execSyncMock).toHaveBeenCalledWith(
-      expect.stringContaining('git worktree add'),
+    // The branch name flows through as a literal argument, not a shell string.
+    expect(execFileSyncMock).toHaveBeenCalledWith(
+      'git',
+      expect.arrayContaining(['worktree', 'add', '/tmp/wt', 'my-branch']),
       expect.objectContaining({ cwd: '/repo' }),
     );
   });
@@ -190,7 +199,7 @@ describe('verifyWorktreeHealth', () => {
       if (p === '/tmp/wt/.git') return false;
       return true;
     });
-    execSyncMock.mockReturnValue(Buffer.from(''));
+    execFileSyncMock.mockReturnValue(Buffer.from(''));
 
     const result = verifyWorktreeHealth('/tmp/wt', 'my-branch', '/repo');
     expect(result).toEqual({ ok: true });
@@ -202,11 +211,11 @@ describe('verifyWorktreeHealth', () => {
 
   it('force-checkouts when git rev-parse --is-inside-work-tree fails', () => {
     existsSyncMock.mockReturnValue(true);
-    execSyncMock.mockImplementation((cmd: string) => {
+    execFileSyncMock.mockImplementation((_bin: string, args: string[]) => {
+      const cmd = args.join(' ');
       if (cmd.includes('--is-inside-work-tree')) throw new Error('not a git repo');
-      // After force checkout, HEAD check and branch check succeed
       if (cmd.includes('checkout -f')) return Buffer.from('');
-      if (cmd.includes('rev-parse HEAD')) return Buffer.from('abc123\n');
+      if (cmd === 'rev-parse HEAD') return Buffer.from('abc123\n');
       if (cmd.includes('rev-parse --abbrev-ref HEAD')) return Buffer.from('my-branch\n');
       return Buffer.from('');
     });
@@ -217,19 +226,19 @@ describe('verifyWorktreeHealth', () => {
       'worktree_repair', 'worktree', '/tmp/wt',
       expect.objectContaining({ check: 'not_inside_work_tree', action: 'force_checkout' }),
     );
-    expect(execSyncMock).toHaveBeenCalledWith(
-      expect.stringContaining('checkout -f'),
+    expect(execFileSyncMock).toHaveBeenCalledWith(
+      'git',
+      ['checkout', '-f', 'my-branch'],
       expect.objectContaining({ cwd: '/tmp/wt' }),
     );
   });
 
   it('force-checkouts when HEAD is invalid', () => {
     existsSyncMock.mockReturnValue(true);
-    execSyncMock.mockImplementation((cmd: string) => {
+    execFileSyncMock.mockImplementation((_bin: string, args: string[]) => {
+      const cmd = args.join(' ');
       if (cmd.includes('--is-inside-work-tree')) return Buffer.from('true\n');
-      if (cmd === 'git rev-parse HEAD' || (cmd.includes('rev-parse HEAD') && !cmd.includes('--abbrev-ref') && !cmd.includes('--is-inside'))) {
-        throw new Error('bad HEAD');
-      }
+      if (cmd === 'rev-parse HEAD') throw new Error('bad HEAD');
       if (cmd.includes('checkout -f')) return Buffer.from('');
       if (cmd.includes('rev-parse --abbrev-ref HEAD')) return Buffer.from('my-branch\n');
       return Buffer.from('');
@@ -245,7 +254,8 @@ describe('verifyWorktreeHealth', () => {
 
   it('returns error when recreation fails', () => {
     existsSyncMock.mockReturnValue(false);
-    execSyncMock.mockImplementation((cmd: string) => {
+    execFileSyncMock.mockImplementation((_bin: string, args: string[]) => {
+      const cmd = args.join(' ');
       if (cmd.includes('worktree add')) throw new Error('branch already exists');
       return Buffer.from('');
     });
@@ -261,7 +271,8 @@ describe('verifyWorktreeHealth', () => {
 
   it('returns error when force checkout fails for broken git internals', () => {
     existsSyncMock.mockReturnValue(true);
-    execSyncMock.mockImplementation((cmd: string) => {
+    execFileSyncMock.mockImplementation((_bin: string, args: string[]) => {
+      const cmd = args.join(' ');
       if (cmd.includes('--is-inside-work-tree')) throw new Error('not a git repo');
       if (cmd.includes('checkout -f')) throw new Error('checkout failed');
       return Buffer.from('');
@@ -273,6 +284,21 @@ describe('verifyWorktreeHealth', () => {
     expect(logResilienceEventMock).toHaveBeenCalledWith(
       'worktree_repair', 'worktree', '/tmp/wt',
       expect.objectContaining({ check: 'not_inside_work_tree', action: 'force_checkout', outcome: 'failed' }),
+    );
+  });
+
+  it('passes branch names with shell-sensitive characters as argv (not shell)', () => {
+    existsSyncMock.mockImplementation((p: string) => p !== '/tmp/wt');
+    execFileSyncMock.mockReturnValue(Buffer.from(''));
+
+    const hostileBranch = "workflow/foo'; rm -rf /; echo ";
+    const result = verifyWorktreeHealth('/tmp/wt', hostileBranch, '/repo');
+    expect(result).toEqual({ ok: true });
+    // Argument array must carry the hostile branch verbatim — no quoting/escaping.
+    expect(execFileSyncMock).toHaveBeenCalledWith(
+      'git',
+      ['worktree', 'add', '/tmp/wt', hostileBranch],
+      expect.objectContaining({ cwd: '/repo' }),
     );
   });
 });
@@ -292,7 +318,7 @@ describe('removeWorktree (idempotent cleanup)', () => {
   beforeEach(async () => {
     await setupTestDb();
     await resetManagerState();
-    execSyncMock.mockReset();
+    execFileSyncMock.mockReset();
     existsSyncMock.mockReset();
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -308,13 +334,10 @@ describe('removeWorktree (idempotent cleanup)', () => {
 
   it('skips the remove call when the worktree directory is already gone and just prunes', () => {
     existsSyncMock.mockReturnValue(false);
-    // Model real execution: with the worktree dir gone, the
-    // `git status --porcelain` call's cwd doesn't exist, so execSync
-    // throws ENOENT. The outer try/catch in removeWorktree swallows
-    // it and falls through to the existsSync probe.
-    execSyncMock.mockImplementation((cmd: string) => {
-      if (cmd.includes('git status --porcelain')) {
-        const err = new Error(`spawn ${cmd} ENOENT`) as NodeJS.ErrnoException;
+    execFileSyncMock.mockImplementation((_bin: string, args: string[]) => {
+      const cmd = args.join(' ');
+      if (cmd === 'status --porcelain') {
+        const err = new Error(`ENOENT`) as NodeJS.ErrnoException;
         err.code = 'ENOENT';
         throw err;
       }
@@ -323,7 +346,7 @@ describe('removeWorktree (idempotent cleanup)', () => {
 
     removeWorktree(baseWorkflow);
 
-    const commands = execSyncMock.mock.calls.map(c => c[0] as string);
+    const commands = calledArgs();
     expect(commands.some(c => c.includes('worktree remove'))).toBe(false);
     expect(commands.some(c => c === 'git worktree prune')).toBe(true);
     expect(warnSpy).not.toHaveBeenCalled();
@@ -331,11 +354,10 @@ describe('removeWorktree (idempotent cleanup)', () => {
   });
 
   it('treats "is not a working tree" as success without warning (HURLICANE-SF race)', () => {
-    // existsSync at the probe sees the dir, but the remove call races with
-    // another cleanup and fails.
     existsSyncMock.mockReturnValue(true);
-    execSyncMock.mockImplementation((cmd: string) => {
-      if (cmd.includes('git status --porcelain')) return Buffer.from('');
+    execFileSyncMock.mockImplementation((_bin: string, args: string[]) => {
+      const cmd = args.join(' ');
+      if (cmd === 'status --porcelain') return Buffer.from('');
       if (cmd.includes('worktree remove')) {
         throw new Error("fatal: '/tmp/wt' is not a working tree");
       }
@@ -344,7 +366,7 @@ describe('removeWorktree (idempotent cleanup)', () => {
 
     removeWorktree(baseWorkflow);
 
-    const commands = execSyncMock.mock.calls.map(c => c[0] as string);
+    const commands = calledArgs();
     expect(commands.filter(c => c === 'git worktree prune').length).toBeGreaterThanOrEqual(1);
     expect(warnSpy).not.toHaveBeenCalled();
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('worktree already removed'));
@@ -352,8 +374,9 @@ describe('removeWorktree (idempotent cleanup)', () => {
 
   it('still warns on unrelated removal failures', () => {
     existsSyncMock.mockReturnValue(true);
-    execSyncMock.mockImplementation((cmd: string) => {
-      if (cmd.includes('git status --porcelain')) return Buffer.from('');
+    execFileSyncMock.mockImplementation((_bin: string, args: string[]) => {
+      const cmd = args.join(' ');
+      if (cmd === 'status --porcelain') return Buffer.from('');
       if (cmd.includes('worktree remove')) {
         throw new Error('fatal: file lock held by another process');
       }
@@ -370,8 +393,9 @@ describe('removeWorktree (idempotent cleanup)', () => {
 
   it('logs success on the happy path', () => {
     existsSyncMock.mockReturnValue(true);
-    execSyncMock.mockImplementation((cmd: string) => {
-      if (cmd.includes('git status --porcelain')) return Buffer.from('');
+    execFileSyncMock.mockImplementation((_bin: string, args: string[]) => {
+      const cmd = args.join(' ');
+      if (cmd === 'status --porcelain') return Buffer.from('');
       return Buffer.from('');
     });
 
