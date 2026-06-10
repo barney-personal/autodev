@@ -492,9 +492,9 @@ describe('Token tracking for PTY agents', () => {
     const cost = estimateCostUsd('claude-sonnet-4-6', 1_000_000, 100_000);
     expect(cost).toBeCloseTo(3 + 1.5, 1); // $3 input + $1.5 output
 
-    // Opus: $15/M input, $75/M output
+    // Opus: $5/M input, $25/M output
     const opusCost = estimateCostUsd('claude-opus-4-6', 500_000, 50_000);
-    expect(opusCost).toBeCloseTo(7.5 + 3.75, 1);
+    expect(opusCost).toBeCloseTo(2.5 + 1.25, 1);
   });
 });
 
