@@ -11,18 +11,19 @@ interface ModelPricing {
   outputPerMillion: number;
 }
 
-// Pricing as of May 2025 — update when Anthropic changes rates.
+// Pricing as of June 2026 — update when Anthropic changes rates.
+// 1M-context ([1m]) variants are billed at the standard rate (no long-context premium).
 const PRICING: Record<string, ModelPricing> = {
   // Fable 5 launch pricing (June 2026).
   'claude-fable-5':          { inputPerMillion: 10,  outputPerMillion: 50 },
   'claude-fable-5[1m]':      { inputPerMillion: 10,  outputPerMillion: 50 },
-  'claude-opus-4-7':         { inputPerMillion: 15,  outputPerMillion: 75 },
-  'claude-opus-4-7[1m]':     { inputPerMillion: 15,  outputPerMillion: 75 },
-  'claude-opus-4-6':         { inputPerMillion: 15,  outputPerMillion: 75 },
-  'claude-opus-4-6[1m]':     { inputPerMillion: 15,  outputPerMillion: 75 },
+  'claude-opus-4-7':         { inputPerMillion: 5,   outputPerMillion: 25 },
+  'claude-opus-4-7[1m]':     { inputPerMillion: 5,   outputPerMillion: 25 },
+  'claude-opus-4-6':         { inputPerMillion: 5,   outputPerMillion: 25 },
+  'claude-opus-4-6[1m]':     { inputPerMillion: 5,   outputPerMillion: 25 },
   'claude-sonnet-4-6':       { inputPerMillion: 3,   outputPerMillion: 15 },
   'claude-sonnet-4-6[1m]':   { inputPerMillion: 3,   outputPerMillion: 15 },
-  'claude-haiku-4-5-20251001': { inputPerMillion: 0.80, outputPerMillion: 4 },
+  'claude-haiku-4-5-20251001': { inputPerMillion: 1, outputPerMillion: 5 },
 };
 
 // Default fallback — Sonnet pricing

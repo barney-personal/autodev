@@ -6,13 +6,13 @@ import { fmtElapsedCompact, fmtRel, fmtCost } from './format';
 const MODEL_PRICING: Record<string, [number, number]> = {
   'claude-fable-5':          [10, 50],
   'claude-fable-5[1m]':      [10, 50],
-  'claude-opus-4-7':         [15, 75],
-  'claude-opus-4-7[1m]':     [15, 75],
-  'claude-opus-4-6':         [15, 75],
-  'claude-opus-4-6[1m]':     [15, 75],
+  'claude-opus-4-7':         [5, 25],
+  'claude-opus-4-7[1m]':     [5, 25],
+  'claude-opus-4-6':         [5, 25],
+  'claude-opus-4-6[1m]':     [5, 25],
   'claude-sonnet-4-6':       [3, 15],
   'claude-sonnet-4-6[1m]':   [3, 15],
-  'claude-haiku-4-5-20251001': [0.80, 4],
+  'claude-haiku-4-5-20251001': [1, 5],
 };
 
 function estimateCost(model: string | null, inputTokens: number, outputTokens: number): number {

@@ -16,15 +16,15 @@ describe('estimateCostUsdDetailed', () => {
   });
 
   it('charges cache reads at 0.10× the base input rate', () => {
-    // 1M cache-read tokens on Opus 4-7 ($15/M input) → $1.50
+    // 1M cache-read tokens on Opus 4-7 ($5/M input) → $0.50
     const cost = estimateCostUsdDetailed('claude-opus-4-7', 0, 1_000_000, 0, 0);
-    expect(cost).toBeCloseTo(1.50, 4);
+    expect(cost).toBeCloseTo(0.50, 4);
   });
 
   it('charges cache writes at 1.25× the base input rate', () => {
-    // 1M cache-create tokens on Opus 4-7 → $18.75
+    // 1M cache-create tokens on Opus 4-7 → $6.25
     const cost = estimateCostUsdDetailed('claude-opus-4-7', 0, 0, 1_000_000, 0);
-    expect(cost).toBeCloseTo(18.75, 4);
+    expect(cost).toBeCloseTo(6.25, 4);
   });
 
   it('produces meaningfully lower cost than the lumped estimate for cache-heavy ticks', () => {
