@@ -4,6 +4,7 @@ import * as queries from '../../db/queries.js';
 import * as socket from '../../socket/SocketManager.js';
 import { isEyeJob } from '../../orchestrator/EyeConfig.js';
 import { nudgeQueue } from '../../orchestrator/WorkQueueManager.js';
+import { KNOWN_EFFORT_LEVEL_VALUES } from '../../../shared/models.js';
 
 export const createJobSchema = z.object({
   description: z.string().describe('Full task description for the new job'),
@@ -14,7 +15,7 @@ export const createJobSchema = z.object({
   stop_mode: z.enum(['turns', 'budget', 'time', 'completion']).optional().describe('How to stop the agent: "turns" (default), "budget" (dollar limit), "time" (minute limit), or "completion" (run to natural finish)'),
   stop_value: z.number().optional().describe('Limit value for the stop mode: turn count, dollar amount, or minutes. Not used for "completion".'),
   model: z.string().optional().describe('Model override, e.g. "claude-fable-5" (default: auto-classify)'),
-  effort: z.enum(['minimal', 'low', 'medium', 'high', 'xhigh']).optional().describe('Pinned reasoning-effort level for the job (e.g. carried over from the original job when creating a retry). Default: phase/env effort defaults.'),
+  effort: z.enum(KNOWN_EFFORT_LEVEL_VALUES).optional().describe('Pinned reasoning-effort level for the job (e.g. carried over from the original job when creating a retry). Default: phase/env effort defaults.'),
   depends_on: z.array(z.string()).optional().describe('Job IDs that must complete before this job runs'),
   use_worktree: z.boolean().optional().describe('Create a git worktree so the agent works in an isolated checkout'),
   repeat_interval_ms: z.number().optional().describe('Re-queue the job automatically after it completes; value is the delay in ms before the next run'),

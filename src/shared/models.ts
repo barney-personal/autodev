@@ -75,9 +75,12 @@ const _warnedUnknownServiceTier = new Set<string>();
  * Effort levels accepted by Claude `--effort` and Codex `model_reasoning_effort`.
  * Used to surface a typo warning when an env-var override doesn't match —
  * the CLIs would otherwise reject the value at spawn time with a confusing
- * downstream error.
+ * downstream error. The array form is the single source of truth; the MCP
+ * create_job schema derives its enum from it so the tool layer can never
+ * accept a value the spawn-time allowlist would then drop.
  */
-const KNOWN_EFFORT_LEVELS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh']);
+export const KNOWN_EFFORT_LEVEL_VALUES = ['minimal', 'low', 'medium', 'high', 'xhigh'] as const;
+const KNOWN_EFFORT_LEVELS = new Set<string>(KNOWN_EFFORT_LEVEL_VALUES);
 
 /** Track unknown env-var values we've already warned about (warn-once). */
 const _warnedUnknownEffort = new Set<string>();
