@@ -157,7 +157,7 @@ Background agent that monitors the codebase on a configurable cycle. Communicate
 
 ### Live Watcher (per-agent supervisor)
 
-Opus 4.7 session bound 1:1 with every running non-interactive agent. Consumes a curated event feed and can intervene via `post_commentary`, `nudge_job`, `restart_job`, or `escalate_to_user`. Disabled by `WATCHER_ENABLED=0` or per-job `jobs.watch=0`. Manual control through `POST /api/agents/:id/watcher/{start,stop,tick}`. Optional `WATCHER_MAX_COST_USD` sets a per-session lifetime spend ceiling (off by default) — when `watcher.cost_usd` meets the cap, the session self-stops with a blocker-severity commentary and the operator must raise/unset the cap and restart the orchestrator to resume supervision.
+Opus 4.8 session (by default) bound 1:1 with every running non-interactive agent. Consumes a curated event feed and can intervene via `post_commentary`, `nudge_job`, `restart_job`, or `escalate_to_user`. Disabled by `WATCHER_ENABLED=0` or per-job `jobs.watch=0`. Manual control through `POST /api/agents/:id/watcher/{start,stop,tick}`. Optional `WATCHER_MAX_COST_USD` sets a per-session lifetime spend ceiling (off by default) — when `watcher.cost_usd` meets the cap, the session self-stops with a blocker-severity commentary and the operator must raise/unset the cap and restart the orchestrator to resume supervision.
 
 **Threat model** — the watcher is an LLM supervising another LLM. Two paths matter:
 
@@ -169,7 +169,7 @@ The watcher control endpoints are unauthenticated (consistent with the rest of t
 
 ### Auto Resolver (post-mortem unblocker)
 
-When a workflow transitions to `status='blocked'`, the dispatcher (`src/server/orchestrator/ResolverDispatcher.ts`) fires a one-shot Resolver session — an Opus 4.7 (by default) Anthropic SDK conversation — that diagnoses the cause and either proposes a resume, escalates to a human via a discussion, or marks the block unresolvable. Complementary to the Live Watcher: Watcher runs *during* an agent's life; Resolver runs *after* a workflow has terminally blocked.
+When a workflow transitions to `status='blocked'`, the dispatcher (`src/server/orchestrator/ResolverDispatcher.ts`) fires a one-shot Resolver session — an Opus 4.8 (by default) Anthropic SDK conversation — that diagnoses the cause and either proposes a resume, escalates to a human via a discussion, or marks the block unresolvable. Complementary to the Live Watcher: Watcher runs *during* an agent's life; Resolver runs *after* a workflow has terminally blocked.
 
 **Lifecycle**
 - `updateAndEmit` in `WorkflowManager.ts` fires `dispatchResolverForWorkflowAsync` whenever status transitions to blocked.
@@ -298,7 +298,7 @@ data/
 | `CODEX_SERVICE_TIER_REVIEW` | `fast` | Codex `service_tier` override for the review phase. `fast` gives ~1.5x throughput on the priority lane (slightly higher cost). Other tiers: `default`, `flex`, `priority`, `auto`. Set to empty string to fall back to `~/.codex/config.toml`. |
 | `CODEX_SERVICE_TIER_ASSESS` / `_IMPLEMENT` / `_VERIFY` / `_DEFAULT` | *(unset)* | Codex `service_tier` overrides for the other phases. No default — the user's `~/.codex/config.toml` value is used. |
 | `RESOLVER_MODE` | `assisted` | Auto Resolver gate: `off` disables entirely; `diagnose` writes diagnoses but never resumes; `assisted` auto-resumes safe classes (transient_infra, config_drift) only; `auto` auto-resumes any class that clears its confidence threshold. |
-| `RESOLVER_MODEL` | `claude-opus-4-7` | Model used for Resolver sessions. |
+| `RESOLVER_MODEL` | `claude-opus-4-8` | Model used for Resolver sessions. |
 | `RESOLVER_MAX_COST_USD` | `2` | Per-run cost ceiling. Resolver self-aborts when hit. |
 | `RESOLVER_MAX_TURNS` | `12` | Per-run turn ceiling. |
 | `RESOLVER_LIFETIME_ATTEMPTS` | `3` | Resolver attempts per workflow lifetime. |
