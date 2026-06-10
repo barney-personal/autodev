@@ -68,6 +68,7 @@ function retrySame(job: Job): boolean {
     work_dir: job.work_dir ?? null,
     max_turns: job.max_turns ?? 50,
     model: job.model ?? null,
+    effort: job.effort ?? null,
     template_id: job.template_id ?? null,
     depends_on: null,
     is_interactive: 0,
