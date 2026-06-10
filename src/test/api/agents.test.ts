@@ -180,6 +180,15 @@ describe('POST /api/agents/:id/retry', () => {
     expect(res.body.job.title).toContain('↺');
   });
 
+  it('preserves the model and classifier-pinned effort on the retry job', async () => {
+    const job = await insertTestJob({ status: 'failed', model: 'claude-fable-5[1m]', effort: 'medium' });
+    const agent = await insertAgent(job.id, { status: 'failed' });
+    const res = await request(app).post(`/api/agents/${agent.id}/retry`);
+    expect(res.status).toBe(201);
+    expect(res.body.job.model).toBe('claude-fable-5[1m]');
+    expect(res.body.job.effort).toBe('medium');
+  });
+
   it('rejects retrying non-failed agent', async () => {
     const job = await insertTestJob({ status: 'running' });
     const agent = await insertAgent(job.id, { status: 'running' });
@@ -205,6 +214,17 @@ describe('POST /api/agents/:id/continue', () => {
       .send({ message: 'Continue with this' });
     expect(res.status).toBe(201);
     expect(res.body.job.title).toContain('↩');
+  });
+
+  it('preserves the model and classifier-pinned effort on the continuation job', async () => {
+    const job = await insertTestJob({ status: 'done', model: 'claude-fable-5[1m]', effort: 'medium' });
+    const agent = await insertAgent(job.id, { status: 'done' });
+    const res = await request(app)
+      .post(`/api/agents/${agent.id}/continue`)
+      .send({ message: 'Continue with this' });
+    expect(res.status).toBe(201);
+    expect(res.body.job.model).toBe('claude-fable-5[1m]');
+    expect(res.body.job.effort).toBe('medium');
   });
 
   it('rejects missing message', async () => {

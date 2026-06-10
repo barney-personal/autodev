@@ -366,6 +366,7 @@ export function JobForm({ onSubmit, onClose, availableJobs = [] }: JobFormProps)
                   { value: 'claude-haiku-4-5-20251001', label: 'Haiku' },
                   { value: 'claude-sonnet-4-6[1m]', label: 'Sonnet' },
                   { value: 'claude-opus-4-7[1m]', label: 'Opus' },
+                  { value: 'claude-fable-5[1m]', label: 'Fable' },
                 ].map(m => (
                   <label key={m.value} className="form-checkbox-label">
                     <input
@@ -412,7 +413,8 @@ export function JobForm({ onSubmit, onClose, availableJobs = [] }: JobFormProps)
                     value={debateClaudeModel}
                     onChange={e => setDebateClaudeModel(e.target.value)}
                   >
-                    <option value="claude-opus-4-7[1m]">claude-opus-4-7[1m] — default, higher cost</option>
+                    <option value="claude-fable-5[1m]">claude-fable-5[1m] — default, most capable</option>
+                    <option value="claude-opus-4-7[1m]">claude-opus-4-7[1m]</option>
                     <option value="claude-opus-4-6[1m]">claude-opus-4-6[1m]</option>
                     <option value="claude-sonnet-4-6[1m]">claude-sonnet-4-6[1m]</option>
                     <option value="claude-haiku-4-5-20251001">claude-haiku-4-5</option>

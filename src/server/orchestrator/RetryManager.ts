@@ -68,6 +68,7 @@ function retrySame(job: Job): boolean {
     work_dir: job.work_dir ?? null,
     max_turns: job.max_turns ?? 50,
     model: job.model ?? null,
+    effort: job.effort ?? null,
     template_id: job.template_id ?? null,
     depends_on: null,
     is_interactive: 0,
@@ -215,6 +216,7 @@ ${ctx.diff}
    - work_dir: '${workDir}'
    - max_turns: ${ctx.originalJob.max_turns ?? 50}
    ${ctx.originalJob.model ? `- model: '${ctx.originalJob.model}'` : ''}
+   ${ctx.originalJob.effort ? `- effort: '${ctx.originalJob.effort}' (complexity-pinned by the auto-classifier — keep it so the retry runs at the same cost level)` : ''}
    ${ctx.originalJob.template_id ? `- template_id is not available via create_job, so include any relevant template context in the description` : ''}
 
 IMPORTANT constraints:

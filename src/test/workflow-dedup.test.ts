@@ -1279,8 +1279,8 @@ describe('WorkflowManager: getWorkflowFallbackModel', () => {
     expect(retryJob).toBeDefined();
     // Must be a different model family — NOT 'claude-opus-4-6' (same base, no [1m])
     expect(retryJob!.model).not.toBe('claude-opus-4-6');
-    // Should be sonnet[1m] — the first genuinely different hardcoded candidate
-    expect(retryJob!.model).toBe('claude-sonnet-4-6[1m]');
+    // Should be fable[1m] — the first genuinely different hardcoded candidate
+    expect(retryJob!.model).toBe('claude-fable-5[1m]');
   });
 
   it('all models unavailable returns null — workflow blocks', async () => {

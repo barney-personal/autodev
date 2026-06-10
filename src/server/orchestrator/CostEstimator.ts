@@ -14,6 +14,9 @@ interface ModelPricing {
 // Pricing as of June 2026 — update when Anthropic changes rates.
 // 1M-context ([1m]) variants are billed at the standard rate (no long-context premium).
 const PRICING: Record<string, ModelPricing> = {
+  // Fable 5 launch pricing (June 2026).
+  'claude-fable-5':          { inputPerMillion: 10,  outputPerMillion: 50 },
+  'claude-fable-5[1m]':      { inputPerMillion: 10,  outputPerMillion: 50 },
   'claude-opus-4-7':         { inputPerMillion: 5,   outputPerMillion: 25 },
   'claude-opus-4-7[1m]':     { inputPerMillion: 5,   outputPerMillion: 25 },
   'claude-opus-4-6':         { inputPerMillion: 5,   outputPerMillion: 25 },

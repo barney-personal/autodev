@@ -51,6 +51,9 @@ export function initDb(dbPath: string): DatabaseSync {
   if (!jobCols.includes('model')) {
     db.exec('ALTER TABLE jobs ADD COLUMN model TEXT');
   }
+  if (!jobCols.includes('effort')) {
+    db.exec('ALTER TABLE jobs ADD COLUMN effort TEXT');
+  }
   if (!jobCols.includes('template_id')) {
     db.exec('ALTER TABLE jobs ADD COLUMN template_id TEXT REFERENCES templates(id)');
   }

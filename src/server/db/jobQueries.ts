@@ -28,6 +28,7 @@ export function insertJob(job: {
   stop_mode?: StopMode;
   stop_value?: number | null;
   model?: string | null;
+  effort?: string | null;
   template_id?: string | null;
   depends_on?: string | null;
   is_interactive?: number;
@@ -57,8 +58,8 @@ export function insertJob(job: {
   const db = getDb();
   const now = Date.now();
   db.prepare(`
-    INSERT INTO jobs (id, title, description, context, status, priority, work_dir, max_turns, stop_mode, stop_value, model, template_id, depends_on, is_interactive, use_worktree, project_id, debate_id, debate_loop, debate_round, debate_role, scheduled_at, repeat_interval_ms, retry_policy, max_retries, retry_count, original_job_id, completion_checks, review_config, review_status, review_parent_job_id, created_by_agent_id, pre_debate_id, pre_debate_summary, workflow_id, workflow_cycle, workflow_phase, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO jobs (id, title, description, context, status, priority, work_dir, max_turns, stop_mode, stop_value, model, effort, template_id, depends_on, is_interactive, use_worktree, project_id, debate_id, debate_loop, debate_round, debate_role, scheduled_at, repeat_interval_ms, retry_policy, max_retries, retry_count, original_job_id, completion_checks, review_config, review_status, review_parent_job_id, created_by_agent_id, pre_debate_id, pre_debate_summary, workflow_id, workflow_cycle, workflow_phase, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     job.id, job.title, job.description, job.context,
     job.status ?? 'queued', job.priority,
@@ -66,6 +67,7 @@ export function insertJob(job: {
     job.stop_mode ?? 'turns',
     job.stop_value ?? null,
     job.model ?? null,
+    job.effort ?? null,
     job.template_id ?? null,
     job.depends_on ?? null,
     job.is_interactive ?? 0,
@@ -411,9 +413,19 @@ export function updateJobRepeatInterval(id: string, ms: number): void {
   db.prepare('UPDATE jobs SET repeat_interval_ms = ?, updated_at = ? WHERE id = ?').run(ms, Date.now(), id);
 }
 
-export function updateJobModel(id: string, model: string): void {
+/**
+ * Update a job's model, and optionally its pinned effort level. Pass `effort`
+ * explicitly (string or null) to set the column; omit it to leave the existing
+ * value untouched (e.g. rate-limit fallback swaps that shouldn't clobber a
+ * classifier-pinned effort).
+ */
+export function updateJobModel(id: string, model: string, effort?: string | null): void {
   const db = getDb();
-  db.prepare('UPDATE jobs SET model = ?, updated_at = ? WHERE id = ?').run(model, Date.now(), id);
+  if (effort === undefined) {
+    db.prepare('UPDATE jobs SET model = ?, updated_at = ? WHERE id = ?').run(model, Date.now(), id);
+  } else {
+    db.prepare('UPDATE jobs SET model = ?, effort = ?, updated_at = ? WHERE id = ?').run(model, effort, Date.now(), id);
+  }
 }
 
 export function updateJobTitle(id: string, title: string): void {
@@ -495,6 +507,7 @@ export function scheduleRepeatJob(job: Job, descriptionOverride?: string, interv
     work_dir: job.work_dir ?? null,
     max_turns: job.max_turns ?? 50,
     model: job.model ?? null,
+    effort: job.effort ?? null,
     template_id: job.template_id ?? null,
     depends_on: null,
     is_interactive: job.is_interactive,

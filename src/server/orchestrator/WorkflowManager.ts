@@ -8,6 +8,7 @@ import * as socket from '../socket/SocketManager.js';
 import type { Job, RouteDecision, Workflow, WorkflowPhase, StopMode } from '../../shared/types.js';
 import { effectiveMaxTurns, isCodexModel } from '../../shared/types.js';
 import {
+  DEFAULT_CLAUDE_FABLE_MODEL_1M,
   DEFAULT_CLAUDE_OPUS_MODEL,
   DEFAULT_CLAUDE_OPUS_MODEL_1M,
   DEFAULT_CLAUDE_SONNET_MODEL,
@@ -1012,6 +1013,7 @@ function getWorkflowFallbackModel(workflow: Workflow, phase: WorkflowPhase, curr
   if (directFallback && directFallback !== currentModel) candidates.add(directFallback);
   if (phase === 'review') candidates.add(workflow.reviewer_model);
   candidates.add(workflow.implementer_model);
+  candidates.add(DEFAULT_CLAUDE_FABLE_MODEL_1M);
   candidates.add(DEFAULT_CLAUDE_SONNET_MODEL_1M);
   candidates.add(DEFAULT_CLAUDE_OPUS_MODEL_1M);
   candidates.add('claude-opus-4-6[1m]');

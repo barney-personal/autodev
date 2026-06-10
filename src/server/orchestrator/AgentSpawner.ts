@@ -145,7 +145,7 @@ export function buildAgentScript(opts: BuildAgentScriptOptions): string {
   const model: string | null = job.model ?? null;
   const codexReasoningEffort = getCodexReasoningEffort(model, job.workflow_phase);
   const codexServiceTier = getCodexServiceTier(model, job.workflow_phase);
-  const claudeEffort = getClaudeEffort(model, job.workflow_phase);
+  const claudeEffort = getClaudeEffort(model, job.workflow_phase, job.effort);
 
   let execLine: string;
   if (useCodex) {

@@ -10,7 +10,7 @@ export function makeJob(overrides: Partial<Job> = {}): Job {
   return {
     id, title: 'Test Job', description: 'A test job description', context: null, status: 'queued',
     priority: 0, work_dir: null, max_turns: 10, stop_mode: 'turns', stop_value: 10,
-    model: 'claude-sonnet-4-6', template_id: null, depends_on: null, flagged: 0, is_interactive: 0,
+    model: 'claude-sonnet-4-6', effort: null, template_id: null, depends_on: null, flagged: 0, is_interactive: 0,
     use_worktree: 0, project_id: null, debate_id: null, debate_loop: null, debate_round: null,
     debate_role: null, scheduled_at: null, repeat_interval_ms: null, retry_policy: 'none',
     max_retries: 0, retry_count: 0, original_job_id: null, completion_checks: null,
