@@ -67,6 +67,54 @@ describe('job effort pin survives clone paths', () => {
     expect(clone!.model).toBe('claude-fable-5[1m]');
   });
 
+  it('create_job MCP tool accepts an explicit effort pin', async () => {
+    const queries = await import('../server/db/queries.js');
+    const { createJobHandler } = await import('../server/mcp/tools/createJob.js');
+    const parent = await insertPinnedJob();
+    const agentId = randomUUID();
+    queries.insertAgent({ id: agentId, job_id: parent.id, status: 'running' });
+
+    const result = JSON.parse(await createJobHandler(agentId, {
+      description: 'Follow-up work',
+      model: 'claude-fable-5[1m]',
+      effort: 'medium',
+    }));
+    expect(queries.getJobById(result.job_id)!.effort).toBe('medium');
+  });
+
+  it('analysis-agent create_job inherits the original job effort through the retry chain', async () => {
+    const queries = await import('../server/db/queries.js');
+    const { createJobHandler } = await import('../server/mcp/tools/createJob.js');
+
+    // Original failed job with a classifier pin, analyze retry policy
+    const original = await insertPinnedJob();
+    // Analysis job (haiku, no pin) created by retryAnalyze pointing at the original
+    const analysisJob = queries.insertJob({
+      id: randomUUID(),
+      title: '[Analysis] Pinned job',
+      description: 'Diagnose the failure',
+      context: null,
+      priority: 1,
+      model: 'claude-haiku-4-5-20251001',
+      retry_policy: 'none',
+      max_retries: 0,
+      retry_count: 0,
+      original_job_id: original.id,
+    });
+    const agentId = randomUUID();
+    queries.insertAgent({ id: agentId, job_id: analysisJob.id, status: 'running' });
+
+    // The analysis agent recreates the task without passing effort explicitly
+    const result = JSON.parse(await createJobHandler(agentId, {
+      description: 'Retry with fixes',
+      model: original.model!,
+    }));
+    const retry = queries.getJobById(result.job_id)!;
+    expect(retry.model).toBe('claude-fable-5[1m]');
+    expect(retry.effort).toBe('medium');
+    expect(retry.original_job_id).toBe(original.id);
+  });
+
   it('jobs without a pin stay unpinned through the same paths', async () => {
     const queries = await import('../server/db/queries.js');
     const job = queries.insertJob({

@@ -14,13 +14,14 @@ export const createJobSchema = z.object({
   stop_mode: z.enum(['turns', 'budget', 'time', 'completion']).optional().describe('How to stop the agent: "turns" (default), "budget" (dollar limit), "time" (minute limit), or "completion" (run to natural finish)'),
   stop_value: z.number().optional().describe('Limit value for the stop mode: turn count, dollar amount, or minutes. Not used for "completion".'),
   model: z.string().optional().describe('Model override, e.g. "claude-fable-5" (default: auto-classify)'),
+  effort: z.enum(['minimal', 'low', 'medium', 'high', 'xhigh']).optional().describe('Pinned reasoning-effort level for the job (e.g. carried over from the original job when creating a retry). Default: phase/env effort defaults.'),
   depends_on: z.array(z.string()).optional().describe('Job IDs that must complete before this job runs'),
   use_worktree: z.boolean().optional().describe('Create a git worktree so the agent works in an isolated checkout'),
   repeat_interval_ms: z.number().optional().describe('Re-queue the job automatically after it completes; value is the delay in ms before the next run'),
 });
 
 export async function createJobHandler(agentId: string, input: z.infer<typeof createJobSchema>): Promise<string> {
-  const { description, title, priority, work_dir, max_turns, stop_mode, stop_value, model, depends_on, use_worktree, repeat_interval_ms } = input;
+  const { description, title, priority, work_dir, max_turns, stop_mode, stop_value, model, effort, depends_on, use_worktree, repeat_interval_ms } = input;
 
   // Inherit work_dir, project_id, and model from calling agent's job if not specified
   let resolvedWorkDir = work_dir ?? null;
@@ -43,6 +44,7 @@ export async function createJobHandler(agentId: string, input: z.infer<typeof cr
   let retryCount = 0;
   let originalJobId: string | null = null;
   let completionChecks: string | null = null;
+  let inheritedEffort: string | null = null;
   if (agent) {
     const parentJob = queries.getJobById(agent.job_id);
     if (parentJob?.original_job_id) {
@@ -54,6 +56,10 @@ export async function createJobHandler(agentId: string, input: z.infer<typeof cr
         retryCount = parentJob.retry_count + 1; // increment from analysis job's count
         originalJobId = origJob.original_job_id ?? origJob.id;
         completionChecks = origJob.completion_checks ?? null;
+        // Carry the classifier-pinned effort through the retry chain even if the
+        // analysis agent forgets to pass it — otherwise the retry escalates to
+        // the phase/env default effort and runs at a higher cost level.
+        inheritedEffort = origJob.effort ?? null;
       }
     }
   }
@@ -79,6 +85,7 @@ export async function createJobHandler(agentId: string, input: z.infer<typeof cr
     stop_mode: stop_mode ?? 'turns',
     stop_value: stop_value ?? (max_turns ?? 50),
     model: model ?? inheritedModel,
+    effort: effort ?? inheritedEffort,
     template_id: null,
     depends_on: depends_on?.length ? JSON.stringify(depends_on) : null,
     use_worktree: resolvedUseWorktree ? 1 : 0,

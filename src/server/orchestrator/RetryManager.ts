@@ -216,6 +216,7 @@ ${ctx.diff}
    - work_dir: '${workDir}'
    - max_turns: ${ctx.originalJob.max_turns ?? 50}
    ${ctx.originalJob.model ? `- model: '${ctx.originalJob.model}'` : ''}
+   ${ctx.originalJob.effort ? `- effort: '${ctx.originalJob.effort}' (complexity-pinned by the auto-classifier — keep it so the retry runs at the same cost level)` : ''}
    ${ctx.originalJob.template_id ? `- template_id is not available via create_job, so include any relevant template context in the description` : ''}
 
 IMPORTANT constraints:

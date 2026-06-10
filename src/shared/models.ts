@@ -141,7 +141,11 @@ export function _resetEffortWarningsForTest(): void {
 /**
  * Claude models that get an `--effort` flag, by family. Sonnet/Haiku run
  * without one (Sonnet 4.6 doesn't support `xhigh`, and the flag has never
- * been passed for those tiers here).
+ * been passed for those tiers here). Opus 4.6 is also deliberately excluded:
+ * it predates the effort tuning this orchestrator uses, so a job whose
+ * rate-limit fallback cascades past Opus 4.7 down to `claude-opus-4-6[1m]`
+ * runs without an effort flag — including jobs with a classifier-pinned
+ * effort.
  */
 const FABLE_EFFORT_MODELS = new Set([DEFAULT_CLAUDE_FABLE_MODEL, DEFAULT_CLAUDE_FABLE_MODEL_1M]);
 const OPUS_EFFORT_MODELS = new Set([DEFAULT_CLAUDE_OPUS_MODEL, DEFAULT_CLAUDE_OPUS_MODEL_1M]);
