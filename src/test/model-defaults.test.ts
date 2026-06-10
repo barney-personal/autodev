@@ -35,14 +35,16 @@ describe('shared model defaults', () => {
   beforeEach(clearEffortEnv);
   afterEach(restoreEffortEnv);
 
-  it('pins workflow defaults to opus 4.7 and gpt-5.5', () => {
-    expect(DEFAULT_WORKFLOW_IMPLEMENTER_MODEL).toBe('claude-opus-4-7[1m]');
+  it('pins workflow defaults to fable 5 implementer and gpt-5.5 reviewer', () => {
+    expect(DEFAULT_WORKFLOW_IMPLEMENTER_MODEL).toBe('claude-fable-5[1m]');
     expect(DEFAULT_WORKFLOW_REVIEWER_MODEL).toBe('codex-gpt-5.5');
     expect(DEFAULT_CODEX_MODEL).toBe('codex-gpt-5.5');
   });
 
-  it('uses xhigh effort for opus 4.7 by default (no phase)', () => {
+  it('uses xhigh effort for fable 5 and opus 4.7 by default (no phase)', () => {
     expect(getClaudeEffort(null)).toBeNull();
+    expect(getClaudeEffort('claude-fable-5')).toBe('xhigh');
+    expect(getClaudeEffort('claude-fable-5[1m]')).toBe('xhigh');
     expect(getClaudeEffort('claude-opus-4-7')).toBe('xhigh');
     expect(getClaudeEffort('claude-opus-4-7[1m]')).toBe('xhigh');
     expect(getClaudeEffort('claude-opus-4-6')).toBeNull();
@@ -60,9 +62,23 @@ describe('phase-aware effort', () => {
   beforeEach(clearEffortEnv);
   afterEach(restoreEffortEnv);
 
-  it('drops implement-phase effort to medium for both providers', () => {
+  it('drops implement-phase effort to medium for opus and codex', () => {
     expect(getClaudeEffort('claude-opus-4-7[1m]', 'implement')).toBe('medium');
     expect(getCodexReasoningEffort('codex-gpt-5.5', 'implement')).toBe('medium');
+  });
+
+  it('keeps implement-phase effort at high for fable 5 (frontier-model tuning)', () => {
+    expect(getClaudeEffort('claude-fable-5[1m]', 'implement')).toBe('high');
+    expect(getClaudeEffort('claude-fable-5', 'implement')).toBe('high');
+    // Other fable phases match the shared table
+    expect(getClaudeEffort('claude-fable-5[1m]', 'assess')).toBe('xhigh');
+    expect(getClaudeEffort('claude-fable-5[1m]', 'review')).toBe('high');
+    expect(getClaudeEffort('claude-fable-5[1m]', 'verify')).toBe('xhigh');
+  });
+
+  it('env vars override the fable phase table too', () => {
+    process.env.EFFORT_IMPLEMENT = 'low';
+    expect(getClaudeEffort('claude-fable-5[1m]', 'implement')).toBe('low');
   });
 
   it('drops review-phase effort to high for both providers (paired with fast service tier)', () => {
@@ -117,6 +133,38 @@ describe('phase-aware effort', () => {
     expect(getClaudeEffort('claude-sonnet-4-6[1m]', 'implement')).toBeNull();
     expect(getClaudeEffort('claude-opus-4-6', 'assess')).toBeNull();
     expect(getCodexReasoningEffort('claude-opus-4-7', 'implement')).toBeNull();
+  });
+});
+
+describe('job-pinned effort (classifier complexity scaling)', () => {
+  beforeEach(clearEffortEnv);
+  afterEach(restoreEffortEnv);
+
+  it('a job-pinned effort wins over phase and env defaults', () => {
+    expect(getClaudeEffort('claude-fable-5[1m]', null, 'medium')).toBe('medium');
+    expect(getClaudeEffort('claude-fable-5[1m]', 'implement', 'xhigh')).toBe('xhigh');
+    process.env.EFFORT_DEFAULT = 'low';
+    expect(getClaudeEffort('claude-fable-5[1m]', null, 'xhigh')).toBe('xhigh');
+  });
+
+  it('survives a rate-limit fallback to opus (pin still applies)', () => {
+    expect(getClaudeEffort('claude-opus-4-7[1m]', null, 'medium')).toBe('medium');
+  });
+
+  it('is dropped entirely for models without effort gating', () => {
+    expect(getClaudeEffort('claude-sonnet-4-6[1m]', null, 'medium')).toBeNull();
+    expect(getClaudeEffort('claude-haiku-4-5-20251001', null, 'xhigh')).toBeNull();
+  });
+
+  it('rejects values outside the allowlist (shell-injection defence) and falls back', () => {
+    expect(getClaudeEffort('claude-fable-5[1m]', null, 'medum')).toBe('xhigh');
+    expect(getClaudeEffort('claude-fable-5[1m]', null, 'high$(rm -rf /)')).toBe('xhigh');
+    expect(getClaudeEffort('claude-fable-5[1m]', 'implement', 'bogus')).toBe('high');
+  });
+
+  it('null/undefined pin falls through to normal resolution', () => {
+    expect(getClaudeEffort('claude-fable-5[1m]', 'implement', null)).toBe('high');
+    expect(getClaudeEffort('claude-fable-5[1m]', 'implement', undefined)).toBe('high');
   });
 });
 

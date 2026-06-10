@@ -13,6 +13,9 @@ interface ModelPricing {
 
 // Pricing as of May 2025 — update when Anthropic changes rates.
 const PRICING: Record<string, ModelPricing> = {
+  // Fable 5 launch pricing (June 2026).
+  'claude-fable-5':          { inputPerMillion: 10,  outputPerMillion: 50 },
+  'claude-fable-5[1m]':      { inputPerMillion: 10,  outputPerMillion: 50 },
   'claude-opus-4-7':         { inputPerMillion: 15,  outputPerMillion: 75 },
   'claude-opus-4-7[1m]':     { inputPerMillion: 15,  outputPerMillion: 75 },
   'claude-opus-4-6':         { inputPerMillion: 15,  outputPerMillion: 75 },

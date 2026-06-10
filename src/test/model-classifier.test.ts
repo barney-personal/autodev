@@ -276,3 +276,109 @@ describe('ModelClassifier explicit non-[1m] opus fallback', () => {
     expect(getAvailableModel('claude-opus-4-6')).toBe('codex');
   });
 });
+
+describe('resolveModel complexity classification → fable model + scaled effort', () => {
+  const realFetch = global.fetch;
+  let savedKey: string | undefined;
+
+  beforeEach(async () => {
+    await setupTestDb();
+    const { _resetForTest } = await import('../server/orchestrator/ModelClassifier.js');
+    _resetForTest();
+    savedKey = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+  });
+
+  afterEach(async () => {
+    await cleanupTestDb();
+    global.fetch = realFetch;
+    if (savedKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = savedKey;
+  });
+
+  function mockClassifier(word: string) {
+    global.fetch = (async () => ({
+      ok: true,
+      json: async () => ({ content: [{ text: word }] }),
+    })) as unknown as typeof fetch;
+  }
+
+  async function makeAutoJob() {
+    const queries = await import('../server/db/queries.js');
+    const { randomUUID } = await import('crypto');
+    return queries.insertJob({
+      id: randomUUID(),
+      title: 'Auto-classified job',
+      description: 'Do something',
+      context: null,
+      priority: 0,
+    });
+  }
+
+  it('medium tasks route to fable 5 with effort pinned to medium', async () => {
+    const queries = await import('../server/db/queries.js');
+    const { resolveModel } = await import('../server/orchestrator/ModelClassifier.js');
+    mockClassifier('medium');
+
+    const job = await makeAutoJob();
+    const model = await resolveModel(job);
+
+    expect(model).toBe('claude-fable-5[1m]');
+    const row = queries.getJobById(job.id)!;
+    expect(row.model).toBe('claude-fable-5[1m]');
+    expect(row.effort).toBe('medium');
+  });
+
+  it('complex tasks route to fable 5 with effort pinned to xhigh', async () => {
+    const queries = await import('../server/db/queries.js');
+    const { resolveModel } = await import('../server/orchestrator/ModelClassifier.js');
+    mockClassifier('complex');
+
+    const job = await makeAutoJob();
+    const model = await resolveModel(job);
+
+    expect(model).toBe('claude-fable-5[1m]');
+    const row = queries.getJobById(job.id)!;
+    expect(row.effort).toBe('xhigh');
+  });
+
+  it('simple tasks stay on haiku with no effort pin', async () => {
+    const queries = await import('../server/db/queries.js');
+    const { resolveModel } = await import('../server/orchestrator/ModelClassifier.js');
+    mockClassifier('simple');
+
+    const job = await makeAutoJob();
+    const model = await resolveModel(job);
+
+    expect(model).toBe('claude-haiku-4-5-20251001');
+    const row = queries.getJobById(job.id)!;
+    expect(row.effort).toBeNull();
+  });
+
+  it('classification failure falls back to sonnet and leaves effort unset', async () => {
+    const queries = await import('../server/db/queries.js');
+    const { resolveModel } = await import('../server/orchestrator/ModelClassifier.js');
+    global.fetch = (async () => { throw new Error('network down'); }) as unknown as typeof fetch;
+
+    const job = await makeAutoJob();
+    const model = await resolveModel(job);
+
+    expect(model).toBe('claude-sonnet-4-6[1m]');
+    expect(queries.getJobById(job.id)!.effort).toBeNull();
+  });
+
+  it('fable rate limit at classify time falls through to opus while keeping the effort pin', async () => {
+    const queries = await import('../server/db/queries.js');
+    const { resolveModel, markModelRateLimited } = await import('../server/orchestrator/ModelClassifier.js');
+    mockClassifier('complex');
+    markModelRateLimited('claude-fable-5[1m]', 60_000);
+
+    const job = await makeAutoJob();
+    const model = await resolveModel(job);
+
+    expect(model).toBe('claude-opus-4-7[1m]');
+    const row = queries.getJobById(job.id)!;
+    expect(row.model).toBe('claude-opus-4-7[1m]');
+    expect(row.effort).toBe('xhigh');
+  });
+});

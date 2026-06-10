@@ -411,9 +411,19 @@ export function updateJobRepeatInterval(id: string, ms: number): void {
   db.prepare('UPDATE jobs SET repeat_interval_ms = ?, updated_at = ? WHERE id = ?').run(ms, Date.now(), id);
 }
 
-export function updateJobModel(id: string, model: string): void {
+/**
+ * Update a job's model, and optionally its pinned effort level. Pass `effort`
+ * explicitly (string or null) to set the column; omit it to leave the existing
+ * value untouched (e.g. rate-limit fallback swaps that shouldn't clobber a
+ * classifier-pinned effort).
+ */
+export function updateJobModel(id: string, model: string, effort?: string | null): void {
   const db = getDb();
-  db.prepare('UPDATE jobs SET model = ?, updated_at = ? WHERE id = ?').run(model, Date.now(), id);
+  if (effort === undefined) {
+    db.prepare('UPDATE jobs SET model = ?, updated_at = ? WHERE id = ?').run(model, Date.now(), id);
+  } else {
+    db.prepare('UPDATE jobs SET model = ?, effort = ?, updated_at = ? WHERE id = ?').run(model, effort, Date.now(), id);
+  }
 }
 
 export function updateJobTitle(id: string, title: string): void {

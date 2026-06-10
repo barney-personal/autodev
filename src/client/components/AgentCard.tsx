@@ -16,6 +16,8 @@ interface AgentCardProps {
 
 // Client-side cost estimation (mirrors CostEstimator.ts pricing)
 const MODEL_PRICING: Record<string, [number, number]> = {
+  'claude-fable-5':          [10, 50],
+  'claude-fable-5[1m]':      [10, 50],
   'claude-opus-4-7':         [15, 75],
   'claude-opus-4-7[1m]':     [15, 75],
   'claude-opus-4-6':         [15, 75],

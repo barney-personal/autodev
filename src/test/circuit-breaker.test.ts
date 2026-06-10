@@ -14,6 +14,8 @@ describe('CircuitBreaker', () => {
   });
 
   it('opens when all known models are rate-limited', () => {
+    breaker.recordModelLimited('claude-fable-5');
+    breaker.recordModelLimited('claude-fable-5[1m]');
     breaker.recordModelLimited('claude-opus-4-7');
     breaker.recordModelLimited('claude-opus-4-7[1m]');
     breaker.recordModelLimited('claude-opus-4-6');
@@ -27,6 +29,8 @@ describe('CircuitBreaker', () => {
   });
 
   it('closes when a model becomes available', () => {
+    breaker.recordModelLimited('claude-fable-5');
+    breaker.recordModelLimited('claude-fable-5[1m]');
     breaker.recordModelLimited('claude-opus-4-7');
     breaker.recordModelLimited('claude-opus-4-7[1m]');
     breaker.recordModelLimited('claude-opus-4-6');

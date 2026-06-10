@@ -37,8 +37,10 @@ repo "autodev", upcoming phase "implement", cycle 2 of max 5.
 - claude-haiku-4-5: fastest, lowest reasoning depth; great for trivial mechanical edits — cost: very cheap
 - claude-sonnet-4-6: balanced quality + speed; safe default for medium milestones — cost: moderate
 - claude-sonnet-4-6[1m]: sonnet with 1M-token context; for plan/context-heavy work — cost: moderate+
-- claude-opus-4-7: highest single-shot reasoning depth — cost: expensive
-- claude-opus-4-7[1m]: opus with 1M-token context; for very large/complex milestones — cost: most expensive
+- claude-opus-4-7: high single-shot reasoning depth (previous flagship) — cost: expensive
+- claude-opus-4-7[1m]: opus with 1M-token context; for large/complex milestones — cost: expensive+
+- claude-fable-5: frontier reasoning depth and long-horizon autonomy; hardest problems — cost: most expensive
+- claude-fable-5[1m]: fable with 1M-token context; default implementer for complex work — cost: most expensive
 - codex-gpt-5.5: separate provider, useful as cross-provider fallback or for tests — cost: moderate
 
 ## 3. Workflow context

@@ -36,4 +36,13 @@ describe('estimateCostUsdDetailed', () => {
     // are cache reads at 10% of base.
     expect(detailed * 3).toBeLessThan(lumped);
   });
+
+  it('prices fable 5 at $10/$50 per MTok (both context variants)', () => {
+    // Without a PRICING entry these would silently fall back to Sonnet rates
+    // ($3/$15) and under-enforce the Resolver/Watcher USD caps ~3.5×.
+    for (const model of ['claude-fable-5', 'claude-fable-5[1m]']) {
+      expect(estimateCostUsd(model, 1_000_000, 0)).toBeCloseTo(10, 6);
+      expect(estimateCostUsd(model, 0, 1_000_000)).toBeCloseTo(50, 6);
+    }
+  });
 });

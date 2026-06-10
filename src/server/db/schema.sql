@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   work_dir    TEXT,
   max_turns   INTEGER NOT NULL DEFAULT 50,
   model       TEXT,
+  effort      TEXT,
   template_id TEXT REFERENCES templates(id),
   use_worktree       INTEGER NOT NULL DEFAULT 0,
   scheduled_at       INTEGER,

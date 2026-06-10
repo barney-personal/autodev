@@ -116,7 +116,7 @@ export function runAgent(options: RunOptions): void {
   const useCodex = isCodexModel(model);
   const codexReasoningEffort = getCodexReasoningEffort(model, job.workflow_phase);
   const codexServiceTier = getCodexServiceTier(model, job.workflow_phase);
-  const claudeEffort = getClaudeEffort(model, job.workflow_phase);
+  const claudeEffort = getClaudeEffort(model, job.workflow_phase, job.effort);
   if (useCodex) ensureCodexTrusted(workDir);
 
   const mcpUrl = `http://localhost:${mcpPort}/mcp/${agentId}`;
