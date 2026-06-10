@@ -298,7 +298,7 @@ data/
 | `CODEX_SERVICE_TIER_REVIEW` | `fast` | Codex `service_tier` override for the review phase. `fast` gives ~1.5x throughput on the priority lane (slightly higher cost). Other tiers: `default`, `flex`, `priority`, `auto`. Set to empty string to fall back to `~/.codex/config.toml`. |
 | `CODEX_SERVICE_TIER_ASSESS` / `_IMPLEMENT` / `_VERIFY` / `_DEFAULT` | *(unset)* | Codex `service_tier` overrides for the other phases. No default — the user's `~/.codex/config.toml` value is used. |
 | `RESOLVER_MODE` | `assisted` | Auto Resolver gate: `off` disables entirely; `diagnose` writes diagnoses but never resumes; `assisted` auto-resumes safe classes (transient_infra, config_drift) only; `auto` auto-resumes any class that clears its confidence threshold. |
-| `RESOLVER_MODEL` | `claude-opus-4-7` | Model used for Resolver sessions. |
+| `RESOLVER_MODEL` | `claude-opus-4-8` | Model used for Resolver sessions. |
 | `RESOLVER_MAX_COST_USD` | `2` | Per-run cost ceiling. Resolver self-aborts when hit. |
 | `RESOLVER_MAX_TURNS` | `12` | Per-run turn ceiling. |
 | `RESOLVER_LIFETIME_ATTEMPTS` | `3` | Resolver attempts per workflow lifetime. |
