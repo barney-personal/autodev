@@ -406,6 +406,21 @@ describe('validateWatcherModel', () => {
       else process.env.WATCHER_MODEL = prev;
     }
   });
+
+  it('accepts the built-in resolver default model (same pricing-entry invariant)', async () => {
+    const { defaultResolverModel, validateResolverModel } = await import('../server/orchestrator/ResolverSession.js');
+    const prev = process.env.RESOLVER_MODEL;
+    delete process.env.RESOLVER_MODEL;
+    try {
+      const warn = vi.fn();
+      const ok = validateResolverModel(defaultResolverModel(), { warn });
+      expect(ok).toBe(true);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      if (prev === undefined) delete process.env.RESOLVER_MODEL;
+      else process.env.RESOLVER_MODEL = prev;
+    }
+  });
 });
 
 describe('pinCacheControlToLast — Anthropic 4-breakpoint cap', () => {

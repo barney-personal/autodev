@@ -33,7 +33,7 @@ import type { ResolverRun, ResolverStatus } from '../../shared/types.js';
 // ─── Config ─────────────────────────────────────────────────────────────────
 
 export function defaultResolverModel(): string {
-  return process.env.RESOLVER_MODEL ?? 'claude-opus-4-7';
+  return process.env.RESOLVER_MODEL ?? 'claude-opus-4-8';
 }
 
 export function envResolverMaxCostUsd(): number {
