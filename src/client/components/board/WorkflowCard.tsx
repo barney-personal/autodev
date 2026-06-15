@@ -7,6 +7,8 @@ import { fmtElapsedCompact, fmtRel, fmtCost } from './format';
 const MODEL_PRICING: Record<string, [number, number]> = {
   'claude-fable-5':          [10, 50],
   'claude-fable-5[1m]':      [10, 50],
+  'claude-opus-4-8':         [5, 25],
+  'claude-opus-4-8[1m]':     [5, 25],
   'claude-opus-4-7':         [5, 25],
   'claude-opus-4-7[1m]':     [5, 25],
   'claude-opus-4-6':         [5, 25],

@@ -39,8 +39,8 @@ repo "autodev", upcoming phase "implement", cycle 2 of max 5.
 - claude-sonnet-4-6[1m]: sonnet with 1M-token context; for plan/context-heavy work — cost: moderate+
 - claude-opus-4-7: high single-shot reasoning depth (previous flagship) — cost: expensive
 - claude-opus-4-7[1m]: opus with 1M-token context; for large/complex milestones — cost: expensive+
-- claude-fable-5: frontier reasoning depth and long-horizon autonomy; hardest problems — cost: most expensive
-- claude-fable-5[1m]: fable with 1M-token context; default implementer for complex work — cost: most expensive
+- claude-opus-4-8: frontier reasoning depth and long-horizon autonomy; current flagship — cost: expensive
+- claude-opus-4-8[1m]: opus 4.8 with 1M-token context; default implementer for complex work — cost: expensive+
 - codex-gpt-5.5: separate provider, useful as cross-provider fallback or for tests — cost: moderate
 
 ## 3. Workflow context

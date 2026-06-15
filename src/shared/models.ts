@@ -8,21 +8,24 @@ export interface ModelOption {
   label: string;
 }
 
-export const DEFAULT_CLAUDE_FABLE_MODEL = 'claude-fable-5';
-export const DEFAULT_CLAUDE_FABLE_MODEL_1M = 'claude-fable-5[1m]';
+// Opus 4.8 is the default ("frontier") Claude model for agent work. It
+// replaced a brief Fable 5 stint (reverted June 2026 — Fable 5 is blocked in
+// the UK). Opus 4.7 stays as the rate-limit fallback tier below it.
+export const DEFAULT_CLAUDE_OPUS_48_MODEL = 'claude-opus-4-8';
+export const DEFAULT_CLAUDE_OPUS_48_MODEL_1M = 'claude-opus-4-8[1m]';
 export const DEFAULT_CLAUDE_OPUS_MODEL = 'claude-opus-4-7';
 export const DEFAULT_CLAUDE_OPUS_MODEL_1M = 'claude-opus-4-7[1m]';
 export const DEFAULT_CLAUDE_SONNET_MODEL = 'claude-sonnet-4-6';
 export const DEFAULT_CLAUDE_SONNET_MODEL_1M = 'claude-sonnet-4-6[1m]';
 export const DEFAULT_CODEX_MODEL = 'codex-gpt-5.5';
-// Fable 5 is the default Claude model for agent work; Codex GPT-5.5 stays as
+// Opus 4.8 is the default Claude model for agent work; Codex GPT-5.5 stays as
 // the reviewer so plans/changes are checked by a different provider.
-export const DEFAULT_WORKFLOW_IMPLEMENTER_MODEL = DEFAULT_CLAUDE_FABLE_MODEL_1M;
+export const DEFAULT_WORKFLOW_IMPLEMENTER_MODEL = DEFAULT_CLAUDE_OPUS_48_MODEL_1M;
 export const DEFAULT_WORKFLOW_REVIEWER_MODEL = DEFAULT_CODEX_MODEL;
-export const DEFAULT_DEBATE_CLAUDE_MODEL = DEFAULT_CLAUDE_FABLE_MODEL_1M;
+export const DEFAULT_DEBATE_CLAUDE_MODEL = DEFAULT_CLAUDE_OPUS_48_MODEL_1M;
 export const DEFAULT_DEBATE_CODEX_MODEL = DEFAULT_CODEX_MODEL;
-export const DEFAULT_VERIFY_MODEL = DEFAULT_CLAUDE_FABLE_MODEL;
-export const DEFAULT_EYE_MODEL = DEFAULT_CLAUDE_FABLE_MODEL;
+export const DEFAULT_VERIFY_MODEL = DEFAULT_CLAUDE_OPUS_48_MODEL;
+export const DEFAULT_EYE_MODEL = DEFAULT_CLAUDE_OPUS_48_MODEL;
 export const DEFAULT_CLAUDE_EFFORT = 'xhigh';
 
 /** Phases with dedicated effort/thinking-budget defaults. */
@@ -44,13 +47,14 @@ const PHASE_EFFORT_DEFAULTS: Record<EffortPhase, string> = {
 };
 
 /**
- * Fable 5 phase defaults. Same shape as `PHASE_EFFORT_DEFAULTS`, but implement
- * runs at `high` instead of `medium`: on Fable-class models effort matters more
- * than on prior Opus tiers, and higher effort up front tends to reduce turn
- * count (and therefore total cost on a $50/MTok-output model) on agentic
- * execution. EFFORT_* env vars override both tables uniformly.
+ * Frontier-model (Opus 4.8) phase defaults. Same shape as
+ * `PHASE_EFFORT_DEFAULTS`, but implement runs at `high` instead of `medium`:
+ * on the frontier tier effort matters more than on prior Opus tiers, and
+ * higher effort up front tends to reduce turn count (and therefore total
+ * cost) on agentic execution. EFFORT_* env vars override both tables
+ * uniformly. Opus 4.7 stays on the standard table as the fallback tier.
  */
-const FABLE_PHASE_EFFORT_DEFAULTS: Record<EffortPhase, string> = {
+const FRONTIER_PHASE_EFFORT_DEFAULTS: Record<EffortPhase, string> = {
   assess: 'xhigh',
   review: 'high',
   implement: 'high',
@@ -150,7 +154,7 @@ export function _resetEffortWarningsForTest(): void {
  * runs without an effort flag — including jobs with a classifier-pinned
  * effort.
  */
-const FABLE_EFFORT_MODELS = new Set([DEFAULT_CLAUDE_FABLE_MODEL, DEFAULT_CLAUDE_FABLE_MODEL_1M]);
+const FRONTIER_EFFORT_MODELS = new Set([DEFAULT_CLAUDE_OPUS_48_MODEL, DEFAULT_CLAUDE_OPUS_48_MODEL_1M]);
 const OPUS_EFFORT_MODELS = new Set([DEFAULT_CLAUDE_OPUS_MODEL, DEFAULT_CLAUDE_OPUS_MODEL_1M]);
 
 /**
@@ -168,10 +172,10 @@ export function getClaudeEffort(
   jobEffort?: string | null,
 ): string | null {
   if (model == null) return null;
-  const isFable = FABLE_EFFORT_MODELS.has(model);
-  if (!isFable && !OPUS_EFFORT_MODELS.has(model)) return null;
+  const isFrontier = FRONTIER_EFFORT_MODELS.has(model);
+  if (!isFrontier && !OPUS_EFFORT_MODELS.has(model)) return null;
   if (jobEffort != null && KNOWN_EFFORT_LEVELS.has(jobEffort)) return jobEffort;
-  return resolveEffort(phase, isFable ? FABLE_PHASE_EFFORT_DEFAULTS : PHASE_EFFORT_DEFAULTS);
+  return resolveEffort(phase, isFrontier ? FRONTIER_PHASE_EFFORT_DEFAULTS : PHASE_EFFORT_DEFAULTS);
 }
 
 export function getCodexReasoningEffort(model: string | null, phase?: WorkflowPhase | null): string | null {
@@ -217,7 +221,7 @@ export function getCodexServiceTier(model: string | null, phase?: WorkflowPhase 
 
 /** Claude models available for job dispatch. */
 export const CLAUDE_MODEL_OPTIONS: ModelOption[] = [
-  { value: DEFAULT_CLAUDE_FABLE_MODEL_1M, label: 'claude-fable-5[1m] — most capable, 1M context (latest)' },
+  { value: DEFAULT_CLAUDE_OPUS_48_MODEL_1M, label: 'claude-opus-4-8[1m] — most capable, 1M context (latest)' },
   { value: DEFAULT_CLAUDE_OPUS_MODEL_1M, label: 'claude-opus-4-7[1m] — 1M context (previous)' },
   { value: 'claude-opus-4-6[1m]',        label: 'claude-opus-4-6[1m] — 1M context (older)' },
   { value: DEFAULT_CLAUDE_SONNET_MODEL_1M, label: 'claude-sonnet-4-6[1m] — balanced, 1M context' },

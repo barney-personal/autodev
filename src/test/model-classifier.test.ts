@@ -277,7 +277,7 @@ describe('ModelClassifier explicit non-[1m] opus fallback', () => {
   });
 });
 
-describe('resolveModel complexity classification → fable model + scaled effort', () => {
+describe('resolveModel complexity classification → opus 4.8 model + scaled effort', () => {
   const realFetch = global.fetch;
   let savedKey: string | undefined;
 
@@ -315,7 +315,7 @@ describe('resolveModel complexity classification → fable model + scaled effort
     });
   }
 
-  it('medium tasks route to fable 5 with effort pinned to medium', async () => {
+  it('medium tasks route to opus 4.8 with effort pinned to medium', async () => {
     const queries = await import('../server/db/queries.js');
     const { resolveModel } = await import('../server/orchestrator/ModelClassifier.js');
     mockClassifier('medium');
@@ -323,13 +323,13 @@ describe('resolveModel complexity classification → fable model + scaled effort
     const job = await makeAutoJob();
     const model = await resolveModel(job);
 
-    expect(model).toBe('claude-fable-5[1m]');
+    expect(model).toBe('claude-opus-4-8[1m]');
     const row = queries.getJobById(job.id)!;
-    expect(row.model).toBe('claude-fable-5[1m]');
+    expect(row.model).toBe('claude-opus-4-8[1m]');
     expect(row.effort).toBe('medium');
   });
 
-  it('complex tasks route to fable 5 with effort pinned to xhigh', async () => {
+  it('complex tasks route to opus 4.8 with effort pinned to xhigh', async () => {
     const queries = await import('../server/db/queries.js');
     const { resolveModel } = await import('../server/orchestrator/ModelClassifier.js');
     mockClassifier('complex');
@@ -337,7 +337,7 @@ describe('resolveModel complexity classification → fable model + scaled effort
     const job = await makeAutoJob();
     const model = await resolveModel(job);
 
-    expect(model).toBe('claude-fable-5[1m]');
+    expect(model).toBe('claude-opus-4-8[1m]');
     const row = queries.getJobById(job.id)!;
     expect(row.effort).toBe('xhigh');
   });
@@ -367,11 +367,11 @@ describe('resolveModel complexity classification → fable model + scaled effort
     expect(queries.getJobById(job.id)!.effort).toBeNull();
   });
 
-  it('fable rate limit at classify time falls through to opus while keeping the effort pin', async () => {
+  it('opus 4.8 rate limit at classify time falls through to opus 4.7 while keeping the effort pin', async () => {
     const queries = await import('../server/db/queries.js');
     const { resolveModel, markModelRateLimited } = await import('../server/orchestrator/ModelClassifier.js');
     mockClassifier('complex');
-    markModelRateLimited('claude-fable-5[1m]', 60_000);
+    markModelRateLimited('claude-opus-4-8[1m]', 60_000);
 
     const job = await makeAutoJob();
     const model = await resolveModel(job);

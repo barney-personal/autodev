@@ -24,8 +24,8 @@ const MODEL_MENU: ReadonlyArray<{ id: string; capability: string; cost: string }
   { id: 'claude-sonnet-4-6[1m]',      capability: 'sonnet with 1M-token context; for plan/context-heavy work',           cost: 'moderate+' },
   { id: 'claude-opus-4-7',            capability: 'high single-shot reasoning depth (previous flagship)',                  cost: 'expensive' },
   { id: 'claude-opus-4-7[1m]',        capability: 'opus with 1M-token context; for large/complex milestones',             cost: 'expensive+' },
-  { id: 'claude-fable-5',             capability: 'frontier reasoning depth and long-horizon autonomy; hardest problems',  cost: 'most expensive' },
-  { id: 'claude-fable-5[1m]',         capability: 'fable with 1M-token context; default implementer for complex work',    cost: 'most expensive' },
+  { id: 'claude-opus-4-8',            capability: 'frontier reasoning depth and long-horizon autonomy; current flagship',  cost: 'expensive' },
+  { id: 'claude-opus-4-8[1m]',        capability: 'opus 4.8 with 1M-token context; default implementer for complex work', cost: 'expensive+' },
   { id: 'codex-gpt-5.5',              capability: 'separate provider, useful as cross-provider fallback or for tests',     cost: 'moderate' },
 ];
 
