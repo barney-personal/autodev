@@ -9,21 +9,21 @@ import { CircuitBreaker } from './CircuitBreaker.js';
 // The model used to do the classification itself — always Haiku, cheap and fast
 const CLASSIFIER_MODEL = 'claude-haiku-4-5-20251001';
 
-// Fable 5 is the default for real work; effort (below) is the cost lever that
+// Opus 4.8 is the default for real work; effort (below) is the cost lever that
 // scales with complexity. Simple tasks stay on Haiku — paying frontier-model
-// rates ($10/$50 per MTok) for typo-class tasks is waste, not capability.
+// rates ($5/$25 per MTok) for typo-class tasks is waste, not capability.
 const COMPLEXITY_TO_MODEL: Record<string, string> = {
   simple:  'claude-haiku-4-5-20251001',
-  medium:  'claude-fable-5[1m]',
-  complex: 'claude-fable-5[1m]',
+  medium:  'claude-opus-4-8[1m]',
+  complex: 'claude-opus-4-8[1m]',
 };
 
 // Effort pinned on the job alongside the classified model. Medium tasks run
-// Fable at `medium` effort (moderate scope doesn't need frontier thinking
+// Opus 4.8 at `medium` effort (moderate scope doesn't need frontier thinking
 // depth); complex tasks get `xhigh` (the recommended level for hard agentic
 // coding). Haiku takes no effort flag. The pin survives rate-limit fallback:
-// if Fable falls back to Opus the effort still applies; Sonnet/Haiku drop the
-// flag entirely via the allowlist gate in getClaudeEffort.
+// if Opus 4.8 falls back to Opus 4.7 the effort still applies; Sonnet/Haiku
+// drop the flag entirely via the allowlist gate in getClaudeEffort.
 const COMPLEXITY_TO_EFFORT: Record<string, string | null> = {
   simple:  null,
   medium:  'medium',
@@ -39,8 +39,8 @@ const COMPLEXITY_TO_EFFORT: Record<string, string | null> = {
 // Codex (GPT-5.4 via OpenAI) is the final fallback — different API provider,
 // so Anthropic rate limits don't affect it.
 const MODEL_FALLBACK_CHAIN: string[] = [
-  'claude-fable-5[1m]',
-  'claude-fable-5',
+  'claude-opus-4-8[1m]',
+  'claude-opus-4-8',
   'claude-opus-4-7[1m]',
   'claude-opus-4-7',
   'claude-opus-4-6[1m]',
@@ -56,8 +56,8 @@ const MODEL_FALLBACK_CHAIN: string[] = [
 // dispatched outside the fallback chain — e.g. a classifier-only model — is
 // still tracked by the breaker.
 export const KNOWN_MODELS: readonly string[] = [
-  'claude-fable-5',
-  'claude-fable-5[1m]',
+  'claude-opus-4-8',
+  'claude-opus-4-8[1m]',
   'claude-opus-4-7',
   'claude-opus-4-7[1m]',
   'claude-opus-4-6',

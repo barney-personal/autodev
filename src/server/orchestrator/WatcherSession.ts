@@ -50,9 +50,9 @@ function isStoppedWatcherStatus(status: WatcherStatus): boolean {
  * Re-read the configured watcher model on each call — matches the
  * env*-helper pattern in JobWatcherManager so tests can patch
  * `process.env.WATCHER_MODEL` after import without ESM hoisting tricks.
- * Opus-tier rather than Fable: the watcher is a high-frequency supervision
- * loop (one tick per watched agent), so it takes the cost-efficient tier
- * while implementer work runs on Fable 5. Override via env.
+ * The watcher is a high-frequency supervision loop (one tick per watched
+ * agent), so it runs on the same Opus 4.8 tier as implementer work but
+ * without the elevated effort. Override via env.
  */
 export function defaultWatcherModel(): string {
   return process.env.WATCHER_MODEL ?? 'claude-opus-4-8';

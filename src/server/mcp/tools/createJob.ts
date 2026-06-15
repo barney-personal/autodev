@@ -14,7 +14,7 @@ export const createJobSchema = z.object({
   max_turns: z.number().optional().describe('Max agent turns (default: 50). Ignored when stop_mode is not "turns".'),
   stop_mode: z.enum(['turns', 'budget', 'time', 'completion']).optional().describe('How to stop the agent: "turns" (default), "budget" (dollar limit), "time" (minute limit), or "completion" (run to natural finish)'),
   stop_value: z.number().optional().describe('Limit value for the stop mode: turn count, dollar amount, or minutes. Not used for "completion".'),
-  model: z.string().optional().describe('Model override, e.g. "claude-fable-5" (default: auto-classify)'),
+  model: z.string().optional().describe('Model override, e.g. "claude-opus-4-8" (default: auto-classify)'),
   effort: z.enum(KNOWN_EFFORT_LEVEL_VALUES).optional().describe('Pinned reasoning-effort level for the job (e.g. carried over from the original job when creating a retry). Default: phase/env effort defaults.'),
   depends_on: z.array(z.string()).optional().describe('Job IDs that must complete before this job runs'),
   use_worktree: z.boolean().optional().describe('Create a git worktree so the agent works in an isolated checkout'),

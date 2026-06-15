@@ -92,7 +92,7 @@ Then open http://localhost:3456.
 - Client: React 18 + Vite
 - Database: SQLite via `node:sqlite` experimental (auto-created at `data/orchestrator.db`)
 - Agents: spawned as `claude --print --output-format stream-json --verbose` subprocesses (or `codex exec --json` for Codex models)
-- Model defaults: `claude-fable-5[1m]` for implementer/debate/verify/eye work, `codex-gpt-5.5` as the workflow reviewer. The auto-classifier scales both model and `--effort` with task complexity (simple → Haiku, medium → Fable @ `medium`, complex → Fable @ `xhigh`); the classifier-pinned effort is stored on `jobs.effort`.
+- Model defaults: `claude-opus-4-8[1m]` for implementer/debate/verify/eye work, `codex-gpt-5.5` as the workflow reviewer. (Reverted from a brief `claude-fable-5[1m]` stint in June 2026 — Fable 5 is blocked in the UK.) The auto-classifier scales both model and `--effort` with task complexity (simple → Haiku, medium → Opus 4.8 @ `medium`, complex → Opus 4.8 @ `xhigh`); the classifier-pinned effort is stored on `jobs.effort`.
 
 ## Key Subsystems
 
@@ -292,9 +292,9 @@ data/
 | `SENTRY_DSN` | — | Optional error tracking |
 | `EFFORT_ASSESS` | `xhigh` | Effort/reasoning budget for the assess phase (Claude `--effort` / Codex `model_reasoning_effort`). Set to empty string to omit the flag. |
 | `EFFORT_REVIEW` | `high` | Effort budget for the review phase. Paired with the `fast` service tier — together they trade a small amount of reviewer depth for ~1.5x throughput. |
-| `EFFORT_IMPLEMENT` | `medium` (Opus/Codex), `high` (Fable 5) | Effort budget for the implement phase. Lowered from `xhigh` because plan and judgment already happened in assess/review — most implement turns are tool execution that doesn't benefit from extended thinking. Fable 5 implementers default to `high` instead: on Fable-class models, higher effort up front reduces turn count, which usually nets out cheaper at its output pricing. Setting the env var overrides both families. |
+| `EFFORT_IMPLEMENT` | `medium` (Opus 4.7/Codex), `high` (Opus 4.8) | Effort budget for the implement phase. Lowered from `xhigh` because plan and judgment already happened in assess/review — most implement turns are tool execution that doesn't benefit from extended thinking. Opus 4.8 (the frontier default) runs at `high` instead: on the frontier tier, higher effort up front reduces turn count, which usually nets out cheaper. Opus 4.7 stays at `medium` as the fallback tier. Setting the env var overrides both families. |
 | `EFFORT_VERIFY` | `xhigh` | Effort budget for the verify phase. |
-| `EFFORT_DEFAULT` | `xhigh` | Effort budget for one-shot (non-workflow) jobs. Auto-classified jobs pin a complexity-scaled effort instead (simple → Haiku with no flag, medium → Fable 5 @ `medium`, complex → Fable 5 @ `xhigh`), which takes precedence over this default. |
+| `EFFORT_DEFAULT` | `xhigh` | Effort budget for one-shot (non-workflow) jobs. Auto-classified jobs pin a complexity-scaled effort instead (simple → Haiku with no flag, medium → Opus 4.8 @ `medium`, complex → Opus 4.8 @ `xhigh`), which takes precedence over this default. |
 | `CODEX_SERVICE_TIER_REVIEW` | `fast` | Codex `service_tier` override for the review phase. `fast` gives ~1.5x throughput on the priority lane (slightly higher cost). Other tiers: `default`, `flex`, `priority`, `auto`. Set to empty string to fall back to `~/.codex/config.toml`. |
 | `CODEX_SERVICE_TIER_ASSESS` / `_IMPLEMENT` / `_VERIFY` / `_DEFAULT` | *(unset)* | Codex `service_tier` overrides for the other phases. No default — the user's `~/.codex/config.toml` value is used. |
 | `RESOLVER_MODE` | `assisted` | Auto Resolver gate: `off` disables entirely; `diagnose` writes diagnoses but never resumes; `assisted` auto-resumes safe classes (transient_infra, config_drift) only; `auto` auto-resumes any class that clears its confidence threshold. |

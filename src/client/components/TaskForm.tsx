@@ -243,8 +243,8 @@ export function TaskForm({ onSubmit, onClose, availableJobs = [] }: TaskFormProp
                 {[
                   { value: 'claude-haiku-4-5-20251001', label: 'Haiku' },
                   { value: 'claude-sonnet-4-6[1m]', label: 'Sonnet' },
-                  { value: 'claude-opus-4-7[1m]', label: 'Opus' },
-                  { value: 'claude-fable-5[1m]', label: 'Fable' },
+                  { value: 'claude-opus-4-7[1m]', label: 'Opus 4.7' },
+                  { value: 'claude-opus-4-8[1m]', label: 'Opus 4.8' },
                 ].map(m => (
                   <label key={m.value} className="form-checkbox-label">
                     <input
@@ -436,7 +436,7 @@ export function TaskForm({ onSubmit, onClose, availableJobs = [] }: TaskFormProp
                         <div className="form-group">
                           <label htmlFor="task-debate-claude">Claude Model</label>
                           <select id="task-debate-claude" value={state.debateClaudeModel} onChange={e => set({ debateClaudeModel: e.target.value })}>
-                            <option value="claude-fable-5[1m]">claude-fable-5[1m] — default, most capable</option>
+                            <option value="claude-opus-4-8[1m]">claude-opus-4-8[1m] — default, most capable</option>
                             <option value="claude-opus-4-7[1m]">claude-opus-4-7[1m]</option>
                             <option value="claude-opus-4-6[1m]">claude-opus-4-6[1m]</option>
                             <option value="claude-sonnet-4-6[1m]">claude-sonnet-4-6[1m]</option>

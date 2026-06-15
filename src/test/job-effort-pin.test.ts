@@ -1,7 +1,7 @@
 /**
  * Regression tests for the classifier-pinned `jobs.effort` column surviving
  * job-clone paths (PR #41 review finding): retry and repeat clones used to
- * drop the pin because insertJob didn't accept `effort`, so a medium Fable
+ * drop the pin because insertJob didn't accept `effort`, so a medium Opus 4.8
  * job would silently escalate to the one-shot default `xhigh` on retry.
  */
 import { beforeEach, afterEach, describe, expect, it } from 'vitest';
@@ -25,7 +25,7 @@ describe('job effort pin survives clone paths', () => {
       description: 'Do something medium-complex',
       context: null,
       priority: 0,
-      model: 'claude-fable-5[1m]',
+      model: 'claude-opus-4-8[1m]',
       effort: 'medium',
       retry_policy: 'same',
       max_retries: 2,
@@ -45,7 +45,7 @@ describe('job effort pin survives clone paths', () => {
     const repeated = queries.scheduleRepeatJob(job);
     expect(repeated.id).not.toBe(job.id);
     expect(repeated.effort).toBe('medium');
-    expect(repeated.model).toBe('claude-fable-5[1m]');
+    expect(repeated.model).toBe('claude-opus-4-8[1m]');
   });
 
   it('retry-policy "same" clones keep the pin', async () => {
@@ -64,7 +64,7 @@ describe('job effort pin survives clone paths', () => {
       .find(j => j.id !== job.id && j.original_job_id === job.id);
     expect(clone).toBeDefined();
     expect(clone!.effort).toBe('medium');
-    expect(clone!.model).toBe('claude-fable-5[1m]');
+    expect(clone!.model).toBe('claude-opus-4-8[1m]');
   });
 
   it('create_job MCP tool accepts an explicit effort pin', async () => {
@@ -76,7 +76,7 @@ describe('job effort pin survives clone paths', () => {
 
     const result = JSON.parse(await createJobHandler(agentId, {
       description: 'Follow-up work',
-      model: 'claude-fable-5[1m]',
+      model: 'claude-opus-4-8[1m]',
       effort: 'medium',
     }));
     expect(queries.getJobById(result.job_id)!.effort).toBe('medium');
@@ -110,7 +110,7 @@ describe('job effort pin survives clone paths', () => {
       model: original.model!,
     }));
     const retry = queries.getJobById(result.job_id)!;
-    expect(retry.model).toBe('claude-fable-5[1m]');
+    expect(retry.model).toBe('claude-opus-4-8[1m]');
     expect(retry.effort).toBe('medium');
     expect(retry.original_job_id).toBe(original.id);
   });
@@ -123,7 +123,7 @@ describe('job effort pin survives clone paths', () => {
       description: 'Plain job',
       context: null,
       priority: 0,
-      model: 'claude-fable-5[1m]',
+      model: 'claude-opus-4-8[1m]',
       repeat_interval_ms: 60_000,
     });
     expect(queries.getJobById(job.id)!.effort).toBeNull();
