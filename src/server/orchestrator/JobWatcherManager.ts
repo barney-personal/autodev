@@ -222,7 +222,13 @@ export function requestTickNow(agentId: string): ManualTickResult {
   const gate = checkBillableCooldown(agentId);
   if (!gate.ok) return { ok: false, reason: 'cooldown', retryAfterMs: gate.retryAfterMs };
   _lastManualTickAt.set(agentId, Date.now());
-  void entry.session.requestTick('user_request');
+  // Mirror scheduleTick's handler: without it an escape from runTick on the
+  // manual path (e.g. the DB closing mid-tick during shutdown) surfaces as an
+  // unhandled rejection with no context instead of a reported error.
+  void entry.session.requestTick('user_request').catch(err => {
+    log.error({ err, agentId }, 'manual requestTick failed');
+    captureWithContext(err, { agent_id: agentId, component: 'JobWatcherManager' });
+  });
   return { ok: true };
 }
 
