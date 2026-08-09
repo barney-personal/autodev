@@ -21,6 +21,17 @@ const RATE_LIMIT_PATTERNS = [
   /\btoo many requests\b/i,
   /\b429\b/,
   /\bretry[_ -]?after\b/i,
+  // Provider quota exhaustion, e.g. Codex: "You've hit your usage limit. Visit
+  // https://chatgpt.com/codex/settings/usage to purchase more credits or try
+  // again at 11:01 AM." Without these the text fell through to 'task_failure',
+  // which is neither fallback-eligible nor operational — the run died where it
+  // should have switched models, and fired a WorkflowBlocked Sentry error.
+  // Deliberately narrower than a bare /usage limit/: PROVIDER_CAPABILITY
+  // (`extra usage is required`) and PROVIDER_BILLING are matched *after* this
+  // family, so an over-broad pattern here would swallow them.
+  /\bhit your usage limit\b/i,
+  /\busage limit (?:reached|exceeded)\b/i,
+  /\bcodex\/settings\/usage\b/i,
 ];
 
 const PROVIDER_OVERLOAD_PATTERNS = [
@@ -103,6 +114,10 @@ const CONTEXT_OVERFLOW_PATTERNS = [
   /\btoo many tokens\b/i,
   /\bmax[_ -]?tokens\b/i,
   /\bcontext overflow\b/i,
+  // Anthropic's short form for an oversized request ("Prompt is too long").
+  // The sibling wording ("input length and `max_tokens` exceed context limit")
+  // already matches the max_tokens/context limit patterns above.
+  /\bprompt is too long\b/i,
 ];
 
 const CODEX_CLI_CRASH_PATTERNS = [

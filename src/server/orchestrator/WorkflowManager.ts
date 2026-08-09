@@ -223,7 +223,7 @@ function handleReviewCompleted(job: Job, workflow: Workflow, planNote: WorkflowP
         finalizeWorkflow(queries.getWorkflowById(workflow.id)!).catch(err => console.error(`[workflow ${workflow.id}] finalizeWorkflow error:`, err));
       }
     } else {
-      void spawnImplementWithRouting(updated, updated.current_cycle);
+      spawnImplementForApprovedReview(updated, job);
     }
   } catch (err) {
     const errorMessage = errMsg(err);
@@ -840,6 +840,45 @@ function maybeSkipReviewWithRoutingDecision(
   return true;
 }
 
+/**
+ * Spawn the next implement job after the reviewer approved the cycle.
+ *
+ * With the routing brain enabled, spawnImplementWithRouting suspends on an LLM
+ * call, so for several seconds a running workflow has no implement job row.
+ * Take the same pending-phase-spawn lease the reviewer-skip path takes above so
+ * the gap detector (reconcileRunningWorkflows) reads the gap as in-flight work
+ * rather than a stall — otherwise it blocks the workflow and raises a
+ * WorkflowBlocked Sentry error. PENDING_PHASE_SPAWN_TTL_MS bounds the
+ * suppression, and a spawn that rejects still blocks the workflow rather than
+ * failing silently (the bare `void` call this replaced swallowed rejections).
+ */
+function spawnImplementForApprovedReview(workflow: Workflow, reviewJob: Job): void {
+  const cycle = workflow.current_cycle;
+  const pendingKey = acquirePendingPhaseSpawn(workflow.id, 'implement', cycle, {
+    reason: 'review_approved',
+    fromCycle: reviewJob.workflow_cycle ?? cycle,
+  });
+  if (!pendingKey) {
+    console.log(`[workflow ${workflow.id}] implement cycle ${cycle} spawn already pending after review approval`);
+    return;
+  }
+
+  void spawnImplementWithRouting(workflow, cycle)
+    .catch(err => {
+      const errorMessage = errMsg(err);
+      console.error(`[workflow ${workflow.id}] pending implement spawn crashed for cycle ${cycle}:`, err);
+      captureWithContext(err, { workflow_id: workflow.id, component: 'WorkflowManager' });
+      updateAndEmit(workflow.id, {
+        status: 'blocked',
+        current_phase: 'implement',
+        blocked_reason: `implement_spawn_error: Pending implement spawn crashed for cycle ${cycle}: ${errorMessage.slice(0, 100)}`,
+      });
+    })
+    .finally(() => {
+      queries.deleteNote(pendingKey);
+    });
+}
+
 function acquirePendingPhaseSpawn(
   workflowId: string,
   phase: WorkflowPhase,
@@ -1100,6 +1139,16 @@ export function reconcileRunningWorkflows(): void {
           const kind = classifyJobFailure(latestPhaseJob.id);
           blockedReason = `Workflow stuck: Phase '${workflow.current_phase}' job ${latestPhaseJob.id.slice(0, 8)} failed (${kind})`;
         } else {
+          // The re-entrant onJobCompleted above may have started an async
+          // implement spawn (the routing brain awaits an LLM decision), which
+          // leaves no new job row and no phase/cycle change for `progressed`
+          // to observe. A fresh pending-spawn lease means that spawn is
+          // genuinely in flight, so skip this tick instead of declaring a
+          // stall. Scoped to the implement phase/cycle key: failed-job stalls
+          // (above) and every other phase still block, and the lease TTL
+          // bounds how long a wedged spawn can suppress recovery.
+          const latest = queries.getWorkflowById(workflow.id);
+          if (latest && hasFreshPendingPhaseSpawn(latest.id, 'implement', latest.current_cycle)) continue;
           blockedReason = `Workflow stuck after ${latestPhaseJob.status} ${workflow.current_phase} job ${latestPhaseJob.id.slice(0, 8)}`;
         }
         updateAndEmit(workflow.id, { status: 'blocked', blocked_reason: blockedReason });

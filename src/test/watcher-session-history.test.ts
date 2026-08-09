@@ -24,6 +24,11 @@ vi.mock('../server/orchestrator/WorkQueueManager.js', () => ({
   nudgeQueue: vi.fn(),
 }));
 
+vi.mock('../server/instrument.js', () => ({
+  captureWithContext: vi.fn(),
+  Sentry: { captureException: vi.fn() },
+}));
+
 // Hoisted so vi.mock can reach it before module init — same fn across tests,
 // each test calls mockReset + mockResolvedValueOnce on it.
 const { mockCreate } = vi.hoisted(() => ({ mockCreate: vi.fn() }));
@@ -140,16 +145,22 @@ describe('WatcherSession — error rollback', () => {
 
   it('rolls history back to the snapshot length on mid-tool-loop API failure', async () => {
     // First call: assistant emits a tool_use round.
-    // Second call: throws (e.g. rate limit) AFTER we've already pushed
-    // assistant + tool_result to history. The session should roll back to
-    // exactly the length before the tick prompt was pushed.
+    // Second call: throws AFTER we've already pushed assistant + tool_result
+    // to history. The session should roll back to exactly the length before
+    // the tick prompt was pushed.
+    //
+    // The failure is a permanent 400 rather than the 429 this test used to
+    // send: retryable statuses are now retried in place and, below the
+    // consecutive-failure threshold, deliberately do NOT flip the row to
+    // 'error' (see the transient-failure suite below). Rollback and the
+    // error-status flip on a permanent failure are what this test pins.
     mockCreate
       .mockResolvedValueOnce({
         content: [{ type: 'tool_use', id: 'tu1', name: 'post_commentary', input: { severity: 'info', headline: 'starting' } }],
         usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
         stop_reason: 'tool_use',
       })
-      .mockRejectedValueOnce(new Error('429 rate limited'));
+      .mockRejectedValueOnce(Object.assign(new Error('400 invalid_request_error: bad tool input'), { status: 400 }));
 
     const { WatcherSession } = await import('../server/orchestrator/WatcherSession.js');
     const queries = await import('../server/db/queries.js');
@@ -170,7 +181,7 @@ describe('WatcherSession — error rollback', () => {
     // The watcher row is marked errored, ready to retry on next trigger.
     const w = queries.getWatcherById(watcher.id);
     expect(w?.status).toBe('error');
-    expect(w?.error_message).toContain('429');
+    expect(w?.error_message).toContain('400');
 
     // Second tick after a successful API call should leave a valid 2-message history.
     mockCreate.mockResolvedValueOnce({
@@ -243,7 +254,11 @@ describe('WatcherSession — error rollback', () => {
     // On a long-running agent with many events between ticks, the first
     // successful retry after a transient API failure would produce a burst
     // of duplicate commentary.
-    mockCreate.mockRejectedValueOnce(new Error('500 Internal Server Error'));
+    //
+    // Uses a permanent 400 (was a 500) so the tick fails once and lands on
+    // the escalating branch; last_seq must advance on both branches, which
+    // the transient suite below asserts separately.
+    mockCreate.mockRejectedValueOnce(Object.assign(new Error('400 invalid_request_error'), { status: 400 }));
 
     const { WatcherSession } = await import('../server/orchestrator/WatcherSession.js');
     const queries = await import('../server/db/queries.js');
@@ -372,6 +387,242 @@ describe('WatcherSession — error rollback', () => {
     expect(finalState.status).toBe('stopped');
     // Usage still recorded — tokens were paid for.
     expect(finalState.input_tokens).toBeGreaterThanOrEqual(5);
+  });
+});
+
+/**
+ * Sentry 7478227754 (500s), 7498967456 (529 overloaded) and 7507566417
+ * (EHOSTUNREACH → ETIMEDOUT when the host lost its network) were one root
+ * cause: WatcherSession called messages.create bare, so any provider blip
+ * reported an issue AND flipped the watcher to status='error'. The resolver
+ * half of this was fixed in cb13f71; the watcher half was not.
+ *
+ * The fix must not make a wedged watcher invisible, so the escalation
+ * assertions below are as load-bearing as the suppression ones.
+ */
+describe('WatcherSession — transient API failures', () => {
+  beforeEach(async () => {
+    await setupTestDb();
+    if (!process.env.ANTHROPIC_API_KEY) process.env.ANTHROPIC_API_KEY = 'sk-test';
+    mockCreate.mockReset();
+    const { captureWithContext } = await import('../server/instrument.js');
+    vi.mocked(captureWithContext).mockClear();
+  });
+
+  afterEach(async () => {
+    await cleanupTestDb();
+  });
+
+  async function makeWatcher() {
+    const queries = await import('../server/db/queries.js');
+    const job = await insertTestJob({ status: 'running' });
+    const agentId = randomUUID();
+    queries.insertAgent({ id: agentId, job_id: job.id, status: 'running', started_at: Date.now() });
+    const watcher = queries.insertWatcher({ id: randomUUID(), agent_id: agentId, job_id: job.id, model: 'claude-opus-4-7' });
+    return { queries, agentId, watcher };
+  }
+
+  const okResponse = {
+    content: [{ type: 'text', text: 'nothing to report' }],
+    usage: { input_tokens: 8, output_tokens: 4, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+    stop_reason: 'end_turn',
+  };
+
+  it('retries a 5xx inside the tick and completes without reporting anything', async () => {
+    mockCreate
+      .mockRejectedValueOnce(new Error('500 {"type":"api_error"}'))
+      .mockResolvedValueOnce(okResponse);
+
+    const { WatcherSession } = await import('../server/orchestrator/WatcherSession.js');
+    const { captureWithContext } = await import('../server/instrument.js');
+    const { queries, agentId, watcher } = await makeWatcher();
+
+    await new WatcherSession(watcher.id, agentId).requestTick('initial');
+
+    expect(mockCreate).toHaveBeenCalledTimes(2);
+    const w = queries.getWatcherById(watcher.id)!;
+    expect(w.status).toBe('running');
+    expect(w.error_message).toBeNull();
+    expect(captureWithContext).not.toHaveBeenCalled();
+  });
+
+  it('retries a dropped network connection the same way', async () => {
+    // The exact shape from 7507566417: the SDK's APIConnectionError wrapping
+    // undici's fetch failure wrapping the EHOSTUNREACH syscall error.
+    const syscall = Object.assign(new Error('connect EHOSTUNREACH 2607:6bc0::443'), { code: 'EHOSTUNREACH' });
+    mockCreate
+      .mockRejectedValueOnce(Object.assign(new Error('Connection error.'), {
+        cause: Object.assign(new Error('fetch failed'), { cause: syscall }),
+      }))
+      .mockResolvedValueOnce(okResponse);
+
+    const { WatcherSession } = await import('../server/orchestrator/WatcherSession.js');
+    const { captureWithContext } = await import('../server/instrument.js');
+    const { queries, agentId, watcher } = await makeWatcher();
+
+    await new WatcherSession(watcher.id, agentId).requestTick('initial');
+
+    expect(mockCreate).toHaveBeenCalledTimes(2);
+    expect(queries.getWatcherById(watcher.id)!.status).toBe('running');
+    expect(captureWithContext).not.toHaveBeenCalled();
+  });
+
+  it('leaves the watcher quiet for a single failing tick but still advances last_seq', async () => {
+    mockCreate.mockRejectedValue(new Error('529 overloaded_error'));
+
+    const { WatcherSession } = await import('../server/orchestrator/WatcherSession.js');
+    const { captureWithContext } = await import('../server/instrument.js');
+    const { queries, agentId, watcher } = await makeWatcher();
+    for (let i = 0; i < 3; i++) {
+      queries.insertAgentOutput({
+        agent_id: agentId, seq: i, event_type: 'assistant',
+        content: JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Edit', input: {} }] } }),
+        created_at: Date.now(),
+      });
+    }
+
+    await new WatcherSession(watcher.id, agentId).requestTick('initial');
+
+    const w = queries.getWatcherById(watcher.id)!;
+    expect(w.status).not.toBe('error');
+    expect(w.last_seq).toBe(2);
+    expect(captureWithContext).not.toHaveBeenCalled();
+  });
+
+  it('escalates to error + Sentry once the transient streak hits the cap', async () => {
+    // The failure mode this guards against: a watcher that can never reach
+    // the provider must not silently stop supervising. After
+    // MAX_CONSECUTIVE_TRANSIENT_TICK_FAILURES ticks it is reported exactly
+    // like a permanent failure.
+    mockCreate.mockRejectedValue(new Error('503 Service Unavailable'));
+
+    const { WatcherSession, MAX_CONSECUTIVE_TRANSIENT_TICK_FAILURES } =
+      await import('../server/orchestrator/WatcherSession.js');
+    const { captureWithContext } = await import('../server/instrument.js');
+    const { queries, agentId, watcher } = await makeWatcher();
+    const session = new WatcherSession(watcher.id, agentId);
+
+    for (let i = 1; i < MAX_CONSECUTIVE_TRANSIENT_TICK_FAILURES; i++) {
+      await session.requestTick('warning');
+      expect(queries.getWatcherById(watcher.id)!.status).not.toBe('error');
+      expect(captureWithContext).not.toHaveBeenCalled();
+    }
+
+    await session.requestTick('warning');
+
+    const w = queries.getWatcherById(watcher.id)!;
+    expect(w.status).toBe('error');
+    expect(w.error_message).toContain('503');
+    expect(captureWithContext).toHaveBeenCalledTimes(1);
+  });
+
+  it('resets the streak after a successful tick', async () => {
+    const { WatcherSession, MAX_CONSECUTIVE_TRANSIENT_TICK_FAILURES } =
+      await import('../server/orchestrator/WatcherSession.js');
+    const { captureWithContext } = await import('../server/instrument.js');
+    const { queries, agentId, watcher } = await makeWatcher();
+    const session = new WatcherSession(watcher.id, agentId);
+
+    // One failing tick, one good tick, then a full cap-1 run of failures:
+    // the good tick must have cleared the counter, so nothing escalates.
+    mockCreate.mockRejectedValue(new Error('500 api_error'));
+    await session.requestTick('warning');
+    mockCreate.mockReset();
+    mockCreate.mockResolvedValue(okResponse);
+    await session.requestTick('warning');
+    mockCreate.mockReset();
+    mockCreate.mockRejectedValue(new Error('500 api_error'));
+    for (let i = 1; i < MAX_CONSECUTIVE_TRANSIENT_TICK_FAILURES; i++) {
+      await session.requestTick('warning');
+    }
+
+    expect(queries.getWatcherById(watcher.id)!.status).not.toBe('error');
+    expect(captureWithContext).not.toHaveBeenCalled();
+  });
+
+  it('reports a permanent API error on the first tick', async () => {
+    mockCreate.mockRejectedValue(Object.assign(new Error('400 invalid_request_error: tools[0]'), { status: 400 }));
+
+    const { WatcherSession } = await import('../server/orchestrator/WatcherSession.js');
+    const { captureWithContext } = await import('../server/instrument.js');
+    const { queries, agentId, watcher } = await makeWatcher();
+
+    await new WatcherSession(watcher.id, agentId).requestTick('initial');
+
+    // No retry budget is spent on a permanent failure.
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+    const w = queries.getWatcherById(watcher.id)!;
+    expect(w.status).toBe('error');
+    expect(w.error_message).toContain('400');
+    expect(captureWithContext).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * Sentry 7502206908: closeDb() runs during shutdown while a watcher tick is
+ * still awaiting messages.create. Every queries.* call after that throws
+ * 'Database not initialized' — including the ones inside the catch block that
+ * were supposed to contain the failure, so it escaped runTick entirely.
+ */
+describe('WatcherSession — database closed mid-tick', () => {
+  beforeEach(async () => {
+    await setupTestDb();
+    if (!process.env.ANTHROPIC_API_KEY) process.env.ANTHROPIC_API_KEY = 'sk-test';
+    mockCreate.mockReset();
+    const { captureWithContext } = await import('../server/instrument.js');
+    vi.mocked(captureWithContext).mockClear();
+  });
+
+  afterEach(async () => {
+    await cleanupTestDb();
+  });
+
+  it('stops the session quietly instead of throwing out of runTick', async () => {
+    const queries = await import('../server/db/queries.js');
+    const { closeDb } = await import('../server/db/database.js');
+    const { WatcherSession } = await import('../server/orchestrator/WatcherSession.js');
+    const { captureWithContext } = await import('../server/instrument.js');
+
+    const job = await insertTestJob({ status: 'running' });
+    const agentId = randomUUID();
+    queries.insertAgent({ id: agentId, job_id: job.id, status: 'running', started_at: Date.now() });
+    const watcher = queries.insertWatcher({ id: randomUUID(), agent_id: agentId, job_id: job.id, model: 'claude-opus-4-7' });
+
+    // The API call resolves after shutdown has already torn the DB down.
+    mockCreate.mockImplementationOnce(async () => {
+      closeDb();
+      return {
+        content: [{ type: 'text', text: 'late' }],
+        usage: { input_tokens: 5, output_tokens: 3, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+        stop_reason: 'end_turn',
+      };
+    });
+
+    const session = new WatcherSession(watcher.id, agentId);
+    await expect(session.requestTick('initial')).resolves.toBeUndefined();
+
+    // A shutdown artefact is not a watcher defect, and the session stops
+    // rather than re-firing into a dead DB on the next heartbeat.
+    expect(session.isStopped()).toBe(true);
+    expect(captureWithContext).not.toHaveBeenCalled();
+  });
+
+  it('does not even start a tick once the database is gone', async () => {
+    const queries = await import('../server/db/queries.js');
+    const { closeDb } = await import('../server/db/database.js');
+    const { WatcherSession } = await import('../server/orchestrator/WatcherSession.js');
+
+    const job = await insertTestJob({ status: 'running' });
+    const agentId = randomUUID();
+    queries.insertAgent({ id: agentId, job_id: job.id, status: 'running', started_at: Date.now() });
+    const watcher = queries.insertWatcher({ id: randomUUID(), agent_id: agentId, job_id: job.id, model: 'claude-opus-4-7' });
+
+    const session = new WatcherSession(watcher.id, agentId);
+    closeDb();
+
+    await expect(session.requestTick('heartbeat')).resolves.toBeUndefined();
+    expect(mockCreate).not.toHaveBeenCalled();
+    expect(session.isStopped()).toBe(true);
   });
 });
 

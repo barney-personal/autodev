@@ -6,7 +6,6 @@
 
 import { execFileSync } from 'child_process';
 import { existsSync } from 'fs';
-import path from 'path';
 import * as queries from '../db/queries.js';
 import type { Workflow } from '../../shared/types.js';
 import { errMsg, execErrMsg } from '../../shared/errors.js';
@@ -14,6 +13,7 @@ import { workflowLogger } from '../lib/logger.js';
 import { parseMilestones, CHECKBOX_CHECKED } from './WorkflowMilestoneParser.js';
 import { ensureWorktreeBranch, removeWorktree, quarantineWorktree } from './WorkflowWorktreeManager.js';
 import { captureAgentCreatedPrUrl } from './AgentPrUrlCapture.js';
+import { validatePushRemote, isPermanentPushFailure } from './GitRemote.js';
 
 export type WorkflowPrCreationOutcome = 'created' | 'failed_with_publishable_commits' | 'no_publishable_commits';
 
@@ -320,52 +320,6 @@ function isAuthFailure(stderr: string): boolean {
 }
 
 const DEFAULT_PUSH_RETRY_DELAY_MS = 5000;
-
-interface PushRemoteReadiness {
-  ok: boolean;
-  error?: string;
-}
-
-function validatePushRemote(cwd: string): PushRemoteReadiness {
-  let remoteUrl: string;
-  try {
-    remoteUrl = execFileSync('git', ['remote', 'get-url', '--push', 'origin'], {
-      cwd,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 5000,
-    }).toString().trim();
-  } catch (err) {
-    return { ok: false, error: `origin remote is not configured: ${execErrMsg(err)}` };
-  }
-
-  if (!isUsablePushRemoteUrl(remoteUrl, cwd)) {
-    return { ok: false, error: `origin remote is not a usable push URL: ${remoteUrl || '(empty)'}` };
-  }
-
-  return { ok: true };
-}
-
-function isUsablePushRemoteUrl(remoteUrl: string, cwd: string): boolean {
-  // `git remote get-url` should not produce empty stdout on a real configured
-  // remote. Treat empty as unknown rather than blocking so tests and unusual Git
-  // wrappers can still fall through to the real push error.
-  if (!remoteUrl) return true;
-  if (/^(https?|ssh|git):\/\//i.test(remoteUrl)) return true;
-  if (/^[^@\s]+@[^:\s]+:.+/.test(remoteUrl)) return true;
-  if (remoteUrl.startsWith('file://')) return true;
-  if (path.isAbsolute(remoteUrl)) return existsSync(remoteUrl);
-  if (remoteUrl.startsWith('.') || remoteUrl.includes('/')) {
-    return existsSync(path.resolve(cwd, remoteUrl));
-  }
-  return false;
-}
-
-function isPermanentPushFailure(stderr: string): boolean {
-  const lower = stderr.toLowerCase();
-  return lower.includes('does not appear to be a git repository')
-    || lower.includes('could not read from remote repository')
-    || lower.includes('repository not found');
-}
 
 /**
  * Block the calling thread for `ms` without busy-waiting. Atomics.wait is the

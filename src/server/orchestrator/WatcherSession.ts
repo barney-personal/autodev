@@ -15,8 +15,11 @@
  * Robustness:
  * - All errors are caught and surfaced as a 'concern'-severity commentary, the
  *   session does NOT block the watched agent's lifecycle.
- * - Rate-limit / 5xx errors back the session into 'error' state, with auto-
- *   retry on the next tick.
+ * - Rate-limit / 5xx / connection errors are retried in place with backoff and
+ *   then, if still failing, left for the next tick without flipping the
+ *   watcher to 'error' — until MAX_CONSECUTIVE_TRANSIENT_TICK_FAILURES ticks
+ *   in a row fail, at which point the session is escalated and reported like
+ *   any permanent failure.
  * - Concurrent triggers per session are serialised via _ticking flag — only
  *   one tick runs at a time per agent; queued triggers coalesce.
  */
@@ -24,8 +27,10 @@ import Anthropic from '@anthropic-ai/sdk';
 import { agentLogger } from '../lib/logger.js';
 import { captureWithContext } from '../instrument.js';
 import * as queries from '../db/queries.js';
+import { isDbInitialized } from '../db/database.js';
 import * as socket from '../socket/SocketManager.js';
 import { buildWatcherTick, renderWatcherTick, highestTrigger, type WatcherTrigger } from './watcherFeed.js';
+import { createAnthropicMessage, isRetryableApiError } from './anthropicRetry.js';
 import {
   execPostCommentary,
   execReadRecentOutput,
@@ -100,6 +105,26 @@ const MAX_TOOL_ROUNDS = 4;
 // hard-coding the threshold.
 export const MAX_HISTORY_TURNS = 12;
 const MAX_OUTPUT_TOKENS = 1500;
+
+/**
+ * Retry budget for a single Messages API call within a tick. Deliberately
+ * lower than the resolver's default: the watcher retries inside a tick that
+ * the 45s heartbeat expects to be short, and with MAX_TOOL_ROUNDS rounds the
+ * worst case has to stay well inside that window.
+ */
+const MAX_TICK_API_RETRIES = 2;
+
+/**
+ * How many consecutive ticks may fail with a transient provider/transport
+ * error before the watcher is flipped to 'error' and reported anyway.
+ *
+ * A single 500/529 or a laptop losing its network is not a watcher defect —
+ * the next trigger retries from a clean history, so surfacing it would be
+ * noise. But a watcher that can never reach the API must not go quiet: at
+ * this threshold we escalate exactly as if the error had been permanent, so
+ * the operator still gets the status flip and the Sentry event.
+ */
+export const MAX_CONSECUTIVE_TRANSIENT_TICK_FAILURES = 3;
 
 const SYSTEM_PROMPT = `You are the LIVE WATCHER for a single autonomous coding agent in an orchestration system.
 
@@ -219,6 +244,9 @@ export class WatcherSession {
   private _ticking = false;
   private _pendingTrigger: WatcherTrigger | null = null;
   private _stopped = false;
+  /** Consecutive ticks that failed with a transient API error — see
+   *  MAX_CONSECUTIVE_TRANSIENT_TICK_FAILURES. Reset on any successful call. */
+  private _consecutiveTransientFailures = 0;
 
   constructor(watcherId: string, agentId: string) {
     this.watcherId = watcherId;
@@ -251,6 +279,13 @@ export class WatcherSession {
   }
 
   private async runTick(trigger: WatcherTrigger): Promise<void> {
+    // Shutdown race: closeDb() runs while the manager's debounce/heartbeat
+    // timers can still fire, and every queries.* call below would then throw
+    // 'Database not initialized' straight out of a timer callback. Same guard
+    // AgentStreamProcessor already uses for the agent log tailer. closeDb()
+    // only ever runs from the shutdown path, so self-stopping is correct here.
+    if (!isDbInitialized()) { this._stopped = true; return; }
+
     const watcher = queries.getWatcherById(this.watcherId);
     if (!watcher) { this._stopped = true; return; }
     if (watcher.status === 'stopped') { this._stopped = true; return; }
@@ -299,7 +334,11 @@ export class WatcherSession {
 
     try {
       while (rounds++ < MAX_TOOL_ROUNDS && !this._stopped) {
-        const resp = await getClient().messages.create({
+        // Transient provider/transport failures are retried in place with
+        // backoff (shared with ResolverSession) — a 500, a 529 or a dropped
+        // network connection used to abort the whole tick and flip the
+        // watcher to 'error'.
+        const resp = await createAnthropicMessage(getClient, {
           model: watcher.model,
           max_tokens: MAX_OUTPUT_TOKENS,
           system: SYSTEM,
@@ -313,7 +352,10 @@ export class WatcherSession {
           // user turn needs the mark — caching is prefix-based, so the
           // last breakpoint covers everything before it.
           messages: pinCacheControlToLast(trimHistory(this.history)),
-        });
+        }, this.log, { maxRetries: MAX_TICK_API_RETRIES, label: 'watcher' });
+
+        // We reached the provider — any transient streak is over.
+        this._consecutiveTransientFailures = 0;
 
         totalInput += resp.usage.input_tokens ?? 0;
         totalOutput += resp.usage.output_tokens ?? 0;
@@ -388,9 +430,42 @@ export class WatcherSession {
       const updated = queries.getWatcherById(this.watcherId);
       if (updated) socket.emitWatcherSessionUpdate(updated);
     } catch (err) {
+      // Shutdown race: closeDb() ran while this tick's API call was in
+      // flight, so the usage/status writes above threw 'Database not
+      // initialized'. There is no row left to record anything on and the
+      // process is exiting — a shutdown artefact is not a watcher defect.
+      if (!isDbInitialized()) {
+        this.log.warn({ err }, 'tick aborted — database closed during shutdown');
+        this._stopped = true;
+        this.history.length = rollbackLen;
+        return;
+      }
+
       const errMsg = (err as Error).message ?? String(err);
-      this.log.error({ err }, 'tick failed');
-      captureWithContext(err, { agent_id: this.agentId, watcher_id: this.watcherId, component: 'WatcherSession' });
+      const transient = isRetryableApiError(err);
+      this._consecutiveTransientFailures = transient ? this._consecutiveTransientFailures + 1 : 0;
+      // A transient failure has already been retried in place by
+      // createAnthropicMessage; the next trigger retries the tick itself. We
+      // keep the watcher 'running' and log at warn rather than reporting —
+      // but only up to MAX_CONSECUTIVE_TRANSIENT_TICK_FAILURES, after which a
+      // watcher that can't reach the provider is escalated like any other
+      // failure so it never fails silently.
+      const escalate = !transient
+        || this._consecutiveTransientFailures >= MAX_CONSECUTIVE_TRANSIENT_TICK_FAILURES;
+      if (escalate) {
+        this._consecutiveTransientFailures = 0;
+        this.log.error({ err, transient }, 'tick failed');
+        captureWithContext(err, { agent_id: this.agentId, watcher_id: this.watcherId, component: 'WatcherSession' });
+      } else {
+        this.log.warn(
+          {
+            err,
+            consecutive_transient_failures: this._consecutiveTransientFailures,
+            max: MAX_CONSECUTIVE_TRANSIENT_TICK_FAILURES,
+          },
+          'tick failed with a transient provider error — retrying on the next trigger',
+        );
+      }
       // Same stop-race guard on the error path — don't flip a stopped watcher
       // to 'error'. Also advance last_seq even on failure: tick.high_water_seq
       // already reflects the absolute latest DB seq at tick-build time, and
@@ -398,15 +473,21 @@ export class WatcherSession {
       // events that just errored out (an unrecoverable agent in a long-running
       // job could otherwise produce a burst of duplicate commentary on the
       // first successful retry). Same policy as the heartbeat-skip path above.
-      const current = queries.getWatcherById(this.watcherId);
-      if (!this._stopped && current && !isStoppedWatcherStatus(current.status)) {
-        queries.updateWatcher(this.watcherId, {
-          status: 'error',
-          error_message: errMsg.slice(0, 500),
-          last_seq: tick.high_water_seq,
-        });
-        const updated = queries.getWatcherById(this.watcherId);
-        if (updated) socket.emitWatcherSessionUpdate(updated);
+      //
+      // Wrapped: these reads/writes are the very thing that throws when the DB
+      // closes mid-tick, and a throw out of the error handler escapes runTick
+      // entirely as an unhandled rejection.
+      try {
+        const current = queries.getWatcherById(this.watcherId);
+        if (!this._stopped && current && !isStoppedWatcherStatus(current.status)) {
+          queries.updateWatcher(this.watcherId, escalate
+            ? { status: 'error', error_message: errMsg.slice(0, 500), last_seq: tick.high_water_seq }
+            : { last_seq: tick.high_water_seq });
+          const updated = queries.getWatcherById(this.watcherId);
+          if (updated) socket.emitWatcherSessionUpdate(updated);
+        }
+      } catch (recordErr) {
+        this.log.warn({ err: recordErr }, 'failed to record watcher tick failure');
       }
       // Atomic rollback — restore the history to its pre-tick length so the
       // next retry starts from a known-valid prefix (no half-finished

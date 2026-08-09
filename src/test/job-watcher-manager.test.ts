@@ -12,8 +12,16 @@ import { setupTestDb, cleanupTestDb, createSocketMock, insertTestJob } from './h
 
 vi.mock('../server/socket/SocketManager.js', () => createSocketMock());
 
+vi.mock('../server/instrument.js', () => ({
+  captureWithContext: vi.fn(),
+  Sentry: { captureException: vi.fn() },
+}));
+
 // Replace WatcherSession with a stub that records every requestTick call.
 const ticks: Array<{ agentId: string; trigger: string }> = [];
+// Agent ids whose stub requestTick should reject, so the manager's escape
+// handling can be exercised (see the manual-tick rejection test).
+const rejectingAgents = new Set<string>();
 vi.mock('../server/orchestrator/WatcherSession.js', () => {
   return {
     defaultWatcherModel: () => 'claude-opus-4-7',
@@ -29,6 +37,7 @@ vi.mock('../server/orchestrator/WatcherSession.js', () => {
       isStopped() { return false; }
       async requestTick(trigger: string) {
         ticks.push({ agentId: this.agentId, trigger });
+        if (rejectingAgents.has(this.agentId)) throw new Error('tick escaped runTick');
       }
     },
   };
@@ -41,6 +50,7 @@ describe('JobWatcherManager', () => {
     process.env.WATCHER_DEBOUNCE_MS = '10';
     process.env.WATCHER_HEARTBEAT_MS = '3600000';  // effectively disable heartbeats
     ticks.length = 0;
+    rejectingAgents.clear();
     await setupTestDb();
     const mod = await import('../server/orchestrator/JobWatcherManager.js');
     mod._resetForTest();
@@ -324,6 +334,39 @@ describe('JobWatcherManager', () => {
     } finally {
       process.env.WATCHER_ENABLED = '1';
     }
+  });
+
+  it('reports a manual tick that escapes runTick instead of leaving an unhandled rejection', async () => {
+    // Sentry 7502206908 escaped through this path: the scheduled-tick call
+    // site has a .catch, the manual one did not, so a throw out of runTick
+    // (e.g. the DB closing mid-tick) became a bare unhandled rejection with
+    // no agent context attached.
+    const mod = await import('../server/orchestrator/JobWatcherManager.js');
+    const { captureWithContext } = await import('../server/instrument.js');
+    vi.mocked(captureWithContext).mockClear();
+
+    const agentId = await makeRunningAgent();
+    mod.onAgentStarted(agentId);
+    await new Promise(r => setTimeout(r, 30));
+
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      rejectingAgents.add(agentId);
+      expect(mod.requestTickNow(agentId)).toEqual({ ok: true });
+      // Let the rejection settle and any unhandled-rejection callback fire.
+      await new Promise(r => setTimeout(r, 20));
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+
+    expect(unhandled).toHaveLength(0);
+    expect(captureWithContext).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(captureWithContext).mock.calls[0][1]).toMatchObject({
+      agent_id: agentId,
+      component: 'JobWatcherManager',
+    });
   });
 
   it('rate-limits manual ticks per agent', async () => {

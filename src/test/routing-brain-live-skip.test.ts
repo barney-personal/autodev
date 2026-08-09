@@ -17,6 +17,7 @@ const routingState = vi.hoisted(() => ({
   decision: null as RouteDecision | null,
   afterDecision: null as null | ((workflowId: string) => void | Promise<void>),
   decisionError: null as Error | null,
+  modeError: null as Error | null,
 }));
 
 const failureState = vi.hoisted(() => ({
@@ -123,7 +124,10 @@ vi.mock('../server/orchestrator/FailureClassifier.js', () => ({
 }));
 
 vi.mock('../server/orchestrator/RoutingBrain.js', () => ({
-  getRoutingBrainMode: vi.fn(() => routingState.mode),
+  getRoutingBrainMode: vi.fn(() => {
+    if (routingState.modeError) throw routingState.modeError;
+    return routingState.mode;
+  }),
   decideRouteForCycle: vi.fn(async (workflow: { id: string }, phase: string, cycle: number) => {
     if (routingState.decisionError) throw routingState.decisionError;
     const decision = routingState.decision ?? makeDecision();
@@ -174,6 +178,7 @@ describe('routing brain implement-spawn integration: live mode and bypasses', ()
     routingState.decision = makeDecision();
     routingState.afterDecision = null;
     routingState.decisionError = null;
+    routingState.modeError = null;
     failureState.kind = 'unknown';
     failureState.fallbackEligible = false;
     await setupTestDb();
@@ -692,5 +697,140 @@ describe('routing brain live-mode reviewer-skip hook', () => {
     const reviewJobs = getJobsForWorkflow(workflow.id).filter(j => j.workflow_phase === 'review');
     expect(reviewJobs).toHaveLength(1);
     expect(reviewJobs[0].workflow_cycle).toBe(2);
+  });
+});
+
+// ─── Gap detector vs the async review-approved implement spawn ────────────────
+//
+// Regression for Sentry HURLICANE issues 7501491965 ("Workflow stuck after done
+// review job") and 7406469456 ("stuck in implement with no phase job to
+// resume"). With the routing brain enabled, spawnImplementWithRouting suspends
+// on an LLM call, so a running workflow briefly has no implement job row. The
+// 60s gap detector landing inside that window declared the workflow stuck and
+// raised a WorkflowBlocked Sentry error. The reviewer-SKIP path already took a
+// pending-phase-spawn lease; the review-APPROVED path did not.
+
+describe('gap detector vs async review-approved implement spawn', () => {
+  const pendingKeyFor = (workflowId: string, cycle: number) =>
+    `workflow/${workflowId}/pending-spawn/implement/cycle-${cycle}`;
+
+  beforeEach(async () => {
+    routingState.mode = 'live';
+    routingState.rowMode = null;
+    routingState.counter = 0;
+    routingState.decision = makeDecision();
+    routingState.afterDecision = null;
+    routingState.decisionError = null;
+    routingState.modeError = null;
+    failureState.kind = 'unknown';
+    failureState.fallbackEligible = false;
+    await setupTestDb();
+    await resetManagerState();
+    vi.clearAllMocks();
+  });
+
+  afterEach(async () => {
+    await cleanupTestDb();
+  });
+
+  it('leaves the workflow running when the gap detector ticks mid-routing, then spawns implement', async () => {
+    const workflow = await createReviewReadyWorkflow();
+    const reviewJob = await insertTestJob({
+      workflow_id: workflow.id,
+      workflow_cycle: 2,
+      workflow_phase: 'review',
+      status: 'done',
+    });
+
+    const { onJobCompleted, reconcileRunningWorkflows } = await import('../server/orchestrator/WorkflowManager.js');
+    const { getWorkflowById, getJobsForWorkflow, getNote } = await import('../server/db/queries.js');
+
+    // Fire the gap detector while decideRouteForCycle is still awaiting — the
+    // exact window the Sentry events landed in.
+    let ticked = false;
+    let midTick: { status: string; blocked_reason: string | null } | null = null;
+    routingState.afterDecision = (workflowId) => {
+      if (ticked) return;
+      ticked = true;
+      reconcileRunningWorkflows();
+      const mid = getWorkflowById(workflowId)!;
+      midTick = { status: mid.status, blocked_reason: mid.blocked_reason };
+    };
+
+    onJobCompleted(reviewJob);
+    await flushRouting();
+
+    expect(ticked).toBe(true);
+    expect(midTick!.status).toBe('running');
+    expect(midTick!.blocked_reason).toBeNull();
+
+    const after = getWorkflowById(workflow.id)!;
+    expect(after.status).toBe('running');
+
+    const implementJobs = getJobsForWorkflow(workflow.id).filter(j => j.workflow_phase === 'implement');
+    expect(implementJobs).toHaveLength(1);
+    expect(implementJobs[0].workflow_cycle).toBe(2);
+
+    // Lease must be released once the spawn lands, or the gap detector is
+    // blind to a real stall for the rest of the TTL.
+    expect(getNote(pendingKeyFor(workflow.id, 2))).toBeNull();
+  });
+
+  it('blocks loudly and releases the lease when the implement spawn crashes', async () => {
+    // The bare `void spawnImplementWithRouting(...)` this replaced swallowed
+    // rejections silently: the workflow stayed "running" with no job forever.
+    routingState.modeError = new Error('routing brain config unreadable');
+
+    const workflow = await createReviewReadyWorkflow();
+    const reviewJob = await insertTestJob({
+      workflow_id: workflow.id,
+      workflow_cycle: 2,
+      workflow_phase: 'review',
+      status: 'done',
+    });
+
+    const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    const { getWorkflowById, getJobsForWorkflow, getNote } = await import('../server/db/queries.js');
+    const { captureWithContext } = await import('../server/instrument.js');
+
+    onJobCompleted(reviewJob);
+    await flushRouting();
+
+    const after = getWorkflowById(workflow.id)!;
+    expect(after.status).toBe('blocked');
+    expect(after.blocked_reason).toContain('implement_spawn_error');
+    expect(getJobsForWorkflow(workflow.id).filter(j => j.workflow_phase === 'implement')).toHaveLength(0);
+    expect(captureWithContext).toHaveBeenCalled();
+
+    // A crashed spawn must not leave a lease behind suppressing recovery.
+    expect(getNote(pendingKeyFor(workflow.id, 2))).toBeNull();
+  });
+
+  it('routing-off review approval still spawns implement synchronously and releases the lease', async () => {
+    routingState.mode = 'off';
+
+    const workflow = await createReviewReadyWorkflow();
+    const reviewJob = await insertTestJob({
+      workflow_id: workflow.id,
+      workflow_cycle: 2,
+      workflow_phase: 'review',
+      status: 'done',
+    });
+
+    const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    const routingBrain = await import('../server/orchestrator/RoutingBrain.js');
+    const { getJobsForWorkflow, getNote, getWorkflowById } = await import('../server/db/queries.js');
+
+    onJobCompleted(reviewJob);
+
+    // No await: with routing off the spawn must remain synchronous.
+    const implementJobs = getJobsForWorkflow(workflow.id).filter(j => j.workflow_phase === 'implement');
+    expect(implementJobs).toHaveLength(1);
+    expect(implementJobs[0].model).toBe('claude-opus-4-7[1m]');
+    expect(routingBrain.decideRouteForCycle).not.toHaveBeenCalled();
+
+    await flushRouting();
+    expect(getWorkflowById(workflow.id)!.status).toBe('running');
+    expect(getNote(pendingKeyFor(workflow.id, 2))).toBeNull();
   });
 });
