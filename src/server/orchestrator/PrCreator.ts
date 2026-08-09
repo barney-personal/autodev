@@ -9,6 +9,8 @@ import * as fs from 'fs';
 import { captureWithContext } from '../instrument.js';
 import * as queries from '../db/queries.js';
 import type { Job } from '../../shared/types.js';
+import { validatePushRemote, isPermanentPushFailure } from './GitRemote.js';
+import { execErrMsg } from '../../shared/errors.js';
 
 const PR_TIMEOUT = 30_000;
 const PUSH_RETRY_DELAY = 5_000;
@@ -79,6 +81,15 @@ export async function createPrForJob(job: Job): Promise<string | null> {
     return null;
   }
 
+  // A worktree whose parent repo has no `origin` can never be pushed. Skip
+  // before the retry loop: retrying is pure waste, and the warn/error/exception
+  // trio below turned one environment condition into three Sentry issues.
+  const remoteReadiness = validatePushRemote(wtPath);
+  if (!remoteReadiness.ok) {
+    console.log(`[pr-creator] PR creation skipped: ${remoteReadiness.error}; worktree preserved at ${wtPath}`);
+    return null;
+  }
+
   // Push branch (retry once on failure)
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
@@ -87,6 +98,14 @@ export async function createPrForJob(job: Job): Promise<string | null> {
       });
       break;
     } catch (err: any) {
+      // The remote disappeared between the pre-check and the push (or the
+      // pre-check could not see it). Permanent — no retry, and no Sentry
+      // exception for an environment condition. Genuinely transient failures
+      // keep the retry and the full error+capture reporting below.
+      if (isPermanentPushFailure(execErrMsg(err))) {
+        console.log(`[pr-creator] PR creation skipped: origin remote is not usable for job ${job.id}; worktree preserved at ${wtPath}`);
+        return null;
+      }
       if (attempt === 0) {
         console.warn(`[pr-creator] push failed for job ${job.id} (will retry in ${PUSH_RETRY_DELAY}ms):`, err.message);
         await new Promise(r => setTimeout(r, PUSH_RETRY_DELAY));
@@ -153,6 +172,15 @@ export function pushBranchForFailedJob(job: Job): boolean {
     }
   } catch { /* not fatal */ }
 
+  // The work is committed locally by now. Without a usable origin the push can
+  // only fail, so report the environment condition instead of a push error —
+  // console.warn pages Sentry, and the missing remote is not a bug.
+  const remoteReadiness = validatePushRemote(wt.path);
+  if (!remoteReadiness.ok) {
+    console.log(`[pr-creator] branch push skipped for failed job ${job.id}: ${remoteReadiness.error}; work committed locally on ${wt.branch}, worktree preserved at ${wt.path}`);
+    return false;
+  }
+
   try {
     execFileSync('git', ['push', '-u', 'origin', wt.branch], {
       cwd: wt.path, stdio: 'pipe', timeout: PR_TIMEOUT,
@@ -160,6 +188,10 @@ export function pushBranchForFailedJob(job: Job): boolean {
     console.log(`[pr-creator] pushed branch for failed job ${job.id}: ${wt.branch}`);
     return true;
   } catch (err: any) {
+    if (isPermanentPushFailure(execErrMsg(err))) {
+      console.log(`[pr-creator] branch push skipped for failed job ${job.id}: origin remote is not usable; work committed locally on ${wt.branch}, worktree preserved at ${wt.path}`);
+      return false;
+    }
     console.warn(`[pr-creator] push failed for failed job ${job.id}:`, err.message);
     return false;
   }

@@ -548,6 +548,33 @@ describe('Failure classification', () => {
     expect(classifyFailureText('Please retry after 30 seconds')).toBe('rate_limit');
   });
 
+  // Regression: HURLICANE issue 7447968461. The Codex quota message fell
+  // through to 'task_failure', which is not fallback-eligible — the reviewer
+  // never fell off the exhausted model, and the resulting block was not in
+  // OPERATIONAL_FAILED_KINDS so it fired a WorkflowBlocked Sentry error.
+  it('classifies Codex usage-limit exhaustion as rate_limit (fallback-eligible)', async () => {
+    const { classifyFailureText, isFallbackEligibleFailure, shouldMarkProviderUnavailable } =
+      await import('../server/orchestrator/FailureClassifier.js');
+
+    const codexQuota = "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 11:01 AM.";
+    expect(classifyFailureText(codexQuota)).toBe('rate_limit');
+    expect(classifyFailureText('Claude usage limit reached — resets at 3pm')).toBe('rate_limit');
+
+    // The point of the reclassification: the run recovers via model fallback
+    // instead of dying, and one model's quota does not take the whole provider down.
+    expect(isFallbackEligibleFailure('rate_limit')).toBe(true);
+    expect(shouldMarkProviderUnavailable('rate_limit')).toBe(false);
+  });
+
+  it('keeps capability and billing wording out of the usage-limit rate_limit patterns', async () => {
+    const { classifyFailureText } = await import('../server/orchestrator/FailureClassifier.js');
+    // RATE_LIMIT is matched before PROVIDER_CAPABILITY/PROVIDER_BILLING, so the
+    // new quota patterns must stay narrow enough not to swallow these.
+    expect(classifyFailureText('API Error: Extra usage is required for 1M context')).toBe('provider_capability');
+    expect(classifyFailureText('Payment required: insufficient credits')).toBe('provider_billing');
+    expect(classifyFailureText('Your credit balance is too low to purchase more usage')).toBe('provider_billing');
+  });
+
   it('classifies provider overload', async () => {
     const { classifyFailureText } = await import('../server/orchestrator/FailureClassifier.js');
     expect(classifyFailureText('overloaded_error')).toBe('provider_overload');
@@ -583,6 +610,19 @@ describe('Failure classification', () => {
     const { classifyFailureText } = await import('../server/orchestrator/FailureClassifier.js');
     expect(classifyFailureText('context length exceeded')).toBe('context_overflow');
     expect(classifyFailureText('too many tokens in request')).toBe('context_overflow');
+  });
+
+  // Regression: HURLICANE issue 7498967184 — Anthropic's short oversized-prompt
+  // message classified as 'task_failure' and fired a WorkflowBlocked error.
+  // context_overflow stays deliberately non-retryable (a smaller model will not
+  // fix an oversized prompt) — the workflow must still block for a human.
+  it('classifies "Prompt is too long" as context_overflow', async () => {
+    const { classifyFailureText, isFallbackEligibleFailure, isSameModelRetryEligible } =
+      await import('../server/orchestrator/FailureClassifier.js');
+    expect(classifyFailureText('Prompt is too long')).toBe('context_overflow');
+    expect(classifyFailureText('API Error: input length and `max_tokens` exceed context limit')).toBe('context_overflow');
+    expect(isFallbackEligibleFailure('context_overflow')).toBe(false);
+    expect(isSameModelRetryEligible('context_overflow')).toBe(false);
   });
 
   it('classifies MCP disconnect', async () => {

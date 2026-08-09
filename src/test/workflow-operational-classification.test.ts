@@ -63,6 +63,18 @@ describe('isOperationalBlockedReason', () => {
       expect(isOperationalBlockedReason("Phase 'implement' job abcdef12 failed (launch_environment)")).toBe(true);
     });
 
+    // Paired with the FailureClassifier patterns for the Codex quota message
+    // and Anthropic's "Prompt is too long": once those classify correctly the
+    // resulting block is operational and stops paging Sentry, while the
+    // workflow is still surfaced as blocked in the UI.
+    it("classifies `Phase 'review' job abcdef12 failed (rate_limit)` as operational", () => {
+      expect(isOperationalBlockedReason("Phase 'review' job abcdef12 failed (rate_limit)")).toBe(true);
+    });
+
+    it("classifies `Phase 'implement' job abcdef12 failed (context_overflow)` as operational", () => {
+      expect(isOperationalBlockedReason("Phase 'implement' job abcdef12 failed (context_overflow)")).toBe(true);
+    });
+
     it("does NOT classify `Phase 'implement' job abcdef12 failed (task_failure)` as operational", () => {
       expect(isOperationalBlockedReason("Phase 'implement' job abcdef12 failed (task_failure)")).toBe(false);
     });
