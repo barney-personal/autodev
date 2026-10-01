@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import { cleanupTestDb, createSocketMock, insertTestJob, setupTestDb } from './helpers.js';
+import type { Job } from '../shared/types.js';
 
 const execFileSyncMock = vi.fn((cmd: string, args: string[]) => {
   if (cmd !== 'tmux') return Buffer.from('');
@@ -73,6 +74,38 @@ vi.mock('../server/orchestrator/ResilienceLogger.js', () => ({
 vi.mock('../server/instrument.js', () => ({
   captureWithContext: vi.fn(),
 }));
+
+describe('PTY inference settings', () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it.each([true, false])('preserves hooks, model and effort with Fast in print=%s', async (usePrintMode) => {
+    vi.stubEnv('CLAUDE_FAST_MODE_IMPLEMENT', 'true');
+    vi.stubEnv('CLAUDE_FAST_MODE_WORKFLOW_IDS', 'trial');
+    const { buildAgentScript } = await import('../server/orchestrator/AgentSpawner.js');
+    const { HOOK_SETTINGS } = await import('../server/orchestrator/AgentConfig.js');
+    const script = buildAgentScript({ agentId: 'speed-agent',
+      job: { model: 'claude-opus-5-5', workflow_phase: 'implement', workflow_id: 'trial', effort: 'xhigh' } as Job,
+      workDir: '/tmp', mcpConfig: '{}', promptFilePath: '/tmp/prompt',
+      useCodex: false, usePrintMode, resumeSessionId: 'existing-session', expectedBranch: null });
+    const settings = JSON.parse(script.match(/--settings '([^']+)'/)![1]);
+    expect(settings).toEqual({ ...JSON.parse(HOOK_SETTINGS), fastMode: true });
+    expect(script).toContain("--model 'claude-opus-5-5'");
+    expect(script).toContain("--effort 'xhigh'");
+    expect(script).toContain("--resume 'existing-session'");
+  });
+
+  it.each([undefined, 'ultrafast'])('preserves configured Codex review tier (%s)', async (tier) => {
+    vi.stubEnv('CODEX_SERVICE_TIER_REVIEW', tier);
+    const { buildAgentScript } = await import('../server/orchestrator/AgentSpawner.js');
+    const script = buildAgentScript({ agentId: 'speed-agent',
+      job: { model: 'codex-gpt-6-astra', workflow_phase: 'review', effort: 'high' } as Job,
+      workDir: '/tmp', mcpConfig: '{}', promptFilePath: '/tmp/prompt',
+      useCodex: true, usePrintMode: false, expectedBranch: null });
+    expect(script.includes('service_tier=')).toBe(tier !== undefined);
+    if (tier) expect(script).toContain('service_tier="ultrafast"');
+    expect(script).toContain('model_reasoning_effort="high"');
+  });
+});
 
 describe('PtyManager bad work_dir fail-fast', () => {
   const BAD_PATH = '/nonexistent/path/xyz';

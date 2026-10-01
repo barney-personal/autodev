@@ -29,6 +29,11 @@ export const HOOK_SETTINGS = JSON.stringify({
   }
 });
 
+/** Session-only speed selection; retain the required file-lock hooks. */
+export function buildClaudeSettings(fastMode: boolean | null): string {
+  return fastMode === null ? HOOK_SETTINGS : JSON.stringify({ ...JSON.parse(HOOK_SETTINGS), fastMode });
+}
+
 // ── System prompt ─────────────────────────────────────────────────────────────
 export const SYSTEM_PROMPT = `You are a Claude Code agent in a multi-agent orchestration system.
 Use these MCP tools from the 'orchestrator' server:
