@@ -37,9 +37,8 @@ export type EffortPhase = 'assess' | 'review' | 'implement' | 'verify';
 /**
  * Effort defaults by workflow phase. Tuned so judgment-heavy phases keep
  * max thinking budget and execution-heavy phases drop down. Reviewers run
- * at `high` rather than `xhigh` because they're paired with the `fast`
- * service tier (see `PHASE_SERVICE_TIER_DEFAULTS`) — together they trade a
- * small amount of reviewer reasoning depth for ~1.5x throughput. Non-workflow
+ * at `high` rather than `xhigh`. Inference speed is configured separately
+ * and does not alter these reasoning budgets. Non-workflow
  * jobs and phases not listed here fall back to `DEFAULT_CLAUDE_EFFORT`.
  */
 const PHASE_EFFORT_DEFAULTS: Record<EffortPhase, string> = {
@@ -64,19 +63,11 @@ const FRONTIER_PHASE_EFFORT_DEFAULTS: Record<EffortPhase, string> = {
   verify: 'xhigh',
 };
 
-/**
- * Codex `service_tier` defaults by phase. `fast` gives ~1.5x throughput on
- * the priority lane at slightly higher cost — appropriate for the review
- * phase, which is judgment-heavy and benefits from faster turnaround. Other
- * phases fall through to whatever the user has in `~/.codex/config.toml`
- * (no override).
- */
-const PHASE_SERVICE_TIER_DEFAULTS: Partial<Record<EffortPhase, string>> = {
-  review: 'fast',
-};
-
-const KNOWN_SERVICE_TIERS = new Set(['default', 'flex', 'priority', 'fast', 'auto']);
+// Leave tier selection to the CLI unless the operator explicitly overrides it.
+// In particular, a review must not downgrade a configured Ultrafast preference.
+const KNOWN_SERVICE_TIERS = new Set(['default', 'flex', 'priority', 'fast', 'ultrafast', 'auto']);
 const _warnedUnknownServiceTier = new Set<string>();
+const _warnedUnknownFastMode = new Set<string>();
 
 /**
  * Effort levels accepted by Claude `--effort` and Codex `model_reasoning_effort`.
@@ -146,6 +137,7 @@ function resolveEffort(
 export function _resetEffortWarningsForTest(): void {
   _warnedUnknownEffort.clear();
   _warnedUnknownServiceTier.clear();
+  _warnedUnknownFastMode.clear();
 }
 
 /**
@@ -198,8 +190,8 @@ export function getCodexReasoningEffort(model: string | null, phase?: WorkflowPh
  * should be passed (the user's `~/.codex/config.toml` value takes effect).
  *
  * Env-var overrides: `CODEX_SERVICE_TIER_ASSESS`, `_REVIEW`, `_IMPLEMENT`,
- * `_VERIFY`, and `_DEFAULT` (for non-workflow jobs). Empty string disables
- * the per-phase default so the config.toml value is used.
+ * `_VERIFY`, and `_DEFAULT` (for non-workflow jobs). Empty or unset values
+ * leave tier selection to the CLI, including its model/account eligibility.
  */
 export function getCodexServiceTier(model: string | null, phase?: WorkflowPhase | null): string | null {
   if (!(model === 'codex' || (model != null && model.startsWith('codex-')))) return null;
@@ -221,10 +213,41 @@ export function getCodexServiceTier(model: string | null, phase?: WorkflowPhase 
     }
     return null;
   }
-  if (isDispatchPhase(phase) && phase in PHASE_SERVICE_TIER_DEFAULTS) {
-    return PHASE_SERVICE_TIER_DEFAULTS[phase] ?? null;
-  }
   return null;
+}
+
+/**
+ * Opt-in Claude Fast trial for implementation jobs. Null preserves the CLI's
+ * existing settings. An optional workflow allowlist limits the trial without
+ * changing models, effort, or personal Claude settings. Unknown models must
+ * not receive fastMode:true: the CLI can otherwise switch them to Opus.
+ */
+export function getClaudeFastMode(
+  model: string | null,
+  phase?: WorkflowPhase | null,
+  workflowId?: string | null,
+): boolean | null {
+  if (phase !== 'implement') return null;
+  const configured = process.env.CLAUDE_FAST_MODE_IMPLEMENT;
+  if (configured === undefined || configured === '') return null;
+  if (configured !== 'true' && configured !== 'false') {
+    if (!_warnedUnknownFastMode.has(configured)) {
+      _warnedUnknownFastMode.add(configured);
+      console.warn('[models] CLAUDE_FAST_MODE_IMPLEMENT must be true or false; ignoring invalid value.');
+    }
+    return null;
+  }
+  const workflowIds = process.env.CLAUDE_FAST_MODE_WORKFLOW_IDS;
+  // A present but empty allowlist matches nothing, so a typo cannot broaden a trial.
+  if (workflowIds !== undefined && !workflowIds.split(',').some(id => id.trim() !== '' && id.trim() === workflowId)) {
+    return null;
+  }
+  if (model === 'codex' || model?.startsWith('codex-')) return null;
+  // Disabling is safe for every Claude model, including the CLI default, and
+  // must override a personal Fast preference even after a model fallback.
+  if (configured === 'false') return false;
+  if (!model || !/^(claude-opus-(5-5|5|4-8))(\[1m\])?$/.test(model)) return null;
+  return true;
 }
 
 /** Claude models available for job dispatch. */

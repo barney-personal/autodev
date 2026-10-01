@@ -4,6 +4,7 @@ import {
   DEFAULT_WORKFLOW_IMPLEMENTER_MODEL,
   DEFAULT_WORKFLOW_REVIEWER_MODEL,
   getClaudeEffort,
+  getClaudeFastMode,
   getCodexReasoningEffort,
   getCodexServiceTier,
   _resetEffortWarningsForTest,
@@ -16,6 +17,7 @@ const EFFORT_ENV_VARS = [
   'EFFORT_ASSESS', 'EFFORT_REVIEW', 'EFFORT_IMPLEMENT', 'EFFORT_VERIFY', 'EFFORT_DEFAULT',
   'CODEX_SERVICE_TIER_ASSESS', 'CODEX_SERVICE_TIER_REVIEW', 'CODEX_SERVICE_TIER_IMPLEMENT',
   'CODEX_SERVICE_TIER_VERIFY', 'CODEX_SERVICE_TIER_DEFAULT',
+  'CLAUDE_FAST_MODE_IMPLEMENT', 'CLAUDE_FAST_MODE_WORKFLOW_IDS',
 ];
 const savedEffortEnv: Record<string, string | undefined> = {};
 function clearEffortEnv() {
@@ -81,7 +83,7 @@ describe('phase-aware effort', () => {
     expect(getClaudeEffort('claude-opus-4-8[1m]', 'implement')).toBe('low');
   });
 
-  it('drops review-phase effort to high for both providers (paired with fast service tier)', () => {
+  it('keeps review-phase effort at high for both providers independently of speed', () => {
     expect(getClaudeEffort('claude-opus-4-7[1m]', 'review')).toBe('high');
     expect(getCodexReasoningEffort('codex-gpt-5.5', 'review')).toBe('high');
   });
@@ -222,9 +224,9 @@ describe('codex service tier', () => {
   beforeEach(clearEffortEnv);
   afterEach(restoreEffortEnv);
 
-  it('defaults to fast tier for the review phase', () => {
-    expect(getCodexServiceTier('codex-gpt-5.5', 'review')).toBe('fast');
-    expect(getCodexServiceTier('codex', 'review')).toBe('fast');
+  it('inherits the CLI tier for review, preserving a configured Ultrafast preference', () => {
+    expect(getCodexServiceTier('codex-gpt-6-astra', 'review')).toBeNull();
+    expect(getCodexServiceTier('codex', 'review')).toBeNull();
   });
 
   it('returns null for non-review phases so config.toml takes effect', () => {
@@ -260,7 +262,7 @@ describe('codex service tier', () => {
     delete process.env.CODEX_SERVICE_TIER_IDLE;
   });
 
-  it('empty string disables the per-phase default (config.toml takes effect)', () => {
+  it('empty string leaves the CLI tier in effect', () => {
     process.env.CODEX_SERVICE_TIER_REVIEW = '';
     expect(getCodexServiceTier('codex', 'review')).toBeNull();
   });
@@ -297,10 +299,62 @@ describe('codex service tier typo detection', () => {
   });
 
   it('does not warn for known tiers', () => {
-    for (const tier of ['default', 'flex', 'priority', 'fast', 'auto']) {
+    for (const tier of ['default', 'flex', 'priority', 'fast', 'ultrafast', 'auto']) {
       process.env.CODEX_SERVICE_TIER_REVIEW = tier;
-      getCodexServiceTier('codex', 'review');
+      expect(getCodexServiceTier('codex', 'review')).toBe(tier);
     }
     expect(warnSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('scoped Claude Fast implementation trial', () => {
+  beforeEach(clearEffortEnv);
+  afterEach(() => { restoreEffortEnv(); vi.restoreAllMocks(); });
+
+  it('leaves CLI settings alone until explicitly enabled', () => {
+    expect(getClaudeFastMode('claude-opus-5-5', 'implement', 'trial')).toBeNull();
+  });
+
+  it('only enables supported implementation models in the selected workflow', () => {
+    process.env.CLAUDE_FAST_MODE_IMPLEMENT = 'true';
+    process.env.CLAUDE_FAST_MODE_WORKFLOW_IDS = ' first, trial ';
+    for (const model of ['claude-opus-5-5', 'claude-opus-5', 'claude-opus-4-8[1m]']) {
+      expect(getClaudeFastMode(model, 'implement', 'trial')).toBe(true);
+      expect(getClaudeFastMode(model, 'implement', 'elsewhere')).toBeNull();
+      expect(getClaudeFastMode(model, 'implement', null)).toBeNull();
+      for (const phase of ['assess', 'review', 'verify', 'idle', null] as const) {
+        expect(getClaudeFastMode(model, phase, 'trial')).toBeNull();
+      }
+    }
+    for (const model of ['claude-sonnet-5-5', 'claude-opus-4-7', 'claude-opus-4-6', 'codex', null]) {
+      expect(getClaudeFastMode(model, 'implement', 'trial')).toBeNull();
+    }
+    expect(getClaudeEffort('claude-opus-5-5', 'implement')).toBe('high');
+    expect(getClaudeEffort('claude-opus-5-5', 'implement', 'xhigh')).toBe('xhigh');
+  });
+
+  it('an empty scope matches nothing; omitting scope allows all implementation jobs', () => {
+    process.env.CLAUDE_FAST_MODE_IMPLEMENT = 'true';
+    process.env.CLAUDE_FAST_MODE_WORKFLOW_IDS = ' , ';
+    expect(getClaudeFastMode('claude-opus-5-5', 'implement', 'trial')).toBeNull();
+    delete process.env.CLAUDE_FAST_MODE_WORKFLOW_IDS;
+    expect(getClaudeFastMode('claude-opus-5-5', 'implement', 'trial')).toBe(true);
+  });
+
+  it('supports explicit false and rejects invalid values without enabling spend', () => {
+    process.env.CLAUDE_FAST_MODE_IMPLEMENT = 'false';
+    process.env.CLAUDE_FAST_MODE_WORKFLOW_IDS = 'trial';
+    for (const model of ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-opus-4-7', 'claude-haiku-4-5-20251001', null]) {
+      expect(getClaudeFastMode(model, 'implement', 'trial')).toBe(false);
+      expect(getClaudeFastMode(model, 'implement', 'other')).toBeNull();
+    }
+    expect(getClaudeFastMode('codex-gpt-6-astra', 'implement', 'trial')).toBeNull();
+    delete process.env.CLAUDE_FAST_MODE_WORKFLOW_IDS;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    _resetEffortWarningsForTest();
+    process.env.CLAUDE_FAST_MODE_IMPLEMENT = 'true$(echo injected)';
+    expect(getClaudeFastMode('claude-opus-5-5', 'implement')).toBeNull();
+    expect(getClaudeFastMode('claude-opus-5-5', 'implement')).toBeNull();
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 });

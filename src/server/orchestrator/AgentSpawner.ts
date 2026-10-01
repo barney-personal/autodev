@@ -16,7 +16,7 @@ import * as path from 'path';
 import { captureWithContext } from '../instrument.js';
 import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
-import { SYSTEM_PROMPT, HOOK_SETTINGS, CLAUDE, CODEX, MCP_PORT, readClaudeMd, buildMemorySection, ensureCodexTrusted, sessionName, getExistingCwd } from './AgentConfig.js';
+import { SYSTEM_PROMPT, buildClaudeSettings, CLAUDE, CODEX, MCP_PORT, readClaudeMd, buildMemorySection, ensureCodexTrusted, sessionName, getExistingCwd } from './AgentConfig.js';
 import { AgentState } from './AgentLifecycle.js';
 import { markJobRunning } from './JobLifecycle.js';
 import * as jobWatcher from './JobWatcherManager.js';
@@ -24,7 +24,7 @@ import { wrapExecLineWithNice } from './ProcessPriority.js';
 import { logResilienceEvent } from './ResilienceLogger.js';
 import { errMsg } from '../../shared/errors.js';
 import { isCodexModel, codexModelName, isAutoExitJob } from '../../shared/types.js';
-import { getClaudeEffort, getCodexReasoningEffort, getCodexServiceTier } from '../../shared/models.js';
+import { getClaudeEffort, getClaudeFastMode, getCodexReasoningEffort, getCodexServiceTier } from '../../shared/models.js';
 import { checkResources, escalateBackoff, resetBackoff, getBackoffMs, setLastResourceErrorTime, MAX_PTY_SESSIONS } from './PtyResourceManager.js';
 import { PTY_LOG_DIR, getNdjsonPath, getPtyStderrPath, getSnapshotPath, clearAgentLogFiles } from './PtyDiskLogger.js';
 import { isStandalonePrintJob } from './JobFinalizer.js';
@@ -148,6 +148,7 @@ export function buildAgentScript(opts: BuildAgentScriptOptions): string {
   const codexReasoningEffort = getCodexReasoningEffort(model, job.workflow_phase, job.effort);
   const codexServiceTier = getCodexServiceTier(model, job.workflow_phase);
   const claudeEffort = getClaudeEffort(model, job.workflow_phase, job.effort);
+  const claudeSettings = buildClaudeSettings(getClaudeFastMode(model, job.workflow_phase, job.workflow_id));
 
   let execLine: string;
   if (useCodex) {
@@ -167,9 +168,9 @@ export function buildAgentScript(opts: BuildAgentScriptOptions): string {
     if (usePrintMode) {
       const ndjsonPath = getNdjsonPath(agentId);
       const stderrPath = getPtyStderrPath(agentId);
-      execLine = `${shellQuote(CLAUDE)} --dangerously-skip-permissions --settings ${shellQuote(HOOK_SETTINGS)} --mcp-config ${shellQuote(mcpConfig)} --append-system-prompt ${shellQuote(SYSTEM_PROMPT)}${model ? ` --model ${shellQuote(model)}` : ''}${effortFlag} --print --output-format stream-json --verbose${resumeFlag} "$(cat ${shellQuote(promptFilePath)})" 2>> ${shellQuote(stderrPath)} | tee ${shellQuote(ndjsonPath)}`;
+      execLine = `${shellQuote(CLAUDE)} --dangerously-skip-permissions --settings ${shellQuote(claudeSettings)} --mcp-config ${shellQuote(mcpConfig)} --append-system-prompt ${shellQuote(SYSTEM_PROMPT)}${model ? ` --model ${shellQuote(model)}` : ''}${effortFlag} --print --output-format stream-json --verbose${resumeFlag} "$(cat ${shellQuote(promptFilePath)})" 2>> ${shellQuote(stderrPath)} | tee ${shellQuote(ndjsonPath)}`;
     } else {
-      execLine = `exec ${shellQuote(CLAUDE)} --dangerously-skip-permissions --settings ${shellQuote(HOOK_SETTINGS)} --mcp-config ${shellQuote(mcpConfig)} --append-system-prompt ${shellQuote(SYSTEM_PROMPT)}${model ? ` --model ${shellQuote(model)}` : ''}${effortFlag}${resumeFlag} "$(cat ${shellQuote(promptFilePath)})"`;
+      execLine = `exec ${shellQuote(CLAUDE)} --dangerously-skip-permissions --settings ${shellQuote(claudeSettings)} --mcp-config ${shellQuote(mcpConfig)} --append-system-prompt ${shellQuote(SYSTEM_PROMPT)}${model ? ` --model ${shellQuote(model)}` : ''}${effortFlag}${resumeFlag} "$(cat ${shellQuote(promptFilePath)})"`;
     }
   }
 

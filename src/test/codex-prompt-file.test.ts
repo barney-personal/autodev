@@ -208,7 +208,39 @@ describe('AgentRunner: Codex prompt file delivery', () => {
   });
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
     await cleanupTestDb();
+  });
+
+  it('passes scoped Fast settings and unchanged effort to a resumed Claude job', async () => {
+    vi.stubEnv('CLAUDE_FAST_MODE_IMPLEMENT', 'true');
+    vi.stubEnv('CLAUDE_FAST_MODE_WORKFLOW_IDS', 'trial');
+    const { runAgent } = await import('../server/orchestrator/AgentRunner.js');
+    const { HOOK_SETTINGS } = await import('../server/orchestrator/AgentConfig.js');
+    const queries = await import('../server/db/queries.js');
+    const job = await insertTestJob({ model: 'claude-opus-5-5', status: 'assigned', effort: 'xhigh' });
+    job.workflow_id = 'trial';
+    job.workflow_phase = 'implement';
+    const agent = queries.insertAgent({ id: 'fast-resume-agent', job_id: job.id, status: 'running' });
+    runAgent({ agentId: agent.id, job, resumeSessionId: 'existing-session' });
+    const args = spawnCalls[0].args;
+    expect(JSON.parse(args[args.indexOf('--settings') + 1])).toEqual({ ...JSON.parse(HOOK_SETTINGS), fastMode: true });
+    expect(args[args.indexOf('--model') + 1]).toBe('claude-opus-5-5');
+    expect(args[args.indexOf('--effort') + 1]).toBe('xhigh');
+    expect(args[args.indexOf('--resume') + 1]).toBe('existing-session');
+  });
+
+  it.each([undefined, 'ultrafast'])('preserves the Codex review tier selection (%s)', async (tier) => {
+    vi.stubEnv('CODEX_SERVICE_TIER_REVIEW', tier);
+    const { runAgent } = await import('../server/orchestrator/AgentRunner.js');
+    const queries = await import('../server/db/queries.js');
+    const job = await insertTestJob({ model: 'codex-gpt-6-astra', status: 'assigned', effort: 'high' });
+    job.workflow_phase = 'review';
+    const agent = queries.insertAgent({ id: 'codex-tier-agent', job_id: job.id, status: 'running' });
+    runAgent({ agentId: agent.id, job });
+    const args = spawnCalls[0].args;
+    expect(args.filter(arg => arg.startsWith('service_tier='))).toEqual(tier ? ['service_tier="ultrafast"'] : []);
+    expect(args).toContain('model_reasoning_effort="high"');
   });
 
   it('Codex jobs write prompt to file and pass file fd as stdin', async () => {

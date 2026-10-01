@@ -44,7 +44,7 @@ import { claimRecovery, clearRecoveryState } from './RecoveryLedger.js';
 import { createPrForJob, pushBranchForFailedJob } from './PrCreator.js';
 import type { Job, ClaudeStreamEvent, CodexStreamEvent } from '../../shared/types.js';
 import { isCodexModel, codexModelName, shouldUseCliMaxTurns } from '../../shared/types.js';
-import { getClaudeEffort, getCodexReasoningEffort, getCodexServiceTier } from '../../shared/models.js';
+import { getClaudeEffort, getClaudeFastMode, getCodexReasoningEffort, getCodexServiceTier } from '../../shared/models.js';
 import { buildEyePrompt, isEyeJob, computeAdaptiveEyeInterval } from './EyeConfig.js';
 import { getJobIfStatus, markJobRunning } from './JobLifecycle.js';
 import { buildNiceSpawn, isNiceAvailable } from './ProcessPriority.js';
@@ -61,7 +61,7 @@ import {
   CODEX,
   MCP_PORT,
   LOGS_DIR,
-  HOOK_SETTINGS,
+  buildClaudeSettings,
   SYSTEM_PROMPT,
   cancelledAgents,
   ensureCodexTrusted,
@@ -119,6 +119,7 @@ export function runAgent(options: RunOptions): void {
   const codexReasoningEffort = getCodexReasoningEffort(model, job.workflow_phase, job.effort);
   const codexServiceTier = getCodexServiceTier(model, job.workflow_phase);
   const claudeEffort = getClaudeEffort(model, job.workflow_phase, job.effort);
+  const claudeFastMode = getClaudeFastMode(model, job.workflow_phase, job.workflow_id);
   if (useCodex) ensureCodexTrusted(workDir);
 
   const mcpUrl = `http://localhost:${mcpPort}/mcp/${agentId}`;
@@ -163,7 +164,7 @@ export function runAgent(options: RunOptions): void {
       '--output-format', 'stream-json',
       '--verbose',
       '--dangerously-skip-permissions',
-      '--settings', HOOK_SETTINGS,
+      '--settings', buildClaudeSettings(claudeFastMode),
       '--mcp-config', mcpConfig,
       '--append-system-prompt', SYSTEM_PROMPT,
       ...cliMaxTurnsArgs,
@@ -174,7 +175,11 @@ export function runAgent(options: RunOptions): void {
     binary = CLAUDE;
   }
 
-  agentLogger(agentId, { jobId: job.id }).info({ binary: useCodex ? 'codex' : 'claude', model }, 'spawning');
+  agentLogger(agentId, { jobId: job.id }).info({
+    binary: useCodex ? 'codex' : 'claude', model,
+    reasoningEffort: useCodex ? codexReasoningEffort : claudeEffort,
+    requestedSpeed: useCodex ? (codexServiceTier ?? 'cli_default') : (claudeFastMode ?? 'cli_default'),
+  }, 'spawning');
 
   // All file descriptor acquisition (logFd, errFd, and the Codex promptFd)
   // happens inside this try block so that any failure at any point closes

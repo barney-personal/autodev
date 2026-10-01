@@ -25,3 +25,28 @@ Timing tests replay a busy stream and verify the 30-second bound, urgent failure
 `WATCHER_ROUTINE_INTERVAL_MS` defaults to `30000`; `0` restores the prior debounce-only cadence. Negative or non-finite settings use the default. The independent 45-second heartbeat still runs. No credentials, model choices or database schemas change.
 
 OpenAI's [latency guidance](https://developers.openai.com/api/docs/guides/latency-optimization) recommends reducing redundant requests, batching independent work and using deterministic logic where possible. Its [prompt caching guidance](https://developers.openai.com/api/docs/guides/prompt-caching) supports preserving stable prefixes; this change leaves each coding CLI's conversation and cache behavior intact.
+
+## Inference speed trial — 1 October 2026
+
+Speed selection is independent of model selection and reasoning effort. Both the detached runner and the PTY launcher now inherit the Codex CLI service tier, including the operator's `service_tier = "ultrafast"`, instead of forcing reviews to Fast. Explicit `CODEX_SERVICE_TIER_<PHASE>` overrides remain available and accept `ultrafast`; the CLI enforces model/account eligibility. No personal Codex configuration is rewritten.
+
+Claude Fast is an opt-in implementation-only trial:
+
+```dotenv
+CLAUDE_FAST_MODE_IMPLEMENT=true
+CLAUDE_FAST_MODE_WORKFLOW_IDS=b72888f3-9b8b-4ded-8de2-496a76bf93d8
+```
+
+The runner passes `fastMode` in the session's `--settings` JSON, alongside the existing file-lock hooks. The PTY launcher uses the same settings builder. Assessment, review, verification and unrelated workflows retain their existing settings. Only explicitly supported Opus model IDs can receive `fastMode: true`, so enabling Fast cannot switch a Sonnet/legacy model to Opus. `false` explicitly disables Fast in all selected Claude implementation sessions, including Sonnet, legacy and CLI-default models; unset/empty mode preserves the CLI configuration. An omitted workflow list permits all implementation jobs; a present but empty list matches none. Settings apply to newly launched/resumed processes, without restarting productive agents.
+
+Requirements and provider behavior:
+
+- Claude Code 2.1.205+ supports this non-interactive setting; the installed 2.1.286 was checked. Fast requires organization access and separate paid usage. Claude can fall back to standard speed on unavailable access, capacity or credits. Use provider-reported `usage.speed` and final `fast_mode_state` to distinguish an actual fast response from a requested setting; `service_tier: standard` alone is not a speed measurement.
+- The installed Codex CLI is 0.157.1. A bounded Astra probe completed successfully using the existing global Ultrafast preference, with no service-tier override. Successful access is not a measurement of tokens-per-second or an end-to-end speed guarantee.
+- Two bounded Claude probes returned successfully at **standard** speed. The diagnostic stated `Org fast mode: disabled (preference)` / `Fast mode has been disabled by your organization`. After enabling the organization preference through Claude Console, a third probe confirmed `Org fast mode: enabled` but received HTTP 429: the organization has **0 fast mode input tokens per minute**. Claude entered a 30-minute cooldown and completed at standard speed. Provider capacity/provisioning is still required; this is not a successful Fast-speed trial. No access checks are bypassed.
+
+Baseline for the report workflow: M1 implementation took 741,001 ms (12m21s), with $2.9847032 recorded agent cost. Including assessment, known workflow phase-agent cost through M1 was $5.9532144 for one completed milestone; review cost was unavailable. These figures exclude watcher/classifier and other service costs and are not billing totals.
+
+Measurement procedure: retain `/api/workflows/<id>/metrics` alongside completed-milestone count at rollout and after each independently accepted milestone. Compare phase durations, known cost sums, cost-coverage counts and cost per accepted milestone. Keep unknown costs unknown. Confirm actual Claude speed in stored result/usage events, and record any standard-speed fallback. Different milestones are not a controlled benchmark: do not attribute all duration differences to speed mode. Broader adoption requires successful verification and useful latency improvement within acceptable cost.
+
+References: [Claude Fast mode](https://code.claude.com/docs/en/fast-mode) and [OpenAI speed modes](https://learn.chatgpt.com/docs/agent-configuration/speed). Provider access, prices and availability can change.
