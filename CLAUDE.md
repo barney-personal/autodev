@@ -291,12 +291,14 @@ data/
 | `ANTHROPIC_API_KEY` | — | Required for model auto-classification |
 | `SENTRY_DSN` | — | Optional error tracking |
 | `EFFORT_ASSESS` | `xhigh` | Effort/reasoning budget for the assess phase (Claude `--effort` / Codex `model_reasoning_effort`). Set to empty string to omit the flag. |
-| `EFFORT_REVIEW` | `high` | Effort budget for the review phase. Paired with the `fast` service tier — together they trade a small amount of reviewer depth for ~1.5x throughput. |
+| `EFFORT_REVIEW` | `high` | Effort budget for the review phase, independent of inference speed settings. |
 | `EFFORT_IMPLEMENT` | `medium` (Opus 4.7/Codex), `high` (Opus 4.8) | Effort budget for the implement phase. Lowered from `xhigh` because plan and judgment already happened in assess/review — most implement turns are tool execution that doesn't benefit from extended thinking. Opus 4.8 (the frontier default) runs at `high` instead: on the frontier tier, higher effort up front reduces turn count, which usually nets out cheaper. Opus 4.7 stays at `medium` as the fallback tier. Setting the env var overrides both families. |
 | `EFFORT_VERIFY` | `xhigh` | Effort budget for the verify phase. |
 | `EFFORT_DEFAULT` | `xhigh` | Effort budget for one-shot (non-workflow) jobs. Auto-classified jobs pin a complexity-scaled effort instead (simple → Haiku with no flag, medium → Opus 4.8 @ `medium`, complex → Opus 4.8 @ `xhigh`), which takes precedence over this default. |
-| `CODEX_SERVICE_TIER_REVIEW` | `fast` | Codex `service_tier` override for the review phase. `fast` gives ~1.5x throughput on the priority lane (slightly higher cost). Other tiers: `default`, `flex`, `priority`, `auto`. Set to empty string to fall back to `~/.codex/config.toml`. |
+| `CODEX_SERVICE_TIER_REVIEW` | *(unset)* | Optional Codex `service_tier` override: `default`, `flex`, `priority`, `fast`, `ultrafast`, `auto`. Empty/unset inherits the CLI preference; model/account eligibility is enforced by Codex. |
 | `CODEX_SERVICE_TIER_ASSESS` / `_IMPLEMENT` / `_VERIFY` / `_DEFAULT` | *(unset)* | Codex `service_tier` overrides for the other phases. No default — the user's `~/.codex/config.toml` value is used. |
+| `CLAUDE_FAST_MODE_IMPLEMENT` | *(unset)* | Optional `true`/`false` session-only Fast override for supported Opus implementation jobs. Additional provider access and usage charges apply. Does not change model or effort. |
+| `CLAUDE_FAST_MODE_WORKFLOW_IDS` | *(unset)* | Optional comma-separated workflow allowlist for the Fast override. Unset permits all implementation jobs; a present but empty list matches none. |
 | `RESOLVER_MODE` | `assisted` | Auto Resolver gate: `off` disables entirely; `diagnose` writes diagnoses but never resumes; `assisted` auto-resumes safe classes (transient_infra, config_drift) only; `auto` auto-resumes any class that clears its confidence threshold. |
 | `RESOLVER_MODEL` | `claude-opus-4-8` | Model used for Resolver sessions. |
 | `RESOLVER_MAX_COST_USD` | `2` | Per-run cost ceiling. Resolver self-aborts when hit. |
