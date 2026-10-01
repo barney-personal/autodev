@@ -82,7 +82,7 @@ describe('WorkQueueManager — capacity-aware dispatch', () => {
   it('dispatches multiple ready jobs in a single tick', async () => {
     const queries = await import('../server/db/queries.js');
     const { _tickForTest } = await import('../server/orchestrator/WorkQueueManager.js');
-    const { startInteractiveAgent } = await import('../server/orchestrator/PtyManager.js');
+    const { runAgent } = await import('../server/orchestrator/AgentRunner.js');
 
     // Insert 3 queued jobs with explicit models (no API classification needed)
     await insertTestJob({ id: 'j1', title: 'Job 1', model: 'claude-sonnet-4-6' });
@@ -92,7 +92,7 @@ describe('WorkQueueManager — capacity-aware dispatch', () => {
     // Single tick should dispatch all 3
     await _tickForTest();
 
-    expect(vi.mocked(startInteractiveAgent)).toHaveBeenCalledTimes(3);
+    expect(vi.mocked(runAgent)).toHaveBeenCalledTimes(3);
 
     // All 3 jobs should now be assigned (not still queued)
     const j1 = queries.getJobById('j1');
@@ -105,7 +105,7 @@ describe('WorkQueueManager — capacity-aware dispatch', () => {
 
   it('respects concurrency limit during multi-dispatch', async () => {
     const { _tickForTest, setMaxConcurrent } = await import('../server/orchestrator/WorkQueueManager.js');
-    const { startInteractiveAgent } = await import('../server/orchestrator/PtyManager.js');
+    const { runAgent } = await import('../server/orchestrator/AgentRunner.js');
 
     setMaxConcurrent(2);
 
@@ -116,7 +116,7 @@ describe('WorkQueueManager — capacity-aware dispatch', () => {
     await _tickForTest();
 
     // Only 2 should dispatch due to the concurrency cap
-    expect(vi.mocked(startInteractiveAgent)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(runAgent)).toHaveBeenCalledTimes(2);
 
     // Reset for other tests
     setMaxConcurrent(20);
@@ -131,37 +131,42 @@ describe('WorkQueueManager — capacity-aware dispatch', () => {
     const queries = await import('../server/db/queries.js');
     const { _tickForTest } = await import('../server/orchestrator/WorkQueueManager.js');
     const ptyManager = await import('../server/orchestrator/PtyManager.js');
-    const { startInteractiveAgent, checkPtyResources } = ptyManager;
+    const { checkPtyResources } = ptyManager;
+    const { runAgent } = await import('../server/orchestrator/AgentRunner.js');
 
     vi.mocked(checkPtyResources).mockReturnValue({
       ok: false,
       reason: 'System PTY exhaustion detected (/dev/ptmx unavailable)',
     });
 
-    await insertTestJob({ id: 'gated-j1', title: 'Gated Job 1', model: 'claude-sonnet-4-6' });
-    await insertTestJob({ id: 'gated-j2', title: 'Gated Job 2', model: 'claude-sonnet-4-6' });
+    await insertTestJob({ id: 'gated-j1', title: 'Gated Job 1', is_interactive: 1, model: 'claude-sonnet-4-6' });
+    await insertTestJob({ id: 'gated-j2', title: 'Gated Job 2', is_interactive: 1, model: 'claude-sonnet-4-6' });
 
     await _tickForTest();
 
-    expect(vi.mocked(startInteractiveAgent)).not.toHaveBeenCalled();
+    expect(vi.mocked(runAgent)).not.toHaveBeenCalled();
 
     const j1 = queries.getJobById('gated-j1');
     const j2 = queries.getJobById('gated-j2');
     expect(j1!.status).toBe('queued');
     expect(j2!.status).toBe('queued');
 
+    await insertTestJob({ id: 'headless', title: 'Unattended', model: 'claude-opus-5-5' });
+    await _tickForTest();
+    expect(vi.mocked(runAgent)).toHaveBeenCalledOnce();
+    expect(queries.getJobById('headless')!.status).toBe('assigned');
     vi.mocked(checkPtyResources).mockReturnValue({ ok: true });
   });
 
   it('nudgeQueue triggers dispatch without waiting for poll interval', async () => {
     const { nudgeQueue, startWorkQueue, stopWorkQueue } = await import('../server/orchestrator/WorkQueueManager.js');
-    const { startInteractiveAgent } = await import('../server/orchestrator/PtyManager.js');
+    const { runAgent } = await import('../server/orchestrator/AgentRunner.js');
 
     // Start the queue (begins the 2s poll)
     startWorkQueue();
     // Wait for the initial tick to flush
     await new Promise(r => setTimeout(r, 50));
-    vi.mocked(startInteractiveAgent).mockClear();
+    vi.mocked(runAgent).mockClear();
 
     // Insert a job and nudge — should dispatch within the microtask, not after 2s
     await insertTestJob({ id: 'nudge-j1', title: 'Nudge Job', model: 'claude-sonnet-4-6' });
@@ -170,8 +175,8 @@ describe('WorkQueueManager — capacity-aware dispatch', () => {
     // The microtask should fire almost immediately
     await new Promise(r => setTimeout(r, 50));
 
-    expect(vi.mocked(startInteractiveAgent)).toHaveBeenCalledTimes(1);
-    const call = vi.mocked(startInteractiveAgent).mock.calls[0][0] as any;
+    expect(vi.mocked(runAgent)).toHaveBeenCalledTimes(1);
+    const call = vi.mocked(runAgent).mock.calls[0][0] as any;
     expect(call.job.id).toBe('nudge-j1');
 
     stopWorkQueue();

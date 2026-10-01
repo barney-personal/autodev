@@ -16,16 +16,21 @@ import * as agentQueries from '../db/agentQueries.js';
 import { isModelRateLimited, KNOWN_MODELS } from './ModelClassifier.js';
 import type { Workflow, WorkflowPhase, Job, AgentWithJob, ReviewStatus } from '../../shared/types.js';
 
-export const ROUTING_BRAIN_PROMPT_VERSION = 'v1';
+export const ROUTING_BRAIN_PROMPT_VERSION = 'v2';
 
 const MODEL_MENU: ReadonlyArray<{ id: string; capability: string; cost: string }> = [
+  { id: 'claude-opus-5-5', capability: 'complex implementation and long-running work; 1M context', cost: 'high' },
+  { id: 'claude-sonnet-5-5', capability: 'balanced implementation and focused milestones; 1M context', cost: 'moderate' },
+  { id: 'codex-gpt-6-astra', capability: 'demanding reasoning and independent cross-provider review', cost: 'high' },
+  { id: 'codex-gpt-6.1-sol', capability: 'balanced coding and independent cross-provider review', cost: 'moderate' },
+  { id: 'codex-gpt-6-luna', capability: 'fast focused tasks and mechanical changes', cost: 'very cheap' },
   { id: 'claude-haiku-4-5',          capability: 'fastest, lowest reasoning depth; great for trivial mechanical edits', cost: 'very cheap' },
   { id: 'claude-sonnet-4-6',          capability: 'balanced quality + speed; safe default for medium milestones',         cost: 'moderate' },
   { id: 'claude-sonnet-4-6[1m]',      capability: 'sonnet with 1M-token context; for plan/context-heavy work',           cost: 'moderate+' },
   { id: 'claude-opus-4-7',            capability: 'high single-shot reasoning depth (previous flagship)',                  cost: 'expensive' },
   { id: 'claude-opus-4-7[1m]',        capability: 'opus with 1M-token context; for large/complex milestones',             cost: 'expensive+' },
-  { id: 'claude-opus-4-8',            capability: 'frontier reasoning depth and long-horizon autonomy; current flagship',  cost: 'expensive' },
-  { id: 'claude-opus-4-8[1m]',        capability: 'opus 4.8 with 1M-token context; default implementer for complex work', cost: 'expensive+' },
+  { id: 'claude-opus-4-8',            capability: 'frontier reasoning depth and long-horizon autonomy; legacy flagship',  cost: 'expensive' },
+  { id: 'claude-opus-4-8[1m]',        capability: 'opus 4.8 with 1M-token context; legacy implementer', cost: 'expensive+' },
   { id: 'codex-gpt-5.5',              capability: 'separate provider, useful as cross-provider fallback or for tests',     cost: 'moderate' },
 ];
 

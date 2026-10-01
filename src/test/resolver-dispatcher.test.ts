@@ -367,3 +367,26 @@ describe('ResumeOrchestrator — circuit breaker', () => {
     expect(tripped).toBe(false);
   });
 });
+
+describe('durable resume circuit', () => {
+  it('trips after process memory is lost and respects an operator reset', async () => {
+    const { fingerprint } = await import('../server/orchestrator/ResolverFingerprint.js');
+    const wf = await insertTestWorkflow({ status: 'blocked' });
+    const reason = 'phase failed: repeated fixture failure';
+    const run = queries.insertResolverRun({ id: 'durable-resume', workflow_id: wf.id, trigger_reason: reason, reason_fingerprint: fingerprint(reason), attempt: 1, model: 'claude-opus-5-5' });
+    queries.updateResolverRun(run.id, { status: 'resolved', resume_outcome: 'resumed_running', resumed_at: Date.now() });
+    _resetRecentResumesForTest();
+    expect(recordPostResumeBlock(wf.id, reason)).toBe(true);
+    expect(queries.getWorkflowById(wf.id)?.resolver_circuit_state).toBe('tripped');
+    resetResolverCircuit(wf.id);
+    expect(recordPostResumeBlock(wf.id, reason)).toBe(false);
+  });
+  it('expires persisted resumes without changing the circuit', async () => {
+    const { fingerprint } = await import('../server/orchestrator/ResolverFingerprint.js');
+    const wf = await insertTestWorkflow({ status: 'blocked' });
+    const reason = 'phase failed: old fixture failure';
+    const run = queries.insertResolverRun({ id: 'expired-resume', workflow_id: wf.id, trigger_reason: reason, reason_fingerprint: fingerprint(reason), attempt: 1, model: 'claude-opus-5-5' });
+    queries.updateResolverRun(run.id, { resume_outcome: 'resumed_running', resumed_at: Date.now() - 31 * 60000 });
+    expect(recordPostResumeBlock(wf.id, reason)).toBe(false);
+  });
+});

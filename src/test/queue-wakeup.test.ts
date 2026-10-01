@@ -98,7 +98,7 @@ describe('WorkQueueManager: capacity-aware dispatch', () => {
   it('dispatches multiple ready jobs in a single tick', async () => {
     const { _tickForTest, setMaxConcurrent } = await import('../server/orchestrator/WorkQueueManager.js');
     const socket = await import('../server/socket/SocketManager.js');
-    const { startInteractiveAgent } = await import('../server/orchestrator/PtyManager.js');
+    const { runAgent } = await import('../server/orchestrator/AgentRunner.js');
 
     setMaxConcurrent(10);
 
@@ -114,8 +114,8 @@ describe('WorkQueueManager: capacity-aware dispatch', () => {
     const agentNewCalls = vi.mocked(socket.emitAgentNew).mock.calls;
     expect(agentNewCalls.length).toBe(3);
 
-    // All 3 should have had startInteractiveAgent called
-    expect(vi.mocked(startInteractiveAgent).mock.calls.length).toBe(3);
+    // All unattended Claude jobs use the file-backed runner
+    expect(vi.mocked(runAgent).mock.calls.length).toBe(3);
   });
 
   it('respects the concurrency limit', async () => {
@@ -373,7 +373,7 @@ describe('WorkQueueManager: dispatch failure cleans up agent', () => {
     setMaxConcurrent(10);
 
     // Insert a Claude job that will use startInteractiveAgent
-    await insertTestJob({ title: 'Failing Claude Job', model: 'claude-sonnet-4-6', work_dir: '/tmp/nonexistent' });
+    await insertTestJob({ title: 'Failing Claude Job', is_interactive: 1, model: 'claude-sonnet-4-6', work_dir: '/tmp/nonexistent' });
 
     // Make startInteractiveAgent throw
     vi.mocked(startInteractiveAgent).mockImplementationOnce(() => {

@@ -15,7 +15,7 @@ let pendingFetch: Promise<ModelsResponse> | null = null;
 function fetchModels(): Promise<ModelsResponse> {
   if (pendingFetch) return pendingFetch;
   pendingFetch = fetch('/api/models')
-    .then(r => r.json())
+    .then(r => { if (!r.ok) throw new Error('Model catalog unavailable'); return r.json(); })
     .then((data: ModelsResponse) => {
       cached = data;
       pendingFetch = null;

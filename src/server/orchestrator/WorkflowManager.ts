@@ -6,12 +6,12 @@ import { captureWithContext, Sentry } from '../instrument.js';
 import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
 import type { Job, RouteDecision, Workflow, WorkflowPhase, StopMode } from '../../shared/types.js';
-import { effectiveMaxTurns, isCodexModel } from '../../shared/types.js';
+import { effectiveMaxTurns } from '../../shared/types.js';
 import {
   DEFAULT_CLAUDE_OPUS_48_MODEL_1M,
-  DEFAULT_CLAUDE_OPUS_MODEL,
   DEFAULT_CLAUDE_OPUS_MODEL_1M,
-  DEFAULT_CLAUDE_SONNET_MODEL,
+  DEFAULT_CLAUDE_MODEL,
+  BALANCED_CLAUDE_MODEL,
   DEFAULT_CLAUDE_SONNET_MODEL_1M,
   DEFAULT_CODEX_MODEL,
 } from '../../shared/models.js';
@@ -582,13 +582,9 @@ function spawnRepairJob(workflow: Workflow, phase: 'assess' | 'review', cycle: n
   const level = REPAIR_LEVELS[existingAttempts];
   queries.upsertNote(attemptsKey, String(existingAttempts + 1), null);
   let model = phase === 'review' ? workflow.reviewer_model : workflow.implementer_model;
-  if (isCodexModel(model)) {
-    console.log(`[workflow ${workflow.id}] repair job requires reliable MCP — falling back from Codex to Claude`);
-    model = DEFAULT_CLAUDE_SONNET_MODEL;
-  }
   if (phase === 'assess' && existingAttempts >= 1) {
-    console.log(`[workflow ${workflow.id}] assess repair attempt ${existingAttempts + 1} — escalating to ${DEFAULT_CLAUDE_OPUS_MODEL} for reliable MCP`);
-    model = DEFAULT_CLAUDE_OPUS_MODEL;
+    console.log(`[workflow ${workflow.id}] assess repair attempt ${existingAttempts + 1} — escalating to ${DEFAULT_CLAUDE_MODEL}`);
+    model = DEFAULT_CLAUDE_MODEL;
   }
   const stopMode = phase === 'review' ? workflow.stop_mode_review : workflow.stop_mode_assess;
   const stopValue = phase === 'review' ? workflow.stop_value_review : workflow.stop_value_assess;
@@ -1052,6 +1048,8 @@ function getWorkflowFallbackModel(workflow: Workflow, phase: WorkflowPhase, curr
   if (directFallback && directFallback !== currentModel) candidates.add(directFallback);
   if (phase === 'review') candidates.add(workflow.reviewer_model);
   candidates.add(workflow.implementer_model);
+  candidates.add(DEFAULT_CLAUDE_MODEL);
+  candidates.add(BALANCED_CLAUDE_MODEL);
   candidates.add(DEFAULT_CLAUDE_OPUS_48_MODEL_1M);
   candidates.add(DEFAULT_CLAUDE_SONNET_MODEL_1M);
   candidates.add(DEFAULT_CLAUDE_OPUS_MODEL_1M);
@@ -1179,10 +1177,6 @@ export function startWorkflow(workflow: Workflow): Job | null {
 
   const prompt = buildAssessPrompt(activeWorkflow);
   let assessModel = activeWorkflow.implementer_model;
-  if (isCodexModel(assessModel)) {
-    console.log(`[workflow ${activeWorkflow.id}] assess phase requires reliable MCP — falling back from Codex to Claude`);
-    assessModel = 'claude-sonnet-4-6';
-  }
   assessModel = getWorkflowFallbackModel(activeWorkflow, 'assess', assessModel) ?? assessModel;
   const job = queries.insertJob({
     id: randomUUID(), title: `[Workflow C0] Assess`, description: prompt,

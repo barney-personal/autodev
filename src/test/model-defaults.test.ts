@@ -35,10 +35,10 @@ describe('shared model defaults', () => {
   beforeEach(clearEffortEnv);
   afterEach(restoreEffortEnv);
 
-  it('pins workflow defaults to opus 4.8 implementer and gpt-5.5 reviewer', () => {
-    expect(DEFAULT_WORKFLOW_IMPLEMENTER_MODEL).toBe('claude-opus-4-8[1m]');
-    expect(DEFAULT_WORKFLOW_REVIEWER_MODEL).toBe('codex-gpt-5.5');
-    expect(DEFAULT_CODEX_MODEL).toBe('codex-gpt-5.5');
+  it('pins workflow defaults to Opus 5.5 implementation and Astra review', () => {
+    expect(DEFAULT_WORKFLOW_IMPLEMENTER_MODEL).toBe('claude-opus-5-5');
+    expect(DEFAULT_WORKFLOW_REVIEWER_MODEL).toBe('codex-gpt-6-astra');
+    expect(DEFAULT_CODEX_MODEL).toBe('codex-gpt-6.1-sol');
   });
 
   it('uses xhigh effort for opus 4.8 and opus 4.7 by default (no phase)', () => {

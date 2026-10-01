@@ -105,6 +105,9 @@ export function initDb(dbPath: string): DatabaseSync {
   if (!agentCols.includes('num_turns')) {
     db.exec('ALTER TABLE agents ADD COLUMN num_turns INTEGER');
   }
+  if (!agentCols.includes('execution_mode')) {
+    db.exec('ALTER TABLE agents ADD COLUMN execution_mode TEXT');
+  }
   if (!agentCols.includes('pending_wait_ids')) {
     db.exec('ALTER TABLE agents ADD COLUMN pending_wait_ids TEXT');
   }
@@ -800,6 +803,9 @@ function initResolverSchema(db: DatabaseSync, workflowCols: string[]): void {
       finished_at        INTEGER
     )
   `).run();
+  if (!(db.prepare('PRAGMA table_info(resolver_runs)').all() as { name: string }[]).some(c => c.name === 'resumed_at')) {
+    db.exec('ALTER TABLE resolver_runs ADD COLUMN resumed_at INTEGER');
+  }
   db.prepare('CREATE INDEX IF NOT EXISTS idx_resolver_runs_workflow ON resolver_runs(workflow_id, started_at DESC)').run();
   db.prepare('CREATE INDEX IF NOT EXISTS idx_resolver_runs_fingerprint ON resolver_runs(workflow_id, reason_fingerprint)').run();
   db.prepare('CREATE INDEX IF NOT EXISTS idx_resolver_runs_status ON resolver_runs(status, started_at DESC)').run();

@@ -1,29 +1,23 @@
-import { readFileSync } from 'fs';
-import { join } from 'path';
+import { getModelUnavailability } from './ModelAvailability.js';
 import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
 import type { Job } from '../../shared/types.js';
 import { isCodexModel } from '../../shared/types.js';
+import { DEFAULT_CLAUDE_MODEL, BALANCED_CLAUDE_MODEL, DEFAULT_CODEX_MODEL, FRONTIER_CODEX_MODEL, EFFICIENT_CODEX_MODEL } from '../../shared/models.js';
+import { hasCodexCredentials } from './ModelCatalog.js';
 import { CircuitBreaker } from './CircuitBreaker.js';
 
 // The model used to do the classification itself — always Haiku, cheap and fast
 const CLASSIFIER_MODEL = 'claude-haiku-4-5-20251001';
 
-// Opus 4.8 is the default for real work; effort (below) is the cost lever that
-// scales with complexity. Simple tasks stay on Haiku — paying frontier-model
-// rates ($5/$25 per MTok) for typo-class tasks is waste, not capability.
+// Route by task complexity; keep inexpensive work on a smaller model.
 const COMPLEXITY_TO_MODEL: Record<string, string> = {
   simple:  'claude-haiku-4-5-20251001',
-  medium:  'claude-opus-4-8[1m]',
-  complex: 'claude-opus-4-8[1m]',
+  medium:  BALANCED_CLAUDE_MODEL,
+  complex: DEFAULT_CLAUDE_MODEL,
 };
 
-// Effort pinned on the job alongside the classified model. Medium tasks run
-// Opus 4.8 at `medium` effort (moderate scope doesn't need frontier thinking
-// depth); complex tasks get `xhigh` (the recommended level for hard agentic
-// coding). Haiku takes no effort flag. The pin survives rate-limit fallback:
-// if Opus 4.8 falls back to Opus 4.7 the effort still applies; Sonnet/Haiku
-// drop the flag entirely via the allowlist gate in getClaudeEffort.
+// Pin effort alongside the classified model; provider adapters map supported levels.
 const COMPLEXITY_TO_EFFORT: Record<string, string | null> = {
   simple:  null,
   medium:  'medium',
@@ -36,9 +30,11 @@ const COMPLEXITY_TO_EFFORT: Record<string, string | null> = {
 // explicitly pinned to either variant has a defined starting index for the
 // fallback loop. Family aliasing (getModelFamily) already shares rate-limit
 // state across variants, so the extra entries are a no-op at lookup time.
-// Codex (GPT-5.4 via OpenAI) is the final fallback — different API provider,
+// Codex (via OpenAI) is the final fallback — different API provider,
 // so Anthropic rate limits don't affect it.
 const MODEL_FALLBACK_CHAIN: string[] = [
+  DEFAULT_CLAUDE_MODEL,
+  BALANCED_CLAUDE_MODEL,
   'claude-opus-4-8[1m]',
   'claude-opus-4-8',
   'claude-opus-4-7[1m]',
@@ -48,6 +44,10 @@ const MODEL_FALLBACK_CHAIN: string[] = [
   'claude-sonnet-4-6[1m]',
   'claude-sonnet-4-6',
   'claude-haiku-4-5-20251001',
+  DEFAULT_CODEX_MODEL,
+  FRONTIER_CODEX_MODEL,
+  EFFICIENT_CODEX_MODEL,
+  'codex-gpt-5.5',
   'codex',
 ];
 
@@ -56,6 +56,8 @@ const MODEL_FALLBACK_CHAIN: string[] = [
 // dispatched outside the fallback chain — e.g. a classifier-only model — is
 // still tracked by the breaker.
 export const KNOWN_MODELS: readonly string[] = [
+  DEFAULT_CLAUDE_MODEL, BALANCED_CLAUDE_MODEL,
+  DEFAULT_CODEX_MODEL, FRONTIER_CODEX_MODEL, EFFICIENT_CODEX_MODEL, 'codex-gpt-5.5',
   'claude-opus-4-8',
   'claude-opus-4-8[1m]',
   'claude-opus-4-7',
@@ -76,7 +78,6 @@ export function getCircuitBreaker(): CircuitBreaker { return _circuitBreaker; }
 const DEFAULT_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
 
 const _rateLimitCooldowns = new Map<string, number>();
-let _codexAuthAvailable: boolean | null = null;
 
 export type ModelProvider = 'anthropic' | 'openai' | 'unknown';
 
@@ -187,16 +188,8 @@ export function isModelRateLimited(model: string): boolean {
   return false;
 }
 
-function hasCodexAuth(): boolean {
-  if (_codexAuthAvailable != null) return _codexAuthAvailable;
-  try {
-    const auth = JSON.parse(readFileSync(join(process.env.HOME ?? '~', '.codex', 'auth.json'), 'utf8'));
-    _codexAuthAvailable = !!(auth.OPENAI_API_KEY ?? auth.api_key ?? auth.tokens?.access_token);
-  } catch {
-    _codexAuthAvailable = false;
-  }
-  return _codexAuthAvailable;
-}
+let _codexAuthAvailable: boolean | null = null; // test-only override
+function hasCodexAuth(): boolean { return _codexAuthAvailable ?? hasCodexCredentials(); }
 
 /**
  * Given a preferred model, return the best available model that isn't
@@ -206,14 +199,23 @@ function hasCodexAuth(): boolean {
 export function getAvailableModel(preferredModel: string): string | null {
   if (isCodexModel(preferredModel) && !hasCodexAuth()) {
     console.log(`[classifier] ${preferredModel} unavailable — no codex API key found`);
-  } else if (!isModelRateLimited(preferredModel)) {
+  } else if (!isModelRateLimited(preferredModel) && !getModelUnavailability(preferredModel)) {
     return preferredModel;
+  }
+  if (isCodexModel(preferredModel)) {
+    // Prefer another verified/configured OpenAI option before changing provider.
+    if (hasCodexAuth()) {
+      for (const candidate of [FRONTIER_CODEX_MODEL, DEFAULT_CODEX_MODEL, EFFICIENT_CODEX_MODEL, 'codex-gpt-5.5']) {
+        if (candidate !== preferredModel && !isModelRateLimited(candidate) && !getModelUnavailability(candidate)) return candidate;
+      }
+    }
+    return getAlternateProviderModel(preferredModel);
   }
   const idx = MODEL_FALLBACK_CHAIN.indexOf(preferredModel);
   if (idx < 0) return null;
   for (let i = idx + 1; i < MODEL_FALLBACK_CHAIN.length; i++) {
     if (isCodexModel(MODEL_FALLBACK_CHAIN[i]) && !hasCodexAuth()) continue;
-    if (!isModelRateLimited(MODEL_FALLBACK_CHAIN[i])) {
+    if (!isModelRateLimited(MODEL_FALLBACK_CHAIN[i]) && !getModelUnavailability(MODEL_FALLBACK_CHAIN[i])) {
       console.log(`[classifier] ${preferredModel} rate-limited → falling back to ${MODEL_FALLBACK_CHAIN[i]}`);
       return MODEL_FALLBACK_CHAIN[i];
     }
@@ -239,7 +241,8 @@ export function getFallbackModel(preferredModel: string): string {
 export function getAlternateProviderModel(failingModel: string): string | null {
   const failingProvider = getModelProvider(failingModel);
   for (const candidate of MODEL_FALLBACK_CHAIN) {
-    if (getModelProvider(candidate) !== failingProvider && !isModelRateLimited(candidate)) {
+    if (isCodexModel(candidate) && !hasCodexAuth()) continue;
+    if (getModelProvider(candidate) !== failingProvider && !isModelRateLimited(candidate) && !getModelUnavailability(candidate)) {
       return candidate;
     }
   }
@@ -291,7 +294,7 @@ export async function resolveModel(job: Job): Promise<string | null> {
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
-    const fallback = getAvailableModel('claude-sonnet-4-6[1m]');
+    const fallback = getAvailableModel(BALANCED_CLAUDE_MODEL);
     if (fallback == null) return null;
     console.warn(`[classifier] ANTHROPIC_API_KEY not set — defaulting to ${fallback}`);
     queries.updateJobModel(job.id, fallback);
@@ -343,7 +346,7 @@ export async function resolveModel(job: Job): Promise<string | null> {
 
     return model;
   } catch (err) {
-    const fallback = getAvailableModel('claude-sonnet-4-6[1m]');
+    const fallback = getAvailableModel(BALANCED_CLAUDE_MODEL);
     if (fallback == null) return null;
     console.error(`[classifier] failed, falling back to ${fallback}:`, err);
     queries.updateJobModel(job.id, fallback);

@@ -206,6 +206,7 @@ export interface ResolverRun {
   error_message: string | null;
   started_at: number;
   finished_at: number | null;
+  resumed_at?: number | null; // persisted recovery circuit timestamp
 }
 
 export interface ResolverAction {
@@ -237,6 +238,7 @@ export interface Agent {
   job_id: string;
   status: AgentStatus;
   pid: number | null;
+  execution_mode?: 'headless' | null;
   session_id: string | null;
   parent_agent_id: string | null;
   exit_code: number | null;

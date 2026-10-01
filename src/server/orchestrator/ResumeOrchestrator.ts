@@ -94,7 +94,7 @@ export async function handleResolverOutcome(input: HandleResolverOutcomeInput): 
       resumed_at: Date.now(),
     });
 
-    queries.updateResolverRun(run.id, { resume_outcome: 'resumed_running' });
+    queries.updateResolverRun(run.id, { resume_outcome: 'resumed_running', resumed_at: Date.now() });
     const fresh = queries.getResolverRunById(run.id);
     if (fresh) socket.emitResolverRunUpdate(fresh);
 
@@ -163,7 +163,8 @@ export async function handleResolverOutcome(input: HandleResolverOutcomeInput): 
  * usual blocked diagnostic noise if it wants to).
  */
 export function recordPostResumeBlock(workflowId: string, newBlockedReason: string | null): boolean {
-  const recent = _recentResumes.get(workflowId);
+  const persisted = queries.getRecentResolverResume(workflowId, Date.now() - RECENT_RESUME_TTL_MS);
+  const recent = persisted ? { fingerprint: persisted.reason_fingerprint, resolver_id: persisted.id, resumed_at: persisted.resumed_at! } : _recentResumes.get(workflowId);
   if (!recent) return false;
 
   if (Date.now() - recent.resumed_at > RECENT_RESUME_TTL_MS) {
@@ -214,6 +215,7 @@ export function resetResolverCircuit(workflowId: string): boolean {
   const updated = queries.getWorkflowById(workflowId);
   if (updated) socket.emitWorkflowUpdate(updated);
   _recentResumes.delete(workflowId);
+  queries.clearResolverResumes(workflowId);
   logResilienceEvent('resolver_circuit_reset', 'workflow', workflowId, { previous_state: wf.resolver_circuit_state });
   return true;
 }

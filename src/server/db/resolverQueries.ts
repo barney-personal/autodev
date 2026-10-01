@@ -90,6 +90,7 @@ export function findLatestResolverRunForFingerprint(workflowId: string, fingerpr
 }
 
 const RUN_UPDATE_ALLOWED = new Set([
+  'resumed_at',
   'classification',
   'status',
   'diagnosis',
@@ -103,7 +104,7 @@ export function updateResolverRun(
   id: string,
   fields: Partial<Pick<ResolverRun,
     'classification' | 'status' | 'diagnosis' | 'recommended_action' |
-    'resume_outcome' | 'error_message' | 'finished_at'>>,
+    'resume_outcome' | 'error_message' | 'finished_at' | 'resumed_at'>>,
 ): void {
   const db = getDb();
   const sets: string[] = [];
@@ -253,3 +254,12 @@ export type {
   ResolverActionType,
   ResolverActionOutcome,
 };
+
+/** Durable source of truth for recovery loops, including after a process restart. */
+export function getRecentResolverResume(workflowId: string, since: number): ResolverRun | null {
+  const row = getDb().prepare("SELECT * FROM resolver_runs WHERE workflow_id = ? AND resume_outcome = 'resumed_running' AND resumed_at >= ? ORDER BY resumed_at DESC LIMIT 1").get(workflowId, since);
+  return row ? cast<ResolverRun>(row) : null;
+}
+export function clearResolverResumes(workflowId: string): void {
+  getDb().prepare("UPDATE resolver_runs SET resumed_at = NULL WHERE workflow_id = ?").run(workflowId);
+}

@@ -1280,7 +1280,7 @@ describe('WorkflowManager: getWorkflowFallbackModel', () => {
     // Must be a different model family — NOT 'claude-opus-4-6' (same base, no [1m])
     expect(retryJob!.model).not.toBe('claude-opus-4-6');
     // Should be opus-4-8[1m] — the first genuinely different hardcoded candidate
-    expect(retryJob!.model).toBe('claude-opus-4-8[1m]');
+    expect(retryJob!.model).toBe('claude-opus-5-5');
   });
 
   it('all models unavailable returns null — workflow blocks', async () => {

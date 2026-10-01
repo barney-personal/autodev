@@ -1,3 +1,4 @@
+import { readFileSync } from 'fs';
 /**
  * Health check endpoint — reports system status for monitoring and alerting.
  *
@@ -19,6 +20,9 @@ import * as queries from '../db/queries.js';
 import { getQueueMetrics } from '../orchestrator/WorkQueueManager.js';
 
 const router = Router();
+let release: { revision: string; builtAt: string } | null = null;
+try { release = JSON.parse(readFileSync(new URL('../../build-info.json', import.meta.url), 'utf8')); } catch { /* development */ }
+
 
 router.get('/', (_req, res) => {
   const checks: Record<string, any> = {};
@@ -201,7 +205,7 @@ router.get('/', (_req, res) => {
   checks.uptime_seconds = Math.round(process.uptime());
 
   const httpStatus = status === 'unhealthy' ? 503 : 200;
-  res.status(httpStatus).json({ status, checks });
+  res.status(httpStatus).json({ status, release, checks });
 });
 
 export default router;

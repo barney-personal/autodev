@@ -1,3 +1,4 @@
+import { estimateCostUsd } from './CostEstimator.js';
 import { agentLogger } from '../lib/logger.js';
 import * as queries from '../db/queries.js';
 import * as socket from '../socket/SocketManager.js';
@@ -27,19 +28,24 @@ export function extractAndAccumulateTokens(
   if (event.type === 'assistant') {
     try {
       const parsed = JSON.parse(raw);
-      const usage = parsed.usage;
+      const usage = parsed.message?.usage ?? parsed.usage;
       if (usage) {
         inputTokens = (usage.input_tokens ?? 0)
           + (usage.cache_creation_input_tokens ?? 0)
           + (usage.cache_read_input_tokens ?? 0);
         outputTokens = usage.output_tokens ?? 0;
+        if (typeof parsed.message?.id === 'string') {
+          queries.accumulateAgentMessageTokens(agentId, parsed.message.id, inputTokens, outputTokens);
+          return;
+        }
       }
     } catch { /* malformed JSON — skip */ }
   }
 
   const codexUsage = (event as CodexStreamEvent).usage;
-  if (codexUsage) {
-    inputTokens = (codexUsage.input_tokens ?? 0) + (codexUsage.cached_input_tokens ?? 0);
+  if (event.type === 'turn.completed' && codexUsage) {
+    // Codex input_tokens already includes cached_input_tokens.
+    inputTokens = codexUsage.input_tokens ?? 0;
     outputTokens = codexUsage.output_tokens ?? 0;
   }
 
@@ -67,6 +73,18 @@ export function handleStreamEvent(
   }
 
   extractAndAccumulateTokens(agentId, event, raw);
+
+  // Terminal accounting must also run when finish_job already marked the
+  // lifecycle complete; process-exit idempotency must not discard the bill.
+  if (event.type === 'result') {
+    const result = event as ClaudeStreamEvent;
+    if (typeof result.total_cost_usd === 'number' && Number.isFinite(result.total_cost_usd)) {
+      queries.updateAgent(agentId, { cost_usd: result.total_cost_usd, ...(result.num_turns != null ? { num_turns: result.num_turns } : {}), ...(result.duration_ms != null ? { duration_ms: result.duration_ms } : {}) });
+    }
+  } else if (event.type === 'turn.completed') {
+    const agent = queries.getAgentWithJob(agentId);
+    if (agent) queries.updateAgent(agentId, { cost_usd: estimateCostUsd(agent.job.model, agent.estimated_input_tokens ?? 0, agent.estimated_output_tokens ?? 0) });
+  }
 
   try { jobWatcher.onAgentEvent(agentId, event); } catch (err) { agentLogger(agentId).debug({ err }, 'watcher onAgentEvent failed'); }
 

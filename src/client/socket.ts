@@ -3,6 +3,7 @@ import type { ServerToClientEvents, ClientToServerEvents } from '@shared/types';
 
 const socket: Socket<ServerToClientEvents, ClientToServerEvents> = io({
   path: '/socket.io',
+  autoConnect: false,
   transports: ['websocket', 'polling'],
 });
 

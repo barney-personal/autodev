@@ -272,7 +272,16 @@ describe('AgentStreamProcessor', () => {
       } as any;
       extractAndAccumulateTokens('a2', event, JSON.stringify(event));
 
-      expect(queries.accumulateAgentTokens).toHaveBeenCalledWith('a2', 230, 80);
+      expect(queries.accumulateAgentTokens).toHaveBeenCalledWith('a2', 200, 80);
+    });
+
+    it('reads nested Claude usage without counting the terminal result again', async () => {
+      const queries = await import('../server/db/queries.js');
+      const { extractAndAccumulateTokens } = await import('../server/orchestrator/AgentStreamProcessor.js');
+      const event = { type: 'assistant', message: { usage: { input_tokens: 100, cache_read_input_tokens: 200, output_tokens: 50 } } } as any;
+      extractAndAccumulateTokens('nested', event, JSON.stringify(event));
+      extractAndAccumulateTokens('nested', { type: 'result', usage: { input_tokens: 300, output_tokens: 50 } } as any, '{}');
+      expect(queries.accumulateAgentTokens).toHaveBeenCalledExactlyOnceWith('nested', 300, 50);
     });
 
     it('does not call accumulateAgentTokens when there are no tokens', async () => {

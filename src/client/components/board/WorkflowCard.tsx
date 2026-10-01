@@ -1,28 +1,8 @@
+import { estimateCostUsd as estimateCost } from '@shared/modelPricing';
 import { memo } from 'react';
 import type { Workflow, AgentWithJob, WorkflowPhase } from '@shared/types';
 import { laneFor, toneFor, PHASES, type LaneTone } from './lanes';
 import { fmtElapsedCompact, fmtRel, fmtCost } from './format';
-
-// Client-side cost estimation — must stay aligned with CostEstimator.ts pricing.
-const MODEL_PRICING: Record<string, [number, number]> = {
-  'claude-fable-5':          [10, 50],
-  'claude-fable-5[1m]':      [10, 50],
-  'claude-opus-4-8':         [5, 25],
-  'claude-opus-4-8[1m]':     [5, 25],
-  'claude-opus-4-7':         [5, 25],
-  'claude-opus-4-7[1m]':     [5, 25],
-  'claude-opus-4-6':         [5, 25],
-  'claude-opus-4-6[1m]':     [5, 25],
-  'claude-sonnet-4-6':       [3, 15],
-  'claude-sonnet-4-6[1m]':   [3, 15],
-  'claude-haiku-4-5-20251001': [1, 5],
-};
-
-function estimateCost(model: string | null, inputTokens: number, outputTokens: number): number {
-  const [inp, out] = (model && MODEL_PRICING[model]) || [3, 15];
-  return (inputTokens / 1_000_000) * inp + (outputTokens / 1_000_000) * out;
-}
-
 
 function shortBlockedReason(reason: string | null): string {
   if (!reason) return 'Awaiting input';

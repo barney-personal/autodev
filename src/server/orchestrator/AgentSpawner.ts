@@ -140,10 +140,12 @@ export interface BuildAgentScriptOptions {
  * Build the shell launcher script for an agent. Pure function — returns the
  * script content as a string without writing it to disk.
  */
+function shellQuote(value: string): string { return "'" + value.replace(/'/g, "'\"'\"'") + "'"; }
+
 export function buildAgentScript(opts: BuildAgentScriptOptions): string {
   const { agentId, job, workDir, mcpConfig, promptFilePath, useCodex, usePrintMode, resumeSessionId, expectedBranch } = opts;
   const model: string | null = job.model ?? null;
-  const codexReasoningEffort = getCodexReasoningEffort(model, job.workflow_phase);
+  const codexReasoningEffort = getCodexReasoningEffort(model, job.workflow_phase, job.effort);
   const codexServiceTier = getCodexServiceTier(model, job.workflow_phase);
   const claudeEffort = getClaudeEffort(model, job.workflow_phase, job.effort);
 
@@ -151,23 +153,23 @@ export function buildAgentScript(opts: BuildAgentScriptOptions): string {
   if (useCodex) {
     const mcpUrl = `http://localhost:${Number(MCP_PORT)}/mcp/${agentId}`;
     const codexSubModel = codexModelName(model);
-    const modelFlag = codexSubModel ? ` -m ${JSON.stringify(codexSubModel)}` : '';
+    const modelFlag = codexSubModel ? ` -m ${shellQuote(codexSubModel)}` : '';
     const reasoningFlag = codexReasoningEffort
-      ? ` -c ${JSON.stringify(`model_reasoning_effort="${codexReasoningEffort}"`)}`
+      ? ` -c ${shellQuote(`model_reasoning_effort="${codexReasoningEffort}"`)}`
       : '';
     const serviceTierFlag = codexServiceTier
-      ? ` -c ${JSON.stringify(`service_tier="${codexServiceTier}"`)}`
+      ? ` -c ${shellQuote(`service_tier="${codexServiceTier}"`)}`
       : '';
-    execLine = `exec ${JSON.stringify(CODEX)} --dangerously-bypass-approvals-and-sandbox -C ${JSON.stringify(workDir)} -c 'mcp_servers.orchestrator.url="${mcpUrl}"'${modelFlag}${reasoningFlag}${serviceTierFlag}`;
+    execLine = `exec ${shellQuote(CODEX)} --dangerously-bypass-approvals-and-sandbox -C ${shellQuote(workDir)} -c 'mcp_servers.orchestrator.url="${mcpUrl}"'${modelFlag}${reasoningFlag}${serviceTierFlag}`;
   } else {
-    const resumeFlag = resumeSessionId ? ` --resume ${JSON.stringify(resumeSessionId)}` : '';
-    const effortFlag = claudeEffort ? ` --effort ${JSON.stringify(claudeEffort)}` : '';
+    const resumeFlag = resumeSessionId ? ` --resume ${shellQuote(resumeSessionId)}` : '';
+    const effortFlag = claudeEffort ? ` --effort ${shellQuote(claudeEffort)}` : '';
     if (usePrintMode) {
       const ndjsonPath = getNdjsonPath(agentId);
       const stderrPath = getPtyStderrPath(agentId);
-      execLine = `${JSON.stringify(CLAUDE)} --dangerously-skip-permissions --settings ${JSON.stringify(HOOK_SETTINGS)} --mcp-config ${JSON.stringify(mcpConfig)} --append-system-prompt ${JSON.stringify(SYSTEM_PROMPT)}${model ? ` --model ${JSON.stringify(model)}` : ''}${effortFlag} --print --output-format stream-json --verbose${resumeFlag} "$(cat ${JSON.stringify(promptFilePath)})" 2>> ${JSON.stringify(stderrPath)} | tee ${JSON.stringify(ndjsonPath)}`;
+      execLine = `${shellQuote(CLAUDE)} --dangerously-skip-permissions --settings ${shellQuote(HOOK_SETTINGS)} --mcp-config ${shellQuote(mcpConfig)} --append-system-prompt ${shellQuote(SYSTEM_PROMPT)}${model ? ` --model ${shellQuote(model)}` : ''}${effortFlag} --print --output-format stream-json --verbose${resumeFlag} "$(cat ${shellQuote(promptFilePath)})" 2>> ${shellQuote(stderrPath)} | tee ${shellQuote(ndjsonPath)}`;
     } else {
-      execLine = `exec ${JSON.stringify(CLAUDE)} --dangerously-skip-permissions --settings ${JSON.stringify(HOOK_SETTINGS)} --mcp-config ${JSON.stringify(mcpConfig)} --append-system-prompt ${JSON.stringify(SYSTEM_PROMPT)}${model ? ` --model ${JSON.stringify(model)}` : ''}${effortFlag}${resumeFlag} "$(cat ${JSON.stringify(promptFilePath)})"`;
+      execLine = `exec ${shellQuote(CLAUDE)} --dangerously-skip-permissions --settings ${shellQuote(HOOK_SETTINGS)} --mcp-config ${shellQuote(mcpConfig)} --append-system-prompt ${shellQuote(SYSTEM_PROMPT)}${model ? ` --model ${shellQuote(model)}` : ''}${effortFlag}${resumeFlag} "$(cat ${shellQuote(promptFilePath)})"`;
     }
   }
 
@@ -176,22 +178,22 @@ export function buildAgentScript(opts: BuildAgentScriptOptions): string {
 
   const scriptLines = [
     '#!/bin/sh',
-    `export ORCHESTRATOR_AGENT_ID=${JSON.stringify(agentId)}`,
-    `export ORCHESTRATOR_API_URL=${JSON.stringify(`http://localhost:${process.env.PORT ?? 3456}`)}`,
+    `export ORCHESTRATOR_AGENT_ID=${shellQuote(agentId)}`,
+    `export ORCHESTRATOR_API_URL=${shellQuote(`http://localhost:${process.env.PORT ?? 3456}`)}`,
     `unset CLAUDECODE`,
     `unset SENTRY_DSN`,
     `unset SENTRY_RELEASE`,
     `unset SENTRY_ENVIRONMENT`,
-    `cd ${JSON.stringify(workDir)} || { echo "[agent] FATAL: working directory does not exist: ${workDir}" >&2; exit 1; }`,
+    `cd ${shellQuote(workDir)} || { echo "[agent] FATAL: working directory does not exist" >&2; exit 1; }`,
     ...(expectedBranch ? [
       `_current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)`,
-      `if [ "$_current_branch" != ${JSON.stringify(expectedBranch)} ]; then`,
-      `  git checkout ${JSON.stringify(expectedBranch)} 2>/dev/null || true`,
+      `if [ "$_current_branch" != ${shellQuote(expectedBranch)} ]; then`,
+      `  git checkout ${shellQuote(expectedBranch)} 2>/dev/null || true`,
       `fi`,
       `unset _current_branch`,
     ] : []),
     `for _venv in venv .venv env .env; do`,
-    `  if [ -f "${workDir}/$_venv/bin/activate" ]; then . "${workDir}/$_venv/bin/activate"; break; fi`,
+    `  if [ -f "$_venv/bin/activate" ]; then . "$_venv/bin/activate"; break; fi`,
     `done`,
     `unset _venv`,
     nicedExecLine,

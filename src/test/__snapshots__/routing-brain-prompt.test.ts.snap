@@ -2,7 +2,7 @@
 
 exports[`renderRoutingBrainPrompt > should snapshot match for fixed context 1`] = `
 {
-  "promptVersion": "v1",
+  "promptVersion": "v2",
   "system": "You are autodev's routing brain.
 Your job: for the next implement cycle of a workflow, choose:
   1. implementerModel — which model runs the implementer
@@ -34,13 +34,18 @@ Decide routing for workflow "Test Workflow" (id test-workflow-123),
 repo "autodev", upcoming phase "implement", cycle 2 of max 5.
 
 ## 2. Available models
+- claude-opus-5-5: complex implementation and long-running work; 1M context — cost: high
+- claude-sonnet-5-5: balanced implementation and focused milestones; 1M context — cost: moderate
+- codex-gpt-6-astra: demanding reasoning and independent cross-provider review — cost: high
+- codex-gpt-6.1-sol: balanced coding and independent cross-provider review — cost: moderate
+- codex-gpt-6-luna: fast focused tasks and mechanical changes — cost: very cheap
 - claude-haiku-4-5: fastest, lowest reasoning depth; great for trivial mechanical edits — cost: very cheap
 - claude-sonnet-4-6: balanced quality + speed; safe default for medium milestones — cost: moderate
 - claude-sonnet-4-6[1m]: sonnet with 1M-token context; for plan/context-heavy work — cost: moderate+
 - claude-opus-4-7: high single-shot reasoning depth (previous flagship) — cost: expensive
 - claude-opus-4-7[1m]: opus with 1M-token context; for large/complex milestones — cost: expensive+
-- claude-opus-4-8: frontier reasoning depth and long-horizon autonomy; current flagship — cost: expensive
-- claude-opus-4-8[1m]: opus 4.8 with 1M-token context; default implementer for complex work — cost: expensive+
+- claude-opus-4-8: frontier reasoning depth and long-horizon autonomy; legacy flagship — cost: expensive
+- claude-opus-4-8[1m]: opus 4.8 with 1M-token context; legacy implementer — cost: expensive+
 - codex-gpt-5.5: separate provider, useful as cross-provider fallback or for tests — cost: moderate
 
 ## 3. Workflow context
@@ -112,6 +117,6 @@ repo "autodev", upcoming phase "implement", cycle 2 of max 5.
 ## 8. Output
 Respond with a single JSON object matching the schema in the system prompt.
 No prose, no code fences, no leading whitespace.
-promptVersion: v1",
+promptVersion: v2",
 }
 `;

@@ -7,9 +7,9 @@ import { estimateCostUsd } from './CostEstimator.js';
 import { getAvailableModel, KNOWN_MODELS } from './ModelClassifier.js';
 import type { Workflow, WorkflowPhase, RouteDecision, RouteDecisionMode } from '../../shared/types.js';
 
-const DEFAULT_DECISION_MODEL = 'claude-sonnet-4-6[1m]';
+const DEFAULT_DECISION_MODEL = 'claude-sonnet-5-5';
 const DECISION_TIMEOUT_MS = 30_000;
-const DECISION_MAX_TOKENS = 512;
+const DECISION_MAX_TOKENS = 4096;
 const MAX_RAW_RESPONSE_CHARS = 2_000;
 
 // ─── Settings helpers ────────────────────────────────────────────────────────
@@ -303,14 +303,15 @@ export async function decideRouteForCycle(
       throw new Error(`Anthropic API ${response.status}: ${body.slice(0, 200)}`);
     }
 
-    const data = await response.json() as { content?: Array<{ text?: string }> };
-    const rawResponseText = data.content?.[0]?.text ?? '';
+    const data = await response.json() as { content?: Array<{ type?: string; text?: string }>; usage?: { input_tokens?: number; output_tokens?: number } };
+    // New Claude generations can emit thinking before their visible answer.
+    const rawResponseText = data.content?.filter(block => typeof block.text === 'string' && (!block.type || block.type === 'text')).map(block => block.text).join('') ?? '';
     llmRawResponse = rawResponseText.slice(0, MAX_RAW_RESPONSE_CHARS);
 
     const fields = parseDecisionResponse(rawResponseText);
 
-    const inputTokenEstimate = Math.ceil((system.length + user.length) / 4);
-    const outputTokenEstimate = Math.ceil(rawResponseText.length / 4);
+    const inputTokenEstimate = data.usage?.input_tokens ?? Math.ceil((system.length + user.length) / 4);
+    const outputTokenEstimate = data.usage?.output_tokens ?? Math.ceil(rawResponseText.length / 4);
     const costEstimateUsd = estimateCostUsd(decisionModel, inputTokenEstimate, outputTokenEstimate);
 
     const rawDecision: RouteDecision = {

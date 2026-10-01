@@ -68,7 +68,7 @@ describe('WorkQueueManager — capacity-aware dispatch', () => {
 
   it('dispatches multiple ready jobs in a single tick', async () => {
     const queries = await import('../server/db/queries.js');
-    const pty = await import('../server/orchestrator/PtyManager.js');
+    const runner = await import('../server/orchestrator/AgentRunner.js');
     const { _tickForTest } = await import('../server/orchestrator/WorkQueueManager.js');
 
     // Insert 3 queued jobs with explicit models (no classification needed)
@@ -79,8 +79,8 @@ describe('WorkQueueManager — capacity-aware dispatch', () => {
     // Run one tick
     await _tickForTest();
 
-    // All 3 should have been dispatched (startInteractiveAgent called 3 times)
-    expect(vi.mocked(pty.startInteractiveAgent)).toHaveBeenCalledTimes(3);
+    // All 3 should have been dispatched (runAgent called 3 times)
+    expect(vi.mocked(runner.runAgent)).toHaveBeenCalledTimes(3);
 
     // All jobs should be assigned
     const j1 = queries.getJobById('q-1');
@@ -93,7 +93,7 @@ describe('WorkQueueManager — capacity-aware dispatch', () => {
 
   it('respects concurrency limit within a single tick', async () => {
     const queries = await import('../server/db/queries.js');
-    const pty = await import('../server/orchestrator/PtyManager.js');
+    const runner = await import('../server/orchestrator/AgentRunner.js');
     const { _tickForTest, setMaxConcurrent } = await import('../server/orchestrator/WorkQueueManager.js');
 
     setMaxConcurrent(2);
@@ -105,7 +105,7 @@ describe('WorkQueueManager — capacity-aware dispatch', () => {
     await _tickForTest();
 
     // Only 2 dispatched due to concurrency limit
-    expect(vi.mocked(pty.startInteractiveAgent)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(runner.runAgent)).toHaveBeenCalledTimes(2);
 
     // Third job still queued
     const j3 = queries.getJobById('c-3');
@@ -117,7 +117,7 @@ describe('WorkQueueManager — capacity-aware dispatch', () => {
 
   it('nudgeQueue triggers an immediate dispatch cycle', async () => {
     const queries = await import('../server/db/queries.js');
-    const pty = await import('../server/orchestrator/PtyManager.js');
+    const runner = await import('../server/orchestrator/AgentRunner.js');
     const { nudgeQueue, startWorkQueue, stopWorkQueue } = await import('../server/orchestrator/WorkQueueManager.js');
 
     // Start queue so nudgeQueue is operational (it checks _running)
@@ -125,7 +125,7 @@ describe('WorkQueueManager — capacity-aware dispatch', () => {
 
     // Clear any calls from the initial tick
     await new Promise(r => setTimeout(r, 50));
-    vi.mocked(pty.startInteractiveAgent).mockClear();
+    vi.mocked(runner.runAgent).mockClear();
 
     // Insert a job and nudge
     queries.insertJob({ id: 'n-1', title: 'Nudge Job', description: 'test', context: null, priority: 0, model: 'claude-sonnet-4-6', work_dir: '/tmp' });
@@ -134,7 +134,7 @@ describe('WorkQueueManager — capacity-aware dispatch', () => {
     // Wait for the microtask-scheduled tick to fire
     await new Promise(r => setTimeout(r, 50));
 
-    expect(vi.mocked(pty.startInteractiveAgent)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(runner.runAgent)).toHaveBeenCalledTimes(1);
     const j = queries.getJobById('n-1');
     expect(j!.status).toBe('assigned');
 
@@ -143,12 +143,12 @@ describe('WorkQueueManager — capacity-aware dispatch', () => {
 
   it('nudgeQueue coalesces multiple calls into a single tick', async () => {
     const queries = await import('../server/db/queries.js');
-    const pty = await import('../server/orchestrator/PtyManager.js');
+    const runner = await import('../server/orchestrator/AgentRunner.js');
     const { nudgeQueue, startWorkQueue, stopWorkQueue } = await import('../server/orchestrator/WorkQueueManager.js');
 
     startWorkQueue();
     await new Promise(r => setTimeout(r, 50));
-    vi.mocked(pty.startInteractiveAgent).mockClear();
+    vi.mocked(runner.runAgent).mockClear();
 
     queries.insertJob({ id: 'nc-1', title: 'Coalesce 1', description: 'test', context: null, priority: 0, model: 'claude-sonnet-4-6', work_dir: '/tmp' });
     queries.insertJob({ id: 'nc-2', title: 'Coalesce 2', description: 'test', context: null, priority: 0, model: 'claude-sonnet-4-6', work_dir: '/tmp' });
@@ -161,7 +161,7 @@ describe('WorkQueueManager — capacity-aware dispatch', () => {
     await new Promise(r => setTimeout(r, 50));
 
     // Both jobs dispatched from the single coalesced tick
-    expect(vi.mocked(pty.startInteractiveAgent)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(runner.runAgent)).toHaveBeenCalledTimes(2);
 
     stopWorkQueue();
   });

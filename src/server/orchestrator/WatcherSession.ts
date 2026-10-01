@@ -56,11 +56,11 @@ function isStoppedWatcherStatus(status: WatcherStatus): boolean {
  * env*-helper pattern in JobWatcherManager so tests can patch
  * `process.env.WATCHER_MODEL` after import without ESM hoisting tricks.
  * The watcher is a high-frequency supervision loop (one tick per watched
- * agent), so it runs on the same Opus 4.8 tier as implementer work but
+ * agent), so it runs on the same Opus 5.5 tier as implementer work but
  * without the elevated effort. Override via env.
  */
 export function defaultWatcherModel(): string {
-  return process.env.WATCHER_MODEL ?? 'claude-opus-4-8';
+  return process.env.WATCHER_MODEL ?? 'claude-opus-5-5';
 }
 
 /**
@@ -104,7 +104,7 @@ const MAX_TOOL_ROUNDS = 4;
 // Exported so unit tests can exercise the boundary precisely instead of
 // hard-coding the threshold.
 export const MAX_HISTORY_TURNS = 12;
-const MAX_OUTPUT_TOKENS = 1500;
+const MAX_OUTPUT_TOKENS = 8192;
 
 /**
  * Retry budget for a single Messages API call within a tick. Deliberately
@@ -291,7 +291,7 @@ export class WatcherSession {
     if (watcher.status === 'stopped') { this._stopped = true; return; }
 
     // Per-session cost ceiling. Off by default; operators who want a
-    // safety cap on Opus 4.7 spend can set WATCHER_MAX_COST_USD to a
+    // safety cap on supervisor spend can set WATCHER_MAX_COST_USD to a
     // positive number. When the running watcher.cost_usd exceeds that
     // value we self-stop with a final commentary so the dashboard shows
     // why the session went quiet. Useful for very long-running implement

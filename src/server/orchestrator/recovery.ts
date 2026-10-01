@@ -25,19 +25,19 @@ import { logResilienceEvent } from './ResilienceLogger.js';
 /**
  * On startup, check each previously-running agent and recover it:
  *
- * - Codex batch (pid-based, stream-json path):
+ * - Headless jobs (both providers; persisted mode, legacy Codex supported):
  *     PID alive → reattach file tailing
  *     PID dead  → read log to determine done/failed, default to failed
  *
- * - All other agents (tmux-based):
+ * - Legacy and interactive agents (tmux-based):
  *     tmux alive → reattach PTY
  *     tmux dead  → interactive → mark done; batch → mark failed
  */
 export function runRecovery(): void {
   const staleStatuses = ['starting', 'running', 'waiting_user'] as const;
-  let codexReattached = 0;
-  let codexRecovered = 0;
-  let codexFailed = 0;
+  let headlessReattached = 0;
+  let headlessRecovered = 0;
+  let headlessFailed = 0;
   let tmuxReattached = 0;
   let tmuxRecovered = 0;
   let tmuxFailed = 0;
@@ -50,21 +50,21 @@ export function runRecovery(): void {
       if (!agentWithJob) continue;
       const { job } = agentWithJob;
 
-      const isCodexBatch = isCodexModel(job.model ?? null) && !job.is_interactive;
+      const isHeadless = agent.execution_mode === 'headless' || (isCodexModel(job.model ?? null) && !job.is_interactive);
 
-      if (isCodexBatch) {
-        // Legacy stream-json path: use PID-based recovery
+      if (isHeadless) {
+        // Headless stream-json path: use PID-based recovery
         const alive = agent.pid != null && isPidAlive(agent.pid);
 
         if (alive) {
-          log.info({ agentId: agent.id, pid: agent.pid }, 'reattaching Codex');
+          log.info({ agentId: agent.id, pid: agent.pid }, 'reattaching headless agent');
           reattachAgent({ agentId: agent.id, job });
-          codexReattached++;
+          headlessReattached++;
         } else {
           const logStatus = statusFromLog(getLogPath(agent.id));
           const finalStatus = logStatus ?? 'failed';
 
-          log.info({ agentId: agent.id, prevStatus: status, finalStatus, fromLog: !!logStatus }, 'Codex PID not found');
+          log.info({ agentId: agent.id, prevStatus: status, finalStatus, fromLog: !!logStatus }, 'Headless PID not found');
 
           // Accept 'assigned' too — agent may have crashed before reaching 'running'
           const activeJob = getJobIfStatus(agent.job_id, ['running', 'assigned']);
@@ -104,9 +104,9 @@ export function runRecovery(): void {
             } catch (err) { log.error({ err, jobId: agent.job_id }, 'handleRetry error'); captureWithContext(err, { agent_id: agent.id, job_id: agent.job_id, component: 'recovery' }); }
           }
 
-          logResilienceEvent('agent_recovered', 'agent', agent.id, { type: 'codex', outcome: agentStatus, job_id: agent.job_id });
-          if (agentStatus === 'done') codexRecovered++;
-          else codexFailed++;
+          logResilienceEvent('agent_recovered', 'agent', agent.id, { type: 'headless', outcome: agentStatus, job_id: agent.job_id });
+          if (agentStatus === 'done') headlessRecovered++;
+          else headlessFailed++;
         }
       } else {
         // Tmux-based path (all Claude agents, interactive or not)
@@ -274,17 +274,17 @@ export function runRecovery(): void {
     }
   }
 
-  if (codexReattached > 0) log.info({ count: codexReattached }, 'reattached Codex');
-  if (codexRecovered > 0) log.info({ count: codexRecovered }, 'recovered Codex');
-  if (codexFailed > 0) log.warn({ count: codexFailed }, 'failed Codex');
+  if (headlessReattached > 0) log.info({ count: headlessReattached }, 'reattached headless agents');
+  if (headlessRecovered > 0) log.info({ count: headlessRecovered }, 'recovered headless agents');
+  if (headlessFailed > 0) log.warn({ count: headlessFailed }, 'failed headless agents');
   if (tmuxReattached > 0) log.info({ count: tmuxReattached }, 'reattached tmux');
   if (tmuxRecovered > 0) log.info({ count: tmuxRecovered }, 'recovered tmux');
   if (tmuxFailed > 0) log.warn({ count: tmuxFailed }, 'failed tmux');
 
-  const totalRecovered = codexReattached + codexRecovered + tmuxReattached + tmuxRecovered + codexFailed + tmuxFailed;
+  const totalRecovered = headlessReattached + headlessRecovered + tmuxReattached + tmuxRecovered + headlessFailed + tmuxFailed;
   if (totalRecovered > 0) {
     logResilienceEvent('startup_recovery', 'system', 'recovery', {
-      codex: { reattached: codexReattached, recovered: codexRecovered, failed: codexFailed },
+      headless: { reattached: headlessReattached, recovered: headlessRecovered, failed: headlessFailed },
       tmux: { reattached: tmuxReattached, recovered: tmuxRecovered, failed: tmuxFailed },
     });
   }

@@ -4,9 +4,21 @@
 
 A web-based orchestrator for running multiple Claude Code (and Codex) agents in parallel. Agents coordinate through file locks, spawn sub-agents, share data via a scratchpad, learn from past tasks through a persistent knowledge base, and run structured autonomous workflows — all visible in a real-time dashboard.
 
+## October 2026 upgrade
+
+New workflows use **Claude Opus 5.5** for implementation and **GPT-6 Astra** for independent review. **GPT-6.1 Sol** is the balanced Codex choice, with **GPT-6 Luna** and **Claude Sonnet 5.5** available for focused work. Existing jobs keep their selected models. The Codex picker reads the installed CLI's account catalog, including ChatGPT sign-in.
+
+Unattended jobs run headlessly with persistent logs and restart recovery. Definitive account-access errors automatically fall back to another model; advertised model availability is checked during execution.
+
+Read the [upgrade plan and rollout evidence](docs/frontier-upgrade.md) for the capability assessment, validation and deployment decisions.
+
+Set `AUTH_TOKEN` in `.env` to protect the service. Open the dashboard and sign in with that token; it uses an HttpOnly session cookie. CLI clients can keep using `Authorization: Bearer <token>`. API and Socket.io both enforce authentication. `HOST` and `MCP_HOST` default to `127.0.0.1`; the MCP service must remain on a trusted local interface.
+
+For a production release, run `npm ci`, `npm run typecheck`, `npm test`, and `npm run build` before `npm run server:start`. The build includes the database schema, client assets and revision metadata, exposed at `/api/health`. `scripts/start-prod.sh` starts a prebuilt release and loads `.env` without executing it as shell code.
+
 ## Requirements
 
-- **Node.js >= 22** — uses the experimental `node:sqlite` module
+- **Node.js >= 22.13** — uses the experimental `node:sqlite` module
 - **[Claude Code CLI](https://github.com/anthropics/claude-code)** — install via npm, then find your binary with `which claude`
   ```bash
   npm install -g @anthropic-ai/claude-code

@@ -142,8 +142,8 @@ describe('RoutingBrain.decideRouteForCycle', () => {
     expect(d.confidence).toBe('high');
     expect(d.rationale).toBe('Sonnet is sufficient for this milestone.');
     expect(d.guardrailOverrides).toEqual([]);
-    expect(d.promptVersion).toBe('v1');
-    expect(d.decisionModel).toBe('claude-sonnet-4-6[1m]');
+    expect(d.promptVersion).toBe('v2');
+    expect(d.decisionModel).toBe('claude-sonnet-5-5');
     expect(d.llmRawResponse).toBe(validLlmJson);
 
     expect(mockState.insertedRows).toHaveLength(1);
@@ -152,6 +152,20 @@ describe('RoutingBrain.decideRouteForCycle', () => {
     expect(row.workflow_id).toBe('wf-test-001');
     expect(row.cycle).toBe(2);
     expect(row.phase).toBe('implement');
+  });
+
+  it('reads text after thinking blocks from current Claude models', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true, status: 200,
+      json: async () => ({ content: [
+        { type: 'thinking', thinking: 'Private reasoning', signature: 'sig' },
+        { type: 'text', text: validLlmJson },
+      ], usage: { input_tokens: 120, output_tokens: 80 } }),
+    }));
+    const d = await decideRouteForCycle(mkWorkflow(), 'implement', 2);
+    expect(d.confidence).toBe('high');
+    expect(d.llmRawResponse).toBe(validLlmJson);
+    expect(mockState.insertedRows[0].mode).toBe('live');
   });
 
   // ── Fenced JSON ─────────────────────────────────────────────────────────
@@ -442,7 +456,8 @@ describe('RoutingBrain.decideRouteForCycle', () => {
 
   // ── Sends correct model ID to Anthropic API ────────────────────────────
 
-  it('strips [1m] suffix when calling Anthropic API', async () => {
+  it('strips [1m] suffix from explicitly configured legacy models', async () => {
+    vi.stubEnv('ROUTING_BRAIN_DECISION_MODEL', 'claude-sonnet-4-6[1m]');
     const fetchMock = vi.fn().mockResolvedValue(makeFetchResponse(validLlmJson));
     vi.stubGlobal('fetch', fetchMock);
 

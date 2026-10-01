@@ -34,7 +34,7 @@ import type { ResolverRun, ResolverStatus } from '../../shared/types.js';
 // ─── Config ─────────────────────────────────────────────────────────────────
 
 export function defaultResolverModel(): string {
-  return process.env.RESOLVER_MODEL ?? 'claude-opus-4-8';
+  return process.env.RESOLVER_MODEL ?? 'claude-opus-5-5';
 }
 
 export function envResolverMaxCostUsd(): number {
@@ -67,7 +67,7 @@ export function validateResolverModel(
 }
 
 const MAX_TOOL_ROUNDS_PER_TURN = 4;
-const MAX_OUTPUT_TOKENS = 2000;
+const MAX_OUTPUT_TOKENS = 8192;
 
 // ─── System prompt ─────────────────────────────────────────────────────────
 

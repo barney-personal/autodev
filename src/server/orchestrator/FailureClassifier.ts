@@ -47,6 +47,7 @@ const PROVIDER_CAPABILITY_PATTERNS = [
   /\brequires extra usage\b/i,
   /\b1m context\b/i,
   /\bunsupported model\b/i,
+  /\bmodel.{0,120}is not supported\b/i,
   /\bmodel not available\b/i,
   /\bnot available on your plan\b/i,
   /\bdoes not support\b.*\bcontext\b/i,

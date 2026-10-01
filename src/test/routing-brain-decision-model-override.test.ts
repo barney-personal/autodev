@@ -34,7 +34,7 @@ vi.mock('../server/orchestrator/ModelClassifier.js', () => ({
   KNOWN_MODELS: [
     'claude-haiku-4-5-20251001',
     'claude-sonnet-4-6',
-    'claude-sonnet-4-6[1m]',
+    'claude-sonnet-5-5',
     'claude-opus-4-7',
     'claude-opus-4-7[1m]',
     'codex-gpt-5.5',
@@ -125,16 +125,16 @@ describe('RoutingBrain decision-model override', () => {
     vi.restoreAllMocks();
   });
 
-  // ── Default model is claude-sonnet-4-6[1m] ─────────────────────────────
+  // ── Default model is claude-sonnet-5-5 ─────────────────────────────
 
-  it('uses claude-sonnet-4-6[1m] as the default decision model when no env or DB setting is set', async () => {
+  it('uses claude-sonnet-5-5 as the default decision model when no env or DB setting is set', async () => {
     vi.resetModules();
     const { getRoutingBrainDecisionModel } = await import('../server/orchestrator/RoutingBrain.js');
 
-    expect(getRoutingBrainDecisionModel()).toBe('claude-sonnet-4-6[1m]');
+    expect(getRoutingBrainDecisionModel()).toBe('claude-sonnet-5-5');
   });
 
-  it('sends claude-sonnet-4-6 (stripped) to Anthropic when using default model', async () => {
+  it('sends claude-sonnet-5-5 to Anthropic when using default model', async () => {
     vi.resetModules();
     const mod = await import('../server/orchestrator/RoutingBrain.js');
     const fetchMock = vi.fn().mockResolvedValue(makeFetchResponse(validLlmJson));
@@ -143,18 +143,18 @@ describe('RoutingBrain decision-model override', () => {
     await mod.decideRouteForCycle(mkWorkflow(), 'implement', 1);
 
     const callBody = JSON.parse(fetchMock.mock.calls[0][1].body);
-    expect(callBody.model).toBe('claude-sonnet-4-6');
+    expect(callBody.model).toBe('claude-sonnet-5-5');
   });
 
-  it('records claude-sonnet-4-6[1m] as decisionModel in the persisted row', async () => {
+  it('records claude-sonnet-5-5 as decisionModel in the persisted row', async () => {
     vi.resetModules();
     const mod = await import('../server/orchestrator/RoutingBrain.js');
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeFetchResponse(validLlmJson)));
 
     const d = await mod.decideRouteForCycle(mkWorkflow(), 'implement', 1);
 
-    expect(d.decisionModel).toBe('claude-sonnet-4-6[1m]');
-    expect(mockState.insertedRows[0].decision_model).toBe('claude-sonnet-4-6[1m]');
+    expect(d.decisionModel).toBe('claude-sonnet-5-5');
+    expect(mockState.insertedRows[0].decision_model).toBe('claude-sonnet-5-5');
   });
 
   // ── Env override ────────────────────────────────────────────────────────
@@ -225,7 +225,7 @@ describe('RoutingBrain decision-model override', () => {
     vi.resetModules();
     const { getRoutingBrainDecisionModel } = await import('../server/orchestrator/RoutingBrain.js');
 
-    expect(getRoutingBrainDecisionModel()).toBe('claude-sonnet-4-6[1m]');
+    expect(getRoutingBrainDecisionModel()).toBe('claude-sonnet-5-5');
   });
 
   // ── getRoutingBrainMode ─────────────────────────────────────────────────

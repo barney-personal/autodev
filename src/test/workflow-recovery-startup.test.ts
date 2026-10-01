@@ -110,6 +110,20 @@ describe('recovery.ts: startup wiring for reconcileBlockedPRs', () => {
     resolveBlocked();
   });
 
+  it('reattaches a live headless Claude process instead of treating it as a missing tmux session', async () => {
+    const { reattachAgent } = await import('../server/orchestrator/AgentRunner.js');
+    const { attachPty } = await import('../server/orchestrator/PtyManager.js');
+    const job = { id: 'headless-job', status: 'running', is_interactive: false, model: 'claude-opus-5-5' };
+    const agent = { id: 'headless-agent', job_id: job.id, status: 'running', pid: process.pid, execution_mode: 'headless' };
+    listAllRunningAgentsSpy.mockReturnValue([agent] as any);
+    getAgentWithJobSpy.mockReturnValue({ ...agent, job });
+    const { runRecovery } = await import('../server/orchestrator/recovery.js');
+    runRecovery();
+    expect(reattachAgent).toHaveBeenCalledExactlyOnceWith({ agentId: agent.id, job });
+    expect(attachPty).not.toHaveBeenCalled();
+    expect(updateJobStatusSpy).not.toHaveBeenCalled();
+  });
+
   it('does not rewrite a job that already finished before startup recovery runs', async () => {
     const queries = await import('../server/db/queries.js');
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
