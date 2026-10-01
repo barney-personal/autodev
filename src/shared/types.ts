@@ -319,6 +319,7 @@ export interface WorkflowPhaseMetric {
   phase: string;
   job_id: string;
   job_created_at: number;
+  agent_id?: string | null;         // null for the placeholder row of a job with no agents
   agent_started_at: number | null;
   agent_finished_at: number | null;
   agent_cost_usd: number | null;

@@ -10,6 +10,8 @@ import { disconnectAgent, isTmuxSessionAlive, saveSnapshot } from '../orchestrat
 import { createAutonomousAgentRun } from '../orchestrator/AutonomousAgentRunManager.js';
 import type { CreateAutonomousAgentRunRequest, WorkflowPhase, VerifyRun } from '../../shared/types.js';
 import { createWorkflowSchema, resumeWorkflowSchema, validateBody } from './validation.js';
+import { buildWorkflowReportData, renderWorkflowReport } from '../orchestrator/WorkflowReport.js';
+import { workflowReportFilename } from '../../shared/workflowReport.js';
 
 const router = Router();
 
@@ -106,6 +108,23 @@ router.get('/:id/metrics', (req, res) => {
   const metrics = queries.getWorkflowMetrics(req.params.id);
   if (!metrics) { res.status(404).json({ error: 'not found' }); return; }
   res.json(metrics);
+});
+
+// GET /api/workflows/:id/report — downloadable Markdown snapshot of the workflow
+router.get('/:id/report', (req, res) => {
+  try {
+    const data = buildWorkflowReportData(req.params.id);
+    if (!data) { res.status(404).json({ error: 'not found' }); return; }
+    const markdown = renderWorkflowReport(data, Date.now());
+    res.attachment(workflowReportFilename(data.id));
+    res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.send(markdown);
+  } catch (err) {
+    console.error('[workflow-report] Failed to generate report:', err);
+    res.status(500).json({ error: 'failed to generate report' });
+  }
 });
 
 // GET /api/workflows/:id/jobs — list all jobs for a workflow
