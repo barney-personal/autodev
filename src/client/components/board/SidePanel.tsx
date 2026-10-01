@@ -1,6 +1,7 @@
 import type { Workflow } from '@shared/types';
 import { fmtDur, fmtRel, fmtCost } from './format';
 import { formatWorkflowPhase } from './phases';
+import { DownloadReportButton } from './DownloadReportButton';
 
 export function SidePanel({ workflow, totalCost, totalDuration, lastActivityTs, onResume, onWrapUp, onCancel, acting }: {
   workflow: Workflow;
@@ -54,6 +55,10 @@ export function SidePanel({ workflow, totalCost, totalDuration, lastActivityTs, 
           <dt>Last move</dt>
           <dd>{fmtRel(lastActivityTs)}</dd>
         </dl>
+      </div>
+      <div className="cr-side-block">
+        <h3>Report</h3>
+        <DownloadReportButton workflowId={workflow.id} />
       </div>
       <div className="cr-actions-row">
         {isBlocked ? (

@@ -260,6 +260,7 @@ export function getWorkflowMetrics(workflowId: string): WorkflowMetrics | null {
       j.workflow_cycle AS cycle,
       j.workflow_phase AS phase,
       j.created_at AS job_created_at,
+      a.id AS agent_id,
       a.started_at AS agent_started_at,
       a.finished_at AS agent_finished_at,
       a.cost_usd AS agent_cost_usd
@@ -272,6 +273,7 @@ export function getWorkflowMetrics(workflowId: string): WorkflowMetrics | null {
     cycle: number;
     phase: string;
     job_created_at: number;
+    agent_id: string | null;
     agent_started_at: number | null;
     agent_finished_at: number | null;
     agent_cost_usd: number | null;
@@ -293,6 +295,7 @@ export function getWorkflowMetrics(workflowId: string): WorkflowMetrics | null {
       phase: r.phase,
       job_id: r.job_id,
       job_created_at: r.job_created_at,
+      agent_id: r.agent_id,
       agent_started_at: r.agent_started_at,
       agent_finished_at: r.agent_finished_at,
       agent_cost_usd: r.agent_cost_usd,
