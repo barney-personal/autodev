@@ -1,4 +1,4 @@
-import { isModelAccessError, markModelUnavailable } from './ModelAvailability.js';
+import { isModelAccessError, markModelUnavailable, hasAgentWorkStarted } from './ModelAvailability.js';
 import { spawn, execFile, execFileSync, execSync, type ChildProcess } from 'child_process';
 import { promisify } from 'util';
 import { randomUUID } from 'crypto';
@@ -703,6 +703,7 @@ function handleAgentExit(agentId: string, job: Job, exitCode: number | null): vo
   }
 
   // Try to determine success/failure from the last result event in the log
+  let workStarted = false;
   let statusFromLog: 'done' | 'failed' | null = null;
   let logErrorMsg: string | null = null;
   let costUsd: number | null = null;
@@ -711,6 +712,7 @@ function handleAgentExit(agentId: string, job: Job, exitCode: number | null): vo
   try {
     const content = fs.readFileSync(getLogPath(agentId), 'utf8');
     const lines = content.split('\n').filter(Boolean);
+    workStarted = lines.some(line => { try { return hasAgentWorkStarted(JSON.parse(line)); } catch { return false; } });
     for (let i = lines.length - 1; i >= 0; i--) {
       try {
         const ev = JSON.parse(lines[i]);
@@ -764,7 +766,7 @@ function handleAgentExit(agentId: string, job: Job, exitCode: number | null): vo
 
   // Account access can lag the provider/CLI catalog. A rejected startup has
   // performed no work, so persist that evidence and requeue once per candidate.
-  if (status === 'failed' && job.model && !current?.estimated_input_tokens && isModelAccessError(stderrMsg)) {
+  if (status === 'failed' && !workStarted && job.model && !current?.estimated_input_tokens && isModelAccessError(stderrMsg)) {
     markModelUnavailable(job.model, stderrMsg!);
     const fallback = getAvailableModel(job.model);
     if (fallback && fallback !== job.model && getJobIfStatus(job.id, ['running', 'assigned'])) {

@@ -33,6 +33,11 @@ describe('authenticated browser sessions', () => {
     expect(sameOrigin({ origin: 'http://localhost:3456', host: 'localhost:3456' })).toBe(true);
     expect(authorized({ authorization: 'Bearer rotated' })).toBe(true);
   });
+  it('rejects cross-origin login/logout and a wrong bearer even with a valid cookie', async () => {
+    expect((await request(app).post('/auth/session').set('Origin', 'https://other.example').send({ token: 'test-secret' })).status).toBe(403);
+    expect((await request(app).delete('/auth/session').set('Origin', 'https://other.example')).status).toBe(403);
+    expect(authorized({ cookie: sessionCookie(false), authorization: 'Bearer wrong' })).toBe(false);
+  });
   it('requires the same credentials for sockets as for the API', async () => {
     const server = createServer();
     const io = initSocketManager(server);

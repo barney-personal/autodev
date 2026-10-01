@@ -5,7 +5,12 @@ const RETEST_AFTER_MS = 24 * 60 * 60 * 1000;
 export interface ModelUnavailable { model: string; reason: string; checkedAt: number; expiresAt: number }
 
 export function isModelAccessError(message: string | null | undefined): boolean {
-  return !!message && /model.{0,120}(?:is not supported|not available|does not exist|not found)|unsupported model|do not have access to (?:the |this )?model/i.test(message);
+  return !!message && /\bmodel\s+(?:['"`][a-z0-9._-]+['"`]\s+)?(?:is not supported|is not available|does not exist)\b|\bunsupported model\s*[:=]|\bdo not have access to (?:the |this )?model\b/i.test(message);
+}
+/** A rejected startup may be retried; a run that emitted work may not. */
+export function hasAgentWorkStarted(event: { type?: string; item?: { type?: string } }): boolean {
+  return event.type === 'assistant' ||
+    ((event.type === 'item.started' || event.type === 'item.completed') && event.item?.type !== 'error');
 }
 export function markModelUnavailable(model: string, reason: string): void {
   const checkedAt = Date.now();

@@ -35,13 +35,17 @@ Use the existing production credentials without copying or printing them. Existi
 
 ### Acceptance results
 
-- TypeScript checks and production build passed. All **1,915 tests across 131 files** passed locally.
+- TypeScript checks and production build passed. All **1,918 tests across 131 files** passed locally.
 - Real Opus 5.5 and GPT-6 Astra coding tasks fixed an isolated repository, passed its tests, wrote an MCP note and called `finish_job`.
 - This installed CLI advertises GPT-6.1 Sol, but the current ChatGPT account rejects it. A live task automatically retried on GPT-6 Astra and passed. Advertised availability is therefore treated as a hint, not proof of access.
 - Browser sign-in, authenticated API/socket access, dynamic model picker, assets and health checks passed.
 - A running Opus 5.5 process survived a graceful server restart, reattached to its existing log/session, reconnected to MCP, and completed the coding task. Shutdown also closes upgraded WebSocket connections before draining HTTP.
 - Reproduce infrastructure checks with `node --env-file=.env scripts/check-live.mjs`. Run a paid, isolated coding acceptance test with `node --env-file=.env scripts/smoke-agent.mjs`; optionally set `SMOKE_MODEL` and `AUTODEV_URL`.
 - These are integration checks, not a comparative coding benchmark. Existing model pins and the three historically blocked production workflows are preserved.
+
+### Deployment boundary
+
+This release targets the existing local LaunchAgent. HTTP and MCP now bind to loopback by default. A remote/container installation must set its bind addresses deliberately and keep MCP on a trusted interface. Reverse proxies must preserve the original Host; proxy termination is not configured by this release. Browser sessions expire after seven days; logout clears that browser's cookie, and rotating AUTH_TOKEN revokes all existing cookies. Use a high-entropy token as in the existing deployment.
 
 ## Sources
 

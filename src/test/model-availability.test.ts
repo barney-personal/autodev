@@ -1,6 +1,6 @@
 import { beforeEach, afterEach, describe, it, expect, vi } from 'vitest';
 import { setupTestDb, cleanupTestDb, insertTestJob } from './helpers.js';
-import { markModelUnavailable, getModelUnavailability, clearModelUnavailability, isModelAccessError } from '../server/orchestrator/ModelAvailability.js';
+import { markModelUnavailable, getModelUnavailability, clearModelUnavailability, isModelAccessError, hasAgentWorkStarted } from '../server/orchestrator/ModelAvailability.js';
 import { getAvailableModel, _resetForTest } from '../server/orchestrator/ModelClassifier.js';
 import { accumulateAgentMessageTokens, getAgentById, insertAgent } from '../server/db/queries.js';
 
@@ -18,6 +18,21 @@ describe('durable provider accounting and availability', () => {
     expect(getModelUnavailability('codex-gpt-6.1-sol')?.reason).toBe(error);
     clearModelUnavailability('codex-gpt-6.1-sol');
     expect(getAvailableModel('codex-gpt-6.1-sol')).toBe('codex-gpt-6.1-sol');
+  });
+
+  it('does not treat missing model files or tool failures as account denial', () => {
+    for (const text of ['model file not found', 'model weights not available', 'model loader failed: database not found']) {
+      expect(isModelAccessError(text)).toBe(false);
+    }
+    expect(isModelAccessError("The model 'gpt-6-astra' does not exist or you do not have access to it.")).toBe(true);
+  });
+
+  it('blocks automatic model retry once a provider emitted work, even before usage arrives', () => {
+    expect(hasAgentWorkStarted({ type: 'thread.started' })).toBe(false);
+    expect(hasAgentWorkStarted({ type: 'turn.failed' })).toBe(false);
+    expect(hasAgentWorkStarted({ type: 'assistant' })).toBe(true);
+    expect(hasAgentWorkStarted({ type: 'item.started', item: { type: 'command_execution' } })).toBe(true);
+    expect(hasAgentWorkStarted({ type: 'item.completed', item: { type: 'mcp_tool_call' } })).toBe(true);
   });
 
   it('expires model denials so newly enabled access can be retried', () => {
