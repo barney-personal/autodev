@@ -102,6 +102,20 @@ describe('GET /api/workflows/:id/report', () => {
     expect(res.headers['content-type']).toBe('text/markdown; charset=utf-8');
   });
 
+  it('supports an authenticated HEAD availability check without a report body', async () => {
+    const wf = await seedCompleted();
+    const url = `/api/workflows/${wf.id}/report`;
+    vi.stubEnv('AUTH_TOKEN', 'report-secret');
+    expect((await request(app).head(url)).status).toBe(401);
+    const res = await request(app).head(url).set('Authorization', 'Bearer report-secret');
+    expect(res.status).toBe(200);
+    expect(res.text).toBeUndefined();
+    expect(res.headers['content-type']).toBe('text/markdown; charset=utf-8');
+    expect(res.headers['content-disposition']).toContain('attachment;');
+    expect(res.headers['cache-control']).toBe('no-store');
+    expect((await request(app).head('/api/workflows/nope/report').set('Authorization', 'Bearer report-secret')).status).toBe(404);
+  });
+
   it('reports a sparse blocked workflow as unavailable rather than zero', async () => {
     const { updateWorkflow } = await import('../../server/db/queries.js');
     const wf = await insertTestWorkflow({ status: 'blocked' });

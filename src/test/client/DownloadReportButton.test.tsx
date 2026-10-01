@@ -63,16 +63,17 @@ describe('DownloadReportButton', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe('/api/workflows/wf%2Fodd%20id/report');
+    expect(init.method).toBe('HEAD');
     expect(init.credentials).toBe('same-origin');
     expect(init.headers).toBeUndefined();
     expect(JSON.stringify(init)).not.toMatch(/authorization/i);
 
-    expect(createObjectURL).toHaveBeenCalledTimes(1);
+    expect(createObjectURL).not.toHaveBeenCalled();
     expect(clickedAnchors).toHaveLength(1);
     const anchor = clickedAnchors[0];
     expect(anchor.download).toBe(workflowReportFilename('wf/odd id'));
     expect(anchor.download).toBe('autodev-workflow-wf-odd-id-report.md');
-    expect(anchor.getAttribute('href')).toBe('blob:test/1');
+    expect(anchor.getAttribute('href')).toBe('/api/workflows/wf%2Fodd%20id/report');
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(button()).toBeEnabled();
 
@@ -80,7 +81,7 @@ describe('DownloadReportButton', () => {
     expect(revokeObjectURL).not.toHaveBeenCalled();
     expect(document.body.contains(anchor)).toBe(true);
     act(() => { vi.advanceTimersByTime(REPORT_CLEANUP_DELAY_MS); });
-    expect(revokeObjectURL).toHaveBeenCalledWith('blob:test/1');
+    expect(revokeObjectURL).not.toHaveBeenCalled();
     expect(document.body.contains(anchor)).toBe(false);
   });
 
@@ -106,7 +107,7 @@ describe('DownloadReportButton', () => {
   it.each([
     [404, '{"error":"not found"}', 'Report unavailable: this workflow was not found.'],
     [401, '{"error":"unauthorized"}', 'Report unavailable: sign in again to download it.'],
-    [500, '{"error":"failed to generate report"}', 'Could not download report: failed to generate report (HTTP 500).'],
+    [500, '{"error":"failed to generate report"}', 'Could not download report (HTTP 500).'],
     [502, '<html><body><script>x()</script>Bad gateway</body></html>', 'Could not download report (HTTP 502).'],
     [503, '', 'Could not download report (HTTP 503).'],
     [500, '{"error":{"nested":true}}', 'Could not download report (HTTP 500).'],
@@ -124,14 +125,14 @@ describe('DownloadReportButton', () => {
     expect(clickedAnchors).toHaveLength(0);
   });
 
-  it('bounds long error text and strips control characters', async () => {
+  it('does not expose response bodies in error messages', async () => {
     fetchMock.mockResolvedValue(errorResponse(500, JSON.stringify({ error: `bad\u0007‮${'x'.repeat(500)}` })));
     render(<DownloadReportButton workflowId="wf-1" />);
     fireEvent.click(button());
     const alert = await screen.findByRole('alert');
     expect(alert.textContent).not.toMatch(/[\u0007‮]/);
     expect(alert.textContent!.length).toBeLessThan(260);
-    expect(alert.textContent).toContain('…');
+    expect(alert.textContent).toBe('Could not download report (HTTP 500).');
   });
 
   it('shows an alert on network failure and allows retry', async () => {
@@ -146,16 +147,19 @@ describe('DownloadReportButton', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
-  it('recovers when reading the response body fails', async () => {
-    fetchMock.mockResolvedValue({ ...okResponse(), blob: async () => { throw new Error('stream broke'); } });
+  it('uses a native attachment without reading or buffering a response body', async () => {
+    const readBody = vi.fn().mockRejectedValue(new Error('HEAD has no body'));
+    fetchMock.mockResolvedValue({ ...okResponse(), blob: readBody, text: readBody });
     render(<DownloadReportButton workflowId="wf-1" />);
     fireEvent.click(button());
-    expect(await screen.findByRole('alert')).toHaveTextContent('Could not download report');
+    expect(await screen.findByText('Report download started.')).toBeInTheDocument();
+    expect(readBody).not.toHaveBeenCalled();
+    expect(clickedAnchors[0].getAttribute('href')).toBe('/api/workflows/wf-1/report');
     expect(createObjectURL).not.toHaveBeenCalled();
     expect(button()).toBeEnabled();
   });
 
-  it('still removes the anchor and revokes the URL when the click throws', async () => {
+  it('still removes the anchor when the click throws', async () => {
     clickSpy.mockImplementation(function (this: HTMLAnchorElement) {
       clickedAnchors.push(this);
       throw new Error('blocked');
@@ -166,7 +170,7 @@ describe('DownloadReportButton', () => {
     expect(await screen.findByRole('alert')).toBeInTheDocument();
     const anchor = clickedAnchors[0];
     act(() => { vi.advanceTimersByTime(REPORT_CLEANUP_DELAY_MS); });
-    expect(revokeObjectURL).toHaveBeenCalledWith('blob:test/1');
+    expect(revokeObjectURL).not.toHaveBeenCalled();
     expect(document.body.contains(anchor)).toBe(false);
   });
 
@@ -184,9 +188,9 @@ describe('DownloadReportButton', () => {
     expect(clickedAnchors).toHaveLength(0);
   });
 
-  it('discards a stale blob after the workflow changes and lets the new workflow download', async () => {
-    const blob = deferred<Blob>();
-    fetchMock.mockResolvedValueOnce({ ...okResponse(), blob: () => blob.promise }).mockResolvedValueOnce(okResponse());
+  it('discards a stale availability check after the workflow changes and lets the new workflow download', async () => {
+    const pending = deferred<FakeResponse>();
+    fetchMock.mockReturnValueOnce(pending.promise).mockResolvedValueOnce(okResponse());
     const { rerender } = render(<DownloadReportButton workflowId="wf-old" />);
     fireEvent.click(button());
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
@@ -197,7 +201,7 @@ describe('DownloadReportButton', () => {
     expect(button()).toHaveTextContent('Download report');
     expect(button()).toBeEnabled();
 
-    await act(async () => { blob.resolve(new Blob(['old'])); });
+    await act(async () => { pending.resolve(okResponse()); });
     expect(createObjectURL).not.toHaveBeenCalled();
     expect(screen.getByRole('status')).toHaveTextContent('');
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
