@@ -78,6 +78,16 @@ export function handleStreamEvent(
   // lifecycle complete; process-exit idempotency must not discard the bill.
   if (event.type === 'result') {
     const result = event as ClaudeStreamEvent;
+    // Streamed content-block usage can omit later output/reasoning tokens.
+    // The final result is authoritative; replace totals instead of adding it.
+    if (result.usage) {
+      const usage = result.usage;
+      const input = (usage.input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0);
+      const output = usage.output_tokens ?? 0;
+      if (Number.isFinite(input) && Number.isFinite(output)) {
+        queries.updateAgent(agentId, { estimated_input_tokens: input, estimated_output_tokens: output });
+      }
+    }
     if (typeof result.total_cost_usd === 'number' && Number.isFinite(result.total_cost_usd)) {
       queries.updateAgent(agentId, { cost_usd: result.total_cost_usd, ...(result.num_turns != null ? { num_turns: result.num_turns } : {}), ...(result.duration_ms != null ? { duration_ms: result.duration_ms } : {}) });
     }

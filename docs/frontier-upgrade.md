@@ -12,7 +12,7 @@ Upgrade the existing local autonomous development service in place. Keep its dur
 | Model/account discovery | Read the installed Codex CLI catalog, including models advertised to ChatGPT accounts. Cache definitive account-access denials for 24 hours, automatically fall back before work starts, and expose the reason. Hide internal models, preserve catalog order, and fall back to explicit supported choices if unavailable. Never infer the default by sorting model names. |
 | Long-running agents | Run unattended jobs from both providers as detached headless processes. Persist their execution mode for restart recovery, retain session IDs and file-backed logs, and keep terminal sessions for interactive work. Correct Codex resume arguments and persist the Resolver's re-block circuit across service restarts. |
 | Reasoning and context | Support current maximum reasoning effort, preserve explicit job effort, and map unsupported legacy levels. Claude 5.5 already has 1M context, without a suffix. Increase supervisor output allowance because thinking and tool calls share the output budget. |
-| Costs | Share model pricing between dashboard and server; correct cached-input double counting and nested Claude usage. Deduplicate Claude content blocks using durable per-message usage. Store a conservative standard-price estimate for Codex completions. Subscription billing and premium service tiers can differ. |
+| Costs | Share model pricing between dashboard and server; correct cached-input double counting and nested Claude usage. Deduplicate Claude content blocks using durable per-message usage and reconcile final output/reasoning tokens from the terminal result. Store a conservative standard-price estimate for Codex completions. Subscription billing and premium service tiers can differ. |
 | Managed/cloud agents | Current managed runtimes are viable for a future remote worker pool. This release retains local repository access and the existing MCP/state contracts; migrating state, secrets, execution and worktrees to a new service would not itself improve this deployment's reliability. |
 | Tool calling, browser/computer use, parallelism | Existing coding harnesses provide tool execution and optional configured capabilities. Preserve the project's job graph, review boundaries and concurrency limits. Do not enable extra tools or nested parallel work globally without task-level need. |
 | Production access | Add an HttpOnly browser session and protect Socket.io with the same credentials as the API. Bind HTTP/MCP to loopback by default. Keep bearer tokens working for CLI clients. |
@@ -35,7 +35,7 @@ Use the existing production credentials without copying or printing them. Existi
 
 ### Acceptance results
 
-- TypeScript checks and production build passed. All **1,914 tests across 131 files** passed locally.
+- TypeScript checks and production build passed. All **1,915 tests across 131 files** passed locally.
 - Real Opus 5.5 and GPT-6 Astra coding tasks fixed an isolated repository, passed its tests, wrote an MCP note and called `finish_job`.
 - This installed CLI advertises GPT-6.1 Sol, but the current ChatGPT account rejects it. A live task automatically retried on GPT-6 Astra and passed. Advertised availability is therefore treated as a hint, not proof of access.
 - Browser sign-in, authenticated API/socket access, dynamic model picker, assets and health checks passed.

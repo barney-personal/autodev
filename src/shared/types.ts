@@ -412,6 +412,7 @@ export interface ClaudeStreamEvent {
   model?: string;        // present on system init events
   is_error?: boolean;    // present on result events
   result?: string;       // present on result events: the final output text or error message
+  usage?: { input_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number; output_tokens?: number };
   total_cost_usd?: number;  // present on result events
   duration_ms?: number;     // present on result events
   num_turns?: number;       // present on result events
