@@ -7,6 +7,7 @@ import { classifyTask, conservativeClassification, COMPLEXITY_PROMPT_VERSION, ge
 import { BALANCED_CLAUDE_MODEL, DEFAULT_CODEX_MODEL, EFFICIENT_CODEX_MODEL } from '../../shared/models.js';
 import { isCodexModel, type Workflow, type RouteDecision } from '../../shared/types.js';
 import { RecoveryKeys } from './WorkflowRecovery.js';
+import { meetsCompletionThreshold } from './WorkflowMilestoneParser.js';
 
 export function getAdaptiveRoutingMode(): 'off' | 'shadow' | 'live' {
   const mode = process.env.ADAPTIVE_ROUTING_MODE;
@@ -54,7 +55,7 @@ export async function decideAdaptiveRoute(workflow: Workflow, cycle: number): Pr
   const unchanged = typeof priorDone === 'number' && workflow.milestones_done <= priorDone;
   let protectedReason: string | null = null;
   if (!milestone.raw || workflow.milestones_total <= 0) protectedReason = 'missing milestone evidence';
-  else if (workflow.milestones_done >= workflow.milestones_total - 1) protectedReason = 'final milestone';
+  else if (meetsCompletionThreshold({ total: workflow.milestones_total, done: workflow.milestones_done + 1 }, workflow.completion_threshold)) protectedReason = 'final milestone';
   else if (feedback?.trim() || noProgress || unchanged || (previousImplement && previousImplement.status !== 'done')) protectedReason = 'correction or unsuccessful previous attempt';
   // Include the complete current milestone and original request; never classify a
   // convenient excerpt that omits a risk later in the request.
