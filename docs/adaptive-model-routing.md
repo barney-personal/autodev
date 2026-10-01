@@ -26,7 +26,7 @@ Workflows use the original request plus the complete current milestone. Recent f
 
 `ADAPTIVE_DECISION_MODEL` defaults to `claude-haiku-4-5-20251001`, using `ANTHROPIC_API_KEY`. Supported alternatives are `claude-sonnet-5-5`, `gemini-3.5-flash-lite`, and `gemini-3.8-flash`. Gemini uses `GEMINI_API_KEY` or `GOOGLE_API_KEY` and the official REST endpoint with a JSON schema and low thinking. A Gemini CLI OAuth login does not supply this API credential. No global CLI settings are changed. Gemini is a decision provider here; autonomous editing continues through the existing Claude/Codex runners and their file-lock enforcement.
 
-This deployment has Anthropic API access and a Gemini CLI login, but no Gemini API key. Use Haiku for live decisions; do not claim Gemini is active until a bounded API evaluation succeeds with that credential.
+Check the active deployment through `/api/routing-brain/adaptive`; a key may exist in a secret manager without being injected into the service. Supply the Gemini API credential through the service environment, run a bounded API evaluation, and restart the service before claiming Gemini is active. Keep secret values out of logs and evaluation artifacts.
 
 ## Inspecting and evaluating
 
@@ -35,6 +35,7 @@ This deployment has Anthropic API access and a Gemini CLI login, but no Gemini A
 - Workflow route decisions include policy version, classification, baseline/selected models, fallback reason, latency, token counts and `costKnown`. A false cost flag means unknown, not free. Gemini spend is intentionally unknown until pricing is integrated; never count its numeric compatibility placeholder as measured savings.
 - Existing workflow metrics provide phase duration and recorded agent cost. Compare accepted milestones, review corrections and total retries as well as latency. Compare equivalent tasks; unrelated milestones are not a controlled speed benchmark.
 - After building, run `node --env-file=.env scripts/eval-adaptive-routing.mjs` for eight synthetic cases without creating jobs or touching project files. It fails on unsafe downgrades or zero successful provider calls and reports classification accuracy, latency and known cost. This is a regression check, not proof of coding quality across arbitrary tasks.
+- Measure classifier latency separately from completed-job latency. For execution comparisons, use identical disposable fixtures, alternate model order, check the resulting files and behavior independently, and include supervision and retry costs where known. Small fixture comparisons do not establish quality or speed across full production workflows.
 
 Rollback: set `ADAPTIVE_ROUTING_MODE=off` and restart the service. Running agents continue. Persisted adaptive completions still receive their final independent review.
 
