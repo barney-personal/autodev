@@ -194,7 +194,7 @@ describe('renderInlineContext', () => {
     const ctx: InlineWorkflowContext = { plan: bigContent, worklogs: [] };
     const result = renderInlineContext(ctx, planKey, contractKey, worklogPrefix);
     expect(result).toContain('truncated');
-    expect(result).toContain('list_notes');
+    expect(result).toContain('read_note("workflow/wf-test-123/plan")');
   });
 
   it('renders worklogs in numeric cycle order even when keys are lexicographically misordered', () => {
@@ -206,10 +206,11 @@ describe('renderInlineContext', () => {
       ],
     };
     const result = renderInlineContext(ctx, planKey, contractKey, worklogPrefix);
-    const posOne = result.indexOf('#### workflow/wf/worklog/cycle-1');
+    expect(result).toContain('Earlier Worklog Index');
+    expect(result).not.toContain('#### workflow/wf/worklog/cycle-1\n');
+    expect(result).toContain('`workflow/wf/worklog/cycle-1`');
     const posTwo = result.indexOf('#### workflow/wf/worklog/cycle-2');
     const posTen = result.indexOf('#### workflow/wf/worklog/cycle-10');
-    expect(posOne).toBeLessThan(posTwo);
     expect(posTwo).toBeLessThan(posTen);
   });
 
@@ -218,6 +219,26 @@ describe('renderInlineContext', () => {
     const result = renderInlineContext(ctx, planKey, contractKey, worklogPrefix);
     expect(result).toContain('hello');
     expect(result).not.toContain('truncated');
+  });
+
+  it('keeps recent evidence and retrieval paths when old history and plan are oversized', () => {
+    const worklogs = Array.from({ length: 12 }, (_, i) => ({
+      key: `${worklogPrefix}cycle-${i + 1}`,
+      value: i < 10 ? `OLD-${i}: ${'x'.repeat(10_000)}` : `LATEST-${i}: validation evidence`,
+    }));
+    const result = renderInlineContext({
+      plan: 'p'.repeat(70_000), contract: 'critical contract', worklogs,
+      diffSummary: 'd'.repeat(70_000),
+    }, planKey, contractKey, worklogPrefix);
+    expect(result).toContain('critical contract');
+    expect(result).toContain('LATEST-10: validation evidence');
+    expect(result).toContain('LATEST-11: validation evidence');
+    expect(result).not.toContain('OLD-0:');
+    expect(result).toContain(`\`${worklogPrefix}cycle-1\``);
+    expect(result).toContain(`read_note("${planKey}")`);
+    expect(result).toContain('before relying on omitted details or rewriting the note');
+    expect(result.length).toBeLessThan(INLINE_CONTEXT_MAX_CHARS);
+    expect(worklogs[0].value).toContain('OLD-0:');
   });
 
   it('renders diffSummary as "Files Changed So Far" section', () => {
@@ -370,7 +391,7 @@ describe('inline context size capping', () => {
     const prompt = buildReviewPrompt(wf, 2, ctx);
     // The inline context section should be truncated at INLINE_CONTEXT_MAX_CHARS
     expect(prompt).toContain('truncated');
-    expect(prompt).toContain('list_notes');
+    expect(prompt).toContain('read_note("workflow/wf-test-123/plan")');
     // Should NOT contain the full oversized string
     expect(prompt.length).toBeLessThan(longPlan.length + 5000);
   });

@@ -53,6 +53,13 @@ describe('capText', () => {
 // ─── buildReviewPrompt with inline context ──────────────────────────────────
 
 describe('buildReviewPrompt with inline context', () => {
+  it('directs every working phase to the isolated worktree', () => {
+    const wf = makeWorkflow({ work_dir: '/production', worktree_path: '/isolated/run' });
+    for (const prompt of [buildAssessPrompt(wf), buildReviewPrompt(wf, 2), buildImplementPrompt(wf, 2)]) {
+      expect(prompt).toContain('/isolated/run');
+      expect(prompt).not.toContain('/production');
+    }
+  });
   it('includes Pre-loaded Context section and omits read instructions', () => {
     const wf = makeWorkflow();
     const ctx: InlineContext = {
@@ -90,7 +97,7 @@ describe('buildReviewPrompt with inline context', () => {
 // ─── buildReviewPrompt adversarial quality bar ─────────────────────────────
 
 describe('buildReviewPrompt adversarial quality bar', () => {
-  it('cycle 1 (plan review) requires at least 2 improvements', () => {
+  it('cycle 1 reviews evidence without a quota of findings', () => {
     const wf = makeWorkflow();
     const ctx: InlineContext = {
       plan: '# Plan\n\n- [ ] M1: Do something',
@@ -100,8 +107,9 @@ describe('buildReviewPrompt adversarial quality bar', () => {
 
     // Should have the quality bar section
     expect(prompt).toContain('Review Quality Bar');
-    expect(prompt).toContain('at least 2 concrete improvements');
-    expect(prompt).toContain('"Plan looks good" is never sufficient');
+    expect(prompt).not.toContain('at least 2 concrete improvements');
+    expect(prompt).toContain('There is no quota of findings');
+    expect(prompt).toContain('brief evidence-based explanation');
 
     // Should NOT have code review section (no code yet in cycle 1)
     expect(prompt).not.toContain('Code Review (MOST IMPORTANT)');
@@ -112,7 +120,8 @@ describe('buildReviewPrompt adversarial quality bar', () => {
     const prompt = buildReviewPrompt(wf, 1);
 
     expect(prompt).toContain('Review Quality Bar');
-    expect(prompt).toContain('at least 2 concrete improvements');
+    expect(prompt).not.toContain('at least 2 concrete improvements');
+    expect(prompt).toContain('There is no quota of findings');
   });
 
   it('cycle 1 without inline context has no duplicate step numbers', () => {

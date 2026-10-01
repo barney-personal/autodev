@@ -48,6 +48,7 @@ describe('JobWatcherManager', () => {
     process.env.WATCHER_ENABLED = '1';
     if (!process.env.ANTHROPIC_API_KEY) process.env.ANTHROPIC_API_KEY = 'sk-test';
     process.env.WATCHER_DEBOUNCE_MS = '10';
+    vi.stubEnv('WATCHER_ROUTINE_INTERVAL_MS', '0');
     process.env.WATCHER_HEARTBEAT_MS = '3600000';  // effectively disable heartbeats
     ticks.length = 0;
     rejectingAgents.clear();
@@ -63,6 +64,8 @@ describe('JobWatcherManager', () => {
     const mod = await import('../server/orchestrator/JobWatcherManager.js');
     mod.stopJobWatcherManager();
     mod._resetForTest();
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
     await cleanupTestDb();
   });
 
@@ -80,6 +83,73 @@ describe('JobWatcherManager', () => {
     queries.insertAgent({ id: agentId, job_id: job.id, status: 'running', started_at: Date.now() });
     return agentId;
   }
+
+  it.each([undefined, 'NaN', '-1'])('samples a continuous tool stream every 30s with interval %s', async value => {
+    const mod = await import('../server/orchestrator/JobWatcherManager.js');
+    const agentId = await makeRunningAgent();
+    vi.stubEnv('WATCHER_ROUTINE_INTERVAL_MS', value);
+    vi.useFakeTimers();
+    mod.onAgentStarted(agentId);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(ticks.map(t => t.trigger)).toEqual(['initial']);
+    for (let i = 0; i < 29; i++) {
+      mod.onAgentEvent(agentId, { type: 'item.completed', item: { type: 'command_execution' } } as never);
+      await vi.advanceTimersByTimeAsync(1000);
+    }
+    expect(ticks).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(ticks.map(t => t.trigger)).toEqual(['initial', 'tool_use']);
+  });
+
+  it.each(['failure', 'warning', 'done'] as const)('delivers %s promptly despite a pending routine check', async kind => {
+    const mod = await import('../server/orchestrator/JobWatcherManager.js');
+    const agentId = await makeRunningAgent();
+    vi.stubEnv('WATCHER_ROUTINE_INTERVAL_MS', '30000');
+    vi.useFakeTimers();
+    mod.onAgentStarted(agentId);
+    await vi.advanceTimersByTimeAsync(10);
+    mod.onAgentEvent(agentId, { type: 'item.completed', item: { type: 'command_execution' } } as never);
+    await vi.advanceTimersByTimeAsync(100);
+    if (kind === 'failure') mod.onAgentEvent(agentId, { type: 'turn.failed' } as never);
+    if (kind === 'warning') mod.onWarning({ agent_id: agentId, type: 'stalled' } as never);
+    if (kind === 'done') mod.onAgentFinished(agentId, 'done');
+    await vi.advanceTimersByTimeAsync(10);
+    expect(ticks.map(t => t.trigger)).toEqual(['initial', { failure: 'turn_failed', warning: 'warning', done: 'agent_done' }[kind]]);
+    await vi.advanceTimersByTimeAsync(30000);
+    expect(ticks).toHaveLength(2);
+    if (kind === 'done') expect(mod._activeSessionCount()).toBe(0);
+  });
+
+  it('keeps the routine interval after a manual check without losing the queued event', async () => {
+    const mod = await import('../server/orchestrator/JobWatcherManager.js');
+    const agentId = await makeRunningAgent();
+    vi.stubEnv('WATCHER_ROUTINE_INTERVAL_MS', '30000');
+    vi.useFakeTimers();
+    mod.onAgentStarted(agentId);
+    await vi.advanceTimersByTimeAsync(10);
+    mod.onAgentEvent(agentId, { type: 'turn.completed' } as never);
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(mod.requestTickNow(agentId)).toEqual({ ok: true });
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(ticks.map(t => t.trigger)).toEqual(['initial', 'user_request']);
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(ticks.map(t => t.trigger)).toEqual(['initial', 'user_request', 'turn_complete']);
+  });
+
+  it('rehydrates supervision after graceful manager shutdown', async () => {
+    const mod = await import('../server/orchestrator/JobWatcherManager.js');
+    const queries = await import('../server/db/queries.js');
+    const agentId = await makeRunningAgent();
+    mod.onAgentStarted(agentId);
+    await new Promise(r => setTimeout(r, 30));
+    mod.stopJobWatcherManager();
+    expect(queries.getWatcherByAgentId(agentId)?.status).not.toBe('stopped');
+    ticks.length = 0;
+    mod.startJobWatcherManager();
+    await new Promise(r => setTimeout(r, 30));
+    expect(mod._activeSessionCount()).toBe(1);
+    expect(ticks).toEqual([{ agentId, trigger: 'initial' }]);
+  });
 
   it('spawns a watcher on agent start', async () => {
     const mod = await import('../server/orchestrator/JobWatcherManager.js');
