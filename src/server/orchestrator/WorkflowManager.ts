@@ -17,6 +17,7 @@ import {
 } from '../../shared/models.js';
 import { buildAssessPrompt, buildWorkflowRepairPrompt, buildSimplifiedAssessRepairPrompt, type InlineWorkflowContext } from './WorkflowPrompts.js';
 import { getAvailableModel, getFallbackModel, getAlternateProviderModel, getModelProvider, markModelRateLimited, markProviderRateLimited } from './ModelClassifier.js';
+import { adaptiveRoutingApplies, decideAdaptiveRoute, getAdaptiveRoutingMode } from './AdaptiveModelRouter.js';
 import { classifyJobFailure, isFallbackEligibleFailure, isSameModelRetryEligible, shouldMarkProviderUnavailable } from './FailureClassifier.js';
 import { nudgeQueue } from './WorkQueueManager.js';
 import { logResilienceEvent } from './ResilienceLogger.js';
@@ -223,6 +224,11 @@ function handleReviewCompleted(job: Job, workflow: Workflow, planNote: WorkflowP
         finalizeWorkflow(queries.getWorkflowById(workflow.id)!).catch(err => console.error(`[workflow ${workflow.id}] finalizeWorkflow error:`, err));
       }
     } else {
+      const previousRoute = queries.getLatestRouteDecisionForCycle(workflow.id, updated.current_cycle - 1, 'implement');
+      if (updated.current_cycle > updated.max_cycles && previousRoute?.decision.signalsSent.policy === 'adaptive-v1') {
+        updateAndEmit(workflow.id, { status: 'blocked', current_phase: 'review', blocked_reason: 'Final independent review requires changes; implementation cycle budget exhausted' });
+        return;
+      }
       spawnImplementForApprovedReview(updated, job);
     }
   } catch (err) {
@@ -412,6 +418,15 @@ function handleImplementCompleted(job: Job, workflow: Workflow, milestones: { to
  */
 function advanceAfterImplement(job: Job, workflow: Workflow, updated: Workflow, milestones: { total: number; done: number }): void {
   if (milestones.total > 0 && meetsCompletionThreshold(milestones, updated.completion_threshold)) {
+    const route = queries.getLatestRouteDecisionForCycle(workflow.id, job.workflow_cycle ?? updated.current_cycle, 'implement');
+    // Adaptive implementers cannot approve their own final result. This remains
+    // enforced by the persisted decision even if routing is disabled mid-run.
+    if (job.workflow_phase === 'implement' && route?.mode === 'live' && route.decision.signalsSent.policy === 'adaptive-v1') {
+      const reviewCycle = updated.current_cycle + 1;
+      updateAndEmit(workflow.id, { current_cycle: reviewCycle });
+      spawnPhaseJob(queries.getWorkflowById(workflow.id)!, 'review', reviewCycle);
+      return;
+    }
     // If verify command is configured, run verification before finalizing
     if (updated.start_command) {
       console.log(`[workflow ${workflow.id}] milestones meet completion threshold (${milestones.done}/${milestones.total}) — spawning verify agent before finalization`);
@@ -938,6 +953,16 @@ function spawnStaticImplementOrBlock(workflow: Workflow, cycle: number, modelOve
 }
 
 export async function spawnImplementWithRouting(workflow: Workflow, cycle: number): Promise<void> {
+  if (adaptiveRoutingApplies(workflow.id)) {
+    try {
+      const decision = await decideAdaptiveRoute(workflow, cycle);
+      spawnStaticImplementOrBlock(workflow, cycle, getAdaptiveRoutingMode() === 'live' ? decision.implementerModel : undefined);
+    } catch (err) {
+      console.error(`[adaptive-router] decision failed for ${workflow.id}; retaining configured model`, err);
+      spawnStaticImplementOrBlock(workflow, cycle);
+    }
+    return;
+  }
   const mode = getRoutingBrainMode();
 
   // off mode: no routing decision, preserve existing behavior exactly

@@ -93,6 +93,7 @@ Then open http://localhost:3456.
 - Database: SQLite via `node:sqlite` experimental (auto-created at `data/orchestrator.db`)
 - Agents: spawned as `claude --print --output-format stream-json --verbose` subprocesses (or `codex exec --json` for Codex models)
 - Model defaults: `claude-opus-5-5` implements, `codex-gpt-6-astra` reviews workflows, and `codex-gpt-6.1-sol` is the balanced Codex default. Auto-classification uses Haiku for simple work, Sonnet 5.5 at medium effort for medium work, and Opus 5.5 at xhigh for complex work. See `docs/frontier-upgrade.md`.
+- Adaptive routing: `ADAPTIVE_ROUTING_MODE=live` routes high-confidence mechanical work to Haiku/Luna and focused implementation to Sonnet/Sol. Risky, uncertain, corrective and final milestones retain the configured implementer; independent review and verification remain required. `shadow` records workflow recommendations without applying them. Gemini can classify via an explicitly configured API credential, with no tools. See `docs/adaptive-model-routing.md` for rollout, evidence and rollback.
 
 ## Key Subsystems
 

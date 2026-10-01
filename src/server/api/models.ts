@@ -3,6 +3,7 @@ import { Router } from 'express';
 import { CLAUDE_MODEL_OPTIONS, DEFAULT_WORKFLOW_IMPLEMENTER_MODEL, DEFAULT_WORKFLOW_REVIEWER_MODEL } from '../../shared/models.js';
 import { getCodexCatalog } from '../orchestrator/ModelCatalog.js';
 import { getRateLimitStatus, markModelRateLimited, clearModelRateLimit } from '../orchestrator/ModelClassifier.js';
+import { getAdaptiveRoutingStatus } from '../orchestrator/AdaptiveModelRouter.js';
 
 const router = Router();
 
@@ -19,6 +20,7 @@ router.get('/', (_req, res) => {
       reviewer: DEFAULT_WORKFLOW_REVIEWER_MODEL,
     },
     rateLimits: getRateLimitStatus(),
+    adaptiveRouting: getAdaptiveRoutingStatus(),
   });
 });
 
