@@ -83,10 +83,12 @@ export function startJobWatcherManager(): void {
   _started = true;
   _initialised = true;
   if (!envEnabled()) {
+    markUnrestorableWatchers('Supervision disabled by WATCHER_ENABLED=0');
     log.info('Job watcher disabled (WATCHER_ENABLED=0)');
     return;
   }
   if (!envHasKey()) {
+    markUnrestorableWatchers('Supervision unavailable: ANTHROPIC_API_KEY is not set');
     log.warn('ANTHROPIC_API_KEY not set — watchers will not be created');
   }
   const model = defaultWatcherModel();
@@ -107,6 +109,21 @@ export function startJobWatcherManager(): void {
     log.error({ err }, 'rehydrateActiveWatchers failed — running agents will not have watcher sessions until next event');
     captureWithContext(err, { component: 'JobWatcherManager' });
   });
+}
+
+/** Keep restored DB state honest when this process cannot supervise agents. */
+function markUnrestorableWatchers(reason: string): void {
+  try {
+    for (const watcher of queries.listActiveWatchers()) {
+      // Error is retryable on a later configured boot, unlike an explicit
+      // operator stop. Do not turn configuration downtime into a manual stop.
+      queries.updateWatcher(watcher.id, { status: 'error', error_message: reason });
+      const updated = queries.getWatcherById(watcher.id);
+      if (updated) socket.emitWatcherSessionUpdate(updated);
+    }
+  } catch (err) {
+    log.error({ err }, 'failed to mark unavailable watcher sessions');
+  }
 }
 
 export function stopJobWatcherManager(): void {

@@ -11,7 +11,7 @@ The first report-building workflow (`b72888f3-9b8b-4ded-8de2-496a76bf93d8`) was 
 | Reviews required to find two improvements | Replace the quota with evidence-based review. Approve sound plans, fix concrete gaps, and preserve independent review and verification. |
 | Repeated repository discovery | Ask agents to batch independent searches, inspect the relevant entry points, and reuse supplied context. Require exact validation commands and commit references in worklogs. |
 | Conflicting checkout instructions | Point phase prompts at the assigned worktree, matching the process working directory. |
-| Supervision lost after restart | Preserve watcher state during manager shutdown; rehydrate it on restart. Explicit operator stops remain stopped. |
+| Supervision lost after restart | Preserve watcher state during manager shutdown; rehydrate it on restart. Explicit operator stops remain stopped. When configuration prevents rehydration, saved active watchers become visibly unavailable and can recover on a later configured boot. |
 | Smaller models or lower reasoning effort | Defer until task-level quality evaluations demonstrate equivalence. Current implementer/reviewer model pins stay intact. |
 | More parallel implementation agents | Keep the existing independent-task queue concurrency. Concurrent edits to one workflow need a separate ownership/dependency design. |
 | Hard output limits or skipping tests | Keep current limits and required tests. Savings should come from redundant orchestration, not incomplete work. |

@@ -151,6 +151,31 @@ describe('JobWatcherManager', () => {
     expect(ticks).toEqual([{ agentId, trigger: 'initial' }]);
   });
 
+  it.each(['disabled', 'no-key'] as const)('marks preserved watchers inactive on %s boot and restores them when configured', async reason => {
+    const mod = await import('../server/orchestrator/JobWatcherManager.js');
+    const queries = await import('../server/db/queries.js');
+    const agentId = await makeRunningAgent();
+    mod.onAgentStarted(agentId);
+    await new Promise(r => setTimeout(r, 30));
+    mod.stopJobWatcherManager();
+    if (reason === 'disabled') vi.stubEnv('WATCHER_ENABLED', '0');
+    else vi.stubEnv('ANTHROPIC_API_KEY', '');
+    mod.startJobWatcherManager();
+    await new Promise(r => setTimeout(r, 30));
+    expect(mod._activeSessionCount()).toBe(0);
+    const unavailable = queries.getWatcherByAgentId(agentId)!;
+    expect(unavailable.status).toBe('error');
+    expect(unavailable.error_message).toContain(reason === 'disabled' ? 'disabled' : 'ANTHROPIC_API_KEY');
+    mod.stopJobWatcherManager();
+    vi.stubEnv('WATCHER_ENABLED', '1');
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-test');
+    ticks.length = 0;
+    mod.startJobWatcherManager();
+    await new Promise(r => setTimeout(r, 30));
+    expect(mod._activeSessionCount()).toBe(1);
+    expect(ticks).toEqual([{ agentId, trigger: 'initial' }]);
+  });
+
   it('spawns a watcher on agent start', async () => {
     const mod = await import('../server/orchestrator/JobWatcherManager.js');
     const queries = await import('../server/db/queries.js');
