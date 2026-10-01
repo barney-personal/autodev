@@ -225,7 +225,7 @@ function handleReviewCompleted(job: Job, workflow: Workflow, planNote: WorkflowP
       }
     } else {
       const previousRoute = queries.getLatestRouteDecisionForCycle(workflow.id, updated.current_cycle - 1, 'implement');
-      if (updated.current_cycle > updated.max_cycles && previousRoute?.decision.signalsSent.policy === 'adaptive-v1') {
+      if (updated.current_cycle > updated.max_cycles && previousRoute?.mode === 'live' && previousRoute.decision.signalsSent.policy === 'adaptive-v1') {
         updateAndEmit(workflow.id, { status: 'blocked', current_phase: 'review', blocked_reason: 'Final independent review requires changes; implementation cycle budget exhausted' });
         return;
       }
