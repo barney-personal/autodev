@@ -29,6 +29,11 @@ const log = workflowLogger('watcher-manager');
 // In production this is read once per call which is negligible.
 function envHeartbeatMs(): number { return Number(process.env.WATCHER_HEARTBEAT_MS ?? 45_000); }
 function envDebounceMs(): number { return Number(process.env.WATCHER_DEBOUNCE_MS ?? 800); }
+/** Routine progress is sampled; failures, warnings and lifecycle events stay urgent. */
+function envRoutineIntervalMs(): number {
+  const value = Number(process.env.WATCHER_ROUTINE_INTERVAL_MS ?? 30_000);
+  return Number.isFinite(value) && value >= 0 ? value : 30_000;
+}
 function envEnabled(): boolean { return (process.env.WATCHER_ENABLED ?? '1') !== '0'; }
 function envHasKey(): boolean { return !!process.env.ANTHROPIC_API_KEY; }
 // Cooldown between manual /watcher/tick requests, per agent. Cheap defence
@@ -40,6 +45,8 @@ interface SessionEntry {
   session: WatcherSession;
   debounceTimer: NodeJS.Timeout | null;
   pendingTrigger: WatcherTrigger | null;
+  scheduledAt: number | null;
+  lastTickAt: number | null;
 }
 
 interface ReconcileResult {
@@ -76,10 +83,12 @@ export function startJobWatcherManager(): void {
   _started = true;
   _initialised = true;
   if (!envEnabled()) {
+    markUnrestorableWatchers('Supervision disabled by WATCHER_ENABLED=0');
     log.info('Job watcher disabled (WATCHER_ENABLED=0)');
     return;
   }
   if (!envHasKey()) {
+    markUnrestorableWatchers('Supervision unavailable: ANTHROPIC_API_KEY is not set');
     log.warn('ANTHROPIC_API_KEY not set — watchers will not be created');
   }
   const model = defaultWatcherModel();
@@ -102,20 +111,30 @@ export function startJobWatcherManager(): void {
   });
 }
 
+/** Keep restored DB state honest when this process cannot supervise agents. */
+function markUnrestorableWatchers(reason: string): void {
+  try {
+    for (const watcher of queries.listActiveWatchers()) {
+      // Error is retryable on a later configured boot, unlike an explicit
+      // operator stop. Do not turn configuration downtime into a manual stop.
+      queries.updateWatcher(watcher.id, { status: 'error', error_message: reason });
+      const updated = queries.getWatcherById(watcher.id);
+      if (updated) socket.emitWatcherSessionUpdate(updated);
+    }
+  } catch (err) {
+    log.error({ err }, 'failed to mark unavailable watcher sessions');
+  }
+}
+
 export function stopJobWatcherManager(): void {
   if (!_started) return;
   _started = false;
   if (_heartbeat) { clearInterval(_heartbeat); _heartbeat = null; }
-  for (const [agentId, entry] of _sessions.entries()) {
+  for (const entry of _sessions.values()) {
     if (entry.debounceTimer) clearTimeout(entry.debounceTimer);
     entry.session.stop();
-    // Mark as stopped in DB so a future restart doesn't try to resume it.
-    try {
-      const w = queries.getWatcherByAgentId(agentId);
-      if (w && (w.status === 'running' || w.status === 'starting')) {
-        queries.updateWatcher(w.id, { status: 'stopped', finished_at: Date.now() });
-      }
-    } catch { /* shutdown — best effort */ }
+    // Preserve the persisted status for rehydration after a service restart.
+    // A manual stop goes through stopSession and remains stopped in the DB.
   }
   _sessions.clear();
   log.info('Job watcher manager stopped');
@@ -222,6 +241,7 @@ export function requestTickNow(agentId: string): ManualTickResult {
   const gate = checkBillableCooldown(agentId);
   if (!gate.ok) return { ok: false, reason: 'cooldown', retryAfterMs: gate.retryAfterMs };
   _lastManualTickAt.set(agentId, Date.now());
+  entry.lastTickAt = Date.now();
   // Mirror scheduleTick's handler: without it an escape from runTick on the
   // manual path (e.g. the DB closing mid-tick during shutdown) surfaces as an
   // unhandled rejection with no context instead of a reported error.
@@ -335,7 +355,7 @@ function ensureSession(agentId: string, trigger: WatcherTrigger): void {
   }
   if (!watcher) return;
   const session = new WatcherSession(watcher.id, agentId);
-  _sessions.set(agentId, { session, debounceTimer: null, pendingTrigger: null });
+  _sessions.set(agentId, { session, debounceTimer: null, pendingTrigger: null, scheduledAt: null, lastTickAt: null });
   scheduleTick(agentId, trigger);
 }
 
@@ -344,17 +364,35 @@ function scheduleTick(agentId: string, trigger: WatcherTrigger): void {
   if (!entry) return;
   // Coalesce: keep the highest-rank trigger in the debounce window (TRIGGER_RANK is shared with WatcherSession).
   entry.pendingTrigger = highestTrigger(entry.pendingTrigger, trigger);
-  if (entry.debounceTimer) return;  // already scheduled
+  const routine = ['heartbeat', 'tool_use', 'turn_complete'].includes(entry.pendingTrigger);
+  const now = Date.now();
+  const delay = routine && entry.lastTickAt !== null
+    ? Math.max(envDebounceMs(), entry.lastTickAt + envRoutineIntervalMs() - now)
+    : envDebounceMs();
+  const scheduledAt = now + delay;
+  // Never postpone an existing tick during a busy stream. Urgent events can
+  // pull a deferred routine tick forward to the normal debounce deadline.
+  if (entry.debounceTimer && entry.scheduledAt !== null && entry.scheduledAt <= scheduledAt) return;
+  if (entry.debounceTimer) clearTimeout(entry.debounceTimer);
+  entry.scheduledAt = scheduledAt;
   entry.debounceTimer = setTimeout(() => {
     entry.debounceTimer = null;
+    entry.scheduledAt = null;
     const t = entry.pendingTrigger;
     entry.pendingTrigger = null;
     if (!t) return;
+    // A manual tick may have moved the routine deadline while this timer waited.
+    if (['heartbeat', 'tool_use', 'turn_complete'].includes(t) && entry.lastTickAt !== null
+      && Date.now() < entry.lastTickAt + envRoutineIntervalMs()) {
+      scheduleTick(agentId, t);
+      return;
+    }
+    entry.lastTickAt = Date.now();
     void entry.session.requestTick(t).catch(err => {
       log.error({ err, agentId }, 'requestTick failed');
       captureWithContext(err, { agent_id: agentId, component: 'JobWatcherManager' });
     });
-  }, envDebounceMs());
+  }, delay);
   // Don't keep the event loop alive for the watcher debouncer
   entry.debounceTimer.unref?.();
 }

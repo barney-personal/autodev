@@ -65,20 +65,30 @@ export function renderInlineContext(
 ): string {
   if (!hasInlineContent(ctx)) return '';
 
+  const noteText = (value: string, key: string, limit: number) => value.length <= limit
+    ? value
+    : `${value.slice(0, limit)}\n\n[truncated — read_note("${key}") contains the complete note; retrieve it before relying on omitted details or rewriting the note.]`;
   const parts: string[] = [];
   if (ctx?.plan) {
-    parts.push(`### Current Plan (snapshot — use \`write_note("${planKey}", ...)\` to update)\n\n${ctx.plan}`);
+    parts.push(`### Current Plan (snapshot — use \`write_note("${planKey}", ...)\` to update)\n\n${noteText(ctx.plan, planKey, 24_000)}`);
   }
   if (ctx?.contract) {
-    parts.push(`### Operating Contract (from \`${contractKey}\`)\n\n${ctx.contract}`);
+    parts.push(`### Operating Contract (from \`${contractKey}\`)\n\n${noteText(ctx.contract, contractKey, 8_000)}`);
   }
   if (ctx?.diffSummary) {
-    parts.push(`### Files Changed So Far\n\n\`\`\`\n${ctx.diffSummary}\n\`\`\``);
+    parts.push(`### Files Changed So Far\n\n\`\`\`\n${ctx.diffSummary.slice(0, 2_000)}\n\`\`\`${ctx.diffSummary.length > 2_000 ? '\n[truncated — run git diff --stat for the full file list.]' : ''}`);
   }
   if (ctx?.worklogs && ctx.worklogs.length > 0) {
     const sorted = sortWorklogsByNumericCycle(ctx.worklogs);
-    const logEntries = sorted.map(w => `#### ${w.key}\n\n${w.value}`).join('\n\n');
+    // Older evidence stays retrievable without replaying it on every cycle.
+    // Per-note limits prevent a long plan or log from hiding the latest handoff.
+    const recent = sorted.slice(-2);
+    const older = sorted.slice(0, -2);
+    const logEntries = recent.map(w => `#### ${w.key}\n\n${noteText(w.value, w.key, 8_000)}`).join('\n\n');
     parts.push(`### Previous Worklogs (read-only snapshots)\n\n${logEntries}`);
+    if (older.length > 0) {
+      parts.push(`### Earlier Worklog Index\n\n${older.map(w => `- \`${w.key}\``).join('\n')}\n\nRead an earlier note with \`read_note\` when its decisions or evidence are relevant. Earlier worklogs are omitted from this snapshot, not deleted.`);
+    }
   }
 
   let body = parts.join('\n\n');
@@ -87,7 +97,7 @@ export function renderInlineContext(
       + `\n\n... (truncated — use \`list_notes("${worklogPrefix}")\` to read remaining entries)`;
   }
 
-  return `\n\n## Pre-loaded Context\n\nThe following scratchpad context has been pre-read for you. You do NOT need to call \`read_note\` for these unless you need to refresh after an update.\n\n${body}`;
+  return `\n\n## Pre-loaded Context\n\nThe following scratchpad context has been pre-read for you. You do NOT need to call \`read_note\` again for complete snapshots. Retrieve indexed notes or any note flagged as incomplete when needed, and refresh after an update.\n\n${body}`;
 }
 
 /**
@@ -157,11 +167,11 @@ Your task in this phase is to **assess the codebase and propose a plan**.
 ${workflow.task}
 
 ## Working Directory
-${workflow.work_dir ?? '(not specified)'}
+${workflow.worktree_path ?? workflow.work_dir ?? '(not specified)'}
 
 ## Instructions
 
-1. **Read the codebase** — scan the project structure, key files, tests, dependencies, and configuration.
+1. **Read the relevant code** — locate the affected entry points, their dependencies, and existing tests. Batch independent searches/reads in one tool call. Stop expanding the scan once you can define testable milestones; revisit uncertainties during implementation.
 2. **Assess quality** — note any issues, patterns, tech debt, missing tests, or areas for improvement relevant to the task.
 3. **Write a plan** with concrete milestones as markdown checkboxes. Each milestone should be achievable in a single implementation cycle.
 4. **Size milestones for reviewable implementation cycles** — each milestone should be a coherent chunk that can be implemented, tested, and reviewed in one cycle. If a milestone seems too large, split it into smaller sub-milestones.
@@ -243,7 +253,7 @@ Do not implement product changes. Repair the missing workflow artifacts only.
 ${workflow.task}
 
 ## Working Directory
-${workflow.work_dir ?? '(not specified)'}
+${workflow.worktree_path ?? workflow.work_dir ?? '(not specified)'}
 
 ## Missing Artifacts
 ${artifactList}${diagnosticSection}
@@ -285,7 +295,7 @@ Your ONLY task is to write the plan note for this workflow. Do not write the con
 ${workflow.task}
 
 ## Working Directory
-${workflow.work_dir ?? '(not specified)'}${diagnosticSection}
+${workflow.worktree_path ?? workflow.work_dir ?? '(not specified)'}${diagnosticSection}
 
 ## Required Action
 Call the shared-note MCP tool with key \`${planKey}\` and a valid plan. If \`write_note\` is unavailable, use \`mcp__orchestrator__write_note\`.
@@ -332,20 +342,16 @@ export function buildReviewPrompt(workflow: Workflow, cycle: number, inlineConte
 
 1. Read the current plan: \`read_note("${planKey}")\`
 2. Read the operating contract: \`read_note("${contractKey}")\`
-3. Read all worklog entries: \`list_notes("${worklogPrefix}")\` then read each one.
+3. Read the latest worklog: \`read_note("${worklogKey}")\`. Use \`list_notes("${worklogPrefix}")\` to retrieve earlier decisions only when relevant.
 `;
 
   const planReviewSection = !isFirstReview ? '' : `
 ## Step ${hasInline ? 1 : 2}: Review Quality Bar
 
-Before updating the plan, you must critically evaluate it. Identify **at least 2 concrete improvements** — for example:
-- Missing edge cases or error scenarios not covered by any milestone
-- Vague or untestable acceptance criteria that need sharpening
-- Wrong ordering or missing dependencies between milestones
-- Missing milestones for testing, documentation, or cleanup
-- Milestones that are too large to complete in a single implementation cycle
-
-If you genuinely cannot find 2 improvements, you must explicitly explain with specific evidence why the plan is already exceptional — citing how each milestone has clear acceptance criteria, correct ordering, appropriate scope, and complete coverage of the task. "Plan looks good" is never sufficient.
+Evaluate correctness, scope, dependencies, edge cases, and testable acceptance criteria. Read the relevant code to substantiate concerns.
+- Propose changes only for concrete gaps that affect the requested outcome.
+- If the plan already meets the requirements, approve it with a brief evidence-based explanation. There is no quota of findings or new milestones.
+- Preserve the requested scope and independent verification; avoid speculative improvements that add cycles without fixing a real issue.
 `;
 
   const codeReviewSection = isFirstReview ? '' : `
@@ -354,7 +360,7 @@ If you genuinely cannot find 2 improvements, you must explicitly explain with sp
 The implementer just completed cycle ${cycle - 1}. You must review the actual code changes before touching the plan.
 
 1. ${hasInline ? 'Review the worklog in the Pre-loaded Context section below.' : `Read the worklog for what was changed: \`read_note("${worklogKey}")\``}
-2. In the working directory (${workflow.work_dir ?? 'project root'}), inspect the implementation:
+2. In the working directory (${workflow.worktree_path ?? workflow.work_dir ?? 'project root'}), inspect the implementation:
    - Run \`git log --oneline -10\` to see recent commits
    - Run \`git diff HEAD~1\` (or \`git diff HEAD~<n>\` to cover all commits from this cycle) to see exact code changes
    - Read any new or heavily modified files in full
@@ -402,7 +408,7 @@ ${isFirstReview
 ${workflow.task}
 
 ## Working Directory
-${workflow.work_dir ?? '(not specified)'}
+${workflow.worktree_path ?? workflow.work_dir ?? '(not specified)'}
 
 ${hasInline ? '' : readContextSection}${planReviewSection}${codeReviewSection}${!isFirstReview && cycle > 2 && inlineContext?.reviewHistory ? `
 ### Prior Review Feedback
@@ -442,7 +448,7 @@ export function buildImplementPrompt(workflow: Workflow, cycle: number, inlineCo
 2. **Find the first unchecked milestone** (\`- [ ]\`) in the plan.`
     : `1. **Read the current plan**: \`read_note("${planKey}")\`
 2. **Read the operating contract**: \`read_note("${contractKey}")\`
-3. **Read previous worklog entries**: \`list_notes("${worklogPrefix}")\` then read each one to understand prior work.
+3. **Read the latest worklog** and relevant earlier decisions: \`list_notes("${worklogPrefix}")\`; retrieve notes needed for this milestone.
 4. **Find the first unchecked milestone** (\`- [ ]\`) in the plan.`;
 
   const implementStep = hasInline ? 3 : 5;
@@ -460,7 +466,7 @@ Your task is to **implement the top unchecked milestone** from the plan.${verify
 ${workflow.task}
 
 ## Working Directory
-${workflow.work_dir ?? '(not specified)'}
+${workflow.worktree_path ?? workflow.work_dir ?? '(not specified)'}
 
 ## Scope
 This implementation cycle is not turn-capped. Complete the top unchecked milestone to a reviewable state, run the relevant checks, commit your current work, and write a worklog entry describing what changed and what remains.
@@ -491,7 +497,8 @@ ${worklogStep}. **Write a worklog entry** using \`write_note("${worklogKey}", <w
 - \`<short hash>\` <commit message>
 
 ### Test results
-- <test suite>: <pass count> passed, <fail count> failed
+- <exact command and checked commit>: <pass count> passed, <fail count> failed
+- Record failures, environment gaps, and unverified assumptions explicitly.
 
 ### Blockers
 - <blocker description> (or "None")
@@ -506,7 +513,8 @@ ${worklogStep}. **Write a worklog entry** using \`write_note("${worklogKey}", <w
 - Use \`git add <specific files>\` — never \`git add -A\` or \`git add .\`${workflow.worktree_branch ? `
 - **CRITICAL: You are on branch \`${workflow.worktree_branch}\`. Do NOT switch branches. Do NOT checkout main. All commits must go on this branch. Run \`git branch --show-current\` to verify before committing.**` : ''}
 - If blocked, explain clearly in the worklog and set the "Next step" to describe what needs to happen.
-- Call \`report_status\` regularly to update your progress.
+- Batch independent read/search commands. Reuse pre-loaded notes and test evidence for orientation, but independently verify changed behavior.
+- Call \`report_status\` when progress, evidence, or blockers change.
 - Call \`search_kb\` at the start for relevant prior knowledge.
 - Call \`report_learnings\` near the end with anything useful you discovered.${MCP_TOOL_NAMING_NOTE}${renderInlineContext(inlineContext, planKey, contractKey, worklogPrefix)}`;
 }
