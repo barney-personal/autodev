@@ -20,6 +20,11 @@ const getPendingQuestionSpy = vi.fn(() => null);
 const updateQuestionSpy = vi.fn();
 const scheduleRepeatJobSpy = vi.fn();
 
+vi.mock('../server/lib/process-utils.js', () => ({
+  isPidAlive: (pid: number) => pid === process.pid,
+  statusFromLog: vi.fn(() => null),
+}));
+
 vi.mock('../server/orchestrator/WorkflowManager.js', () => ({
   reconcileBlockedPRs: reconcileBlockedPRsSpy,
   reconcileRunningWorkflows: reconcileRunningWorkflowsSpy,
@@ -83,8 +88,10 @@ vi.mock('../server/instrument.js', () => ({
 }));
 
 describe('recovery.ts: startup wiring for reconcileBlockedPRs', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
+    const { statusFromLog } = await import('../server/lib/process-utils.js');
+    vi.mocked(statusFromLog).mockReturnValue(null);
     listAllRunningAgentsSpy.mockReturnValue([]);
     getPendingQuestionSpy.mockReturnValue(null);
   });
@@ -122,6 +129,26 @@ describe('recovery.ts: startup wiring for reconcileBlockedPRs', () => {
     expect(reattachAgent).toHaveBeenCalledExactlyOnceWith({ agentId: agent.id, job });
     expect(attachPty).not.toHaveBeenCalled();
     expect(updateJobStatusSpy).not.toHaveBeenCalled();
+  });
+
+  it('advances a debate and workflow when a headless job finishes while offline', async () => {
+    const { statusFromLog } = await import('../server/lib/process-utils.js');
+    const { onJobCompleted: debateCompleted } = await import('../server/orchestrator/DebateManager.js');
+    vi.mocked(statusFromLog).mockReturnValue('done');
+    const job = { id: 'offline-job', status: 'running', is_interactive: false, model: 'claude-opus-5-5' };
+    const agent = { id: 'offline-agent', job_id: job.id, status: 'running', pid: null, execution_mode: 'headless' };
+    listAllRunningAgentsSpy.mockReturnValue([agent] as any);
+    getAgentWithJobSpy.mockReturnValue({ ...agent, job });
+    getJobByIdSpy.mockImplementation(() => job);
+    updateJobStatusSpy.mockImplementation((_id, status) => { job.status = status; });
+    const { runRecovery } = await import('../server/orchestrator/recovery.js');
+    runRecovery();
+    expect(updateJobStatusSpy).toHaveBeenCalledWith(job.id, 'done');
+    expect(debateCompleted).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: job.id, status: 'done' }));
+    expect(workflowOnJobCompletedSpy).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: job.id, status: 'done' }));
+    runRecovery();
+    expect(debateCompleted).toHaveBeenCalledOnce();
+    expect(workflowOnJobCompletedSpy).toHaveBeenCalledOnce();
   });
 
   it('does not rewrite a job that already finished before startup recovery runs', async () => {

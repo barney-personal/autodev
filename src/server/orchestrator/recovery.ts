@@ -87,6 +87,16 @@ export function runRecovery(): void {
             });
           }
 
+          // A detached process may finish while the server is offline. Advance
+          // its parent workflow/debate exactly as the live completion path does.
+          if (activeJob && finalStatus === 'done') {
+            const doneJob = queries.getJobById(agent.job_id);
+            if (doneJob) {
+              try { debateOnJobCompleted(doneJob); } catch (err) { log.error({ err, agentId: agent.id }, 'debateOnJobCompleted error'); captureWithContext(err, { agent_id: agent.id, job_id: agent.job_id, component: 'recovery' }); }
+              try { workflowOnJobCompleted(doneJob); } catch (err) { log.error({ err, agentId: agent.id }, 'workflowOnJobCompleted error'); captureWithContext(err, { agent_id: agent.id, job_id: agent.job_id, component: 'recovery' }); }
+            }
+          }
+
           // For repeat jobs, schedule the next run
           if (activeJob && job.repeat_interval_ms) {
             try {
