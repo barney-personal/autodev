@@ -776,6 +776,7 @@ function handleAgentExit(agentId: string, job: Job, exitCode: number | null): vo
       const failedAgent = queries.getAgentWithJob(agentId);
       if (failedAgent) socket.emitAgentUpdate(failedAgent);
       if (updated) socket.emitJobUpdate(updated);
+      try { jobWatcher.onAgentFinished(agentId, 'failed'); } catch (err) { agentLogger(agentId).debug({ err }, 'watcher onAgentFinished failed'); }
       agentLogger(agentId).warn({ rejectedModel: job.model, fallback }, 'Model unavailable for account; requeued on fallback');
       return;
     }
