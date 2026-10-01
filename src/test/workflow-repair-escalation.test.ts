@@ -54,8 +54,8 @@ vi.mock('../server/orchestrator/WorkflowPrompts.js', () => ({
 
 vi.mock('../server/orchestrator/ModelClassifier.js', () => ({
   KNOWN_MODELS: [
-    'claude-opus-4-7',
-    'claude-opus-4-7[1m]',
+    'claude-opus-5-5',
+    'claude-opus-5-5[1m]',
     'claude-opus-4-6',
     'claude-opus-4-6[1m]',
     'claude-sonnet-4-6',
@@ -233,7 +233,7 @@ describe('WorkflowManager: assess repair model escalation', () => {
     expect(repairJobs[0].model).toBe('claude-sonnet-4-6');
   });
 
-  it('second repair escalates to claude-opus-4-7', async () => {
+  it('second repair escalates to claude-opus-5-5', async () => {
     const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
     const { upsertNote, getJobsForWorkflow } = await import('../server/db/queries.js');
 
@@ -261,10 +261,10 @@ describe('WorkflowManager: assess repair model escalation', () => {
     const jobs = getJobsForWorkflow(workflow.id);
     const repairJobs = jobs.filter(j => j.title?.includes('repair'));
     expect(repairJobs).toHaveLength(1);
-    expect(repairJobs[0].model).toBe('claude-opus-4-7');
+    expect(repairJobs[0].model).toBe('claude-opus-5-5');
   });
 
-  it('third repair also uses claude-opus-4-7', async () => {
+  it('third repair also uses claude-opus-5-5', async () => {
     const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
     const { upsertNote, getJobsForWorkflow } = await import('../server/db/queries.js');
 
@@ -292,10 +292,10 @@ describe('WorkflowManager: assess repair model escalation', () => {
     const jobs = getJobsForWorkflow(workflow.id);
     const repairJobs = jobs.filter(j => j.title?.includes('repair'));
     expect(repairJobs).toHaveLength(1);
-    expect(repairJobs[0].model).toBe('claude-opus-4-7');
+    expect(repairJobs[0].model).toBe('claude-opus-5-5');
   });
 
-  it('review repair does NOT escalate to claude-opus-4-7', async () => {
+  it('review repair does NOT escalate to claude-opus-5-5', async () => {
     const { onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
     const { upsertNote, getJobsForWorkflow } = await import('../server/db/queries.js');
 
@@ -324,7 +324,7 @@ describe('WorkflowManager: assess repair model escalation', () => {
     expect(repairJobs).toHaveLength(1);
     // Review repairs should NOT escalate to opus; they use the reviewer_model
     expect(repairJobs[0].model).toBe('claude-sonnet-4-6');
-    expect(repairJobs[0].model).not.toBe('claude-opus-4-7');
+    expect(repairJobs[0].model).not.toBe('claude-opus-5-5');
   });
 });
 

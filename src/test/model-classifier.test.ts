@@ -21,8 +21,8 @@ describe('ModelClassifier provider cooldowns', () => {
     } = await import('../server/orchestrator/ModelClassifier.js');
 
     markProviderRateLimited('anthropic', 60_000);
-    expect(getFallbackModel('claude-sonnet-4-6[1m]')).toBe('codex');
-    expect(getAvailableModel('claude-sonnet-4-6[1m]')).toBe('codex');
+    expect(getFallbackModel('claude-sonnet-4-6[1m]')).toBe('codex-gpt-6.1-sol');
+    expect(getAvailableModel('claude-sonnet-4-6[1m]')).toBe('codex-gpt-6.1-sol');
 
     clearProviderRateLimit('anthropic');
     expect(getFallbackModel('claude-sonnet-4-6[1m]')).toBe('claude-sonnet-4-6[1m]');
@@ -273,11 +273,11 @@ describe('ModelClassifier explicit non-[1m] opus fallback', () => {
 
     markProviderRateLimited('anthropic', 60_000);
 
-    expect(getAvailableModel('claude-opus-4-6')).toBe('codex');
+    expect(getAvailableModel('claude-opus-4-6')).toBe('codex-gpt-6.1-sol');
   });
 });
 
-describe('resolveModel complexity classification → opus 4.8 model + scaled effort', () => {
+describe('resolveModel complexity classification → current Claude model + scaled effort', () => {
   const realFetch = global.fetch;
   let savedKey: string | undefined;
 
@@ -315,7 +315,7 @@ describe('resolveModel complexity classification → opus 4.8 model + scaled eff
     });
   }
 
-  it('medium tasks route to opus 4.8 with effort pinned to medium', async () => {
+  it('medium tasks route to current Claude with effort pinned to medium', async () => {
     const queries = await import('../server/db/queries.js');
     const { resolveModel } = await import('../server/orchestrator/ModelClassifier.js');
     mockClassifier('medium');
@@ -323,13 +323,13 @@ describe('resolveModel complexity classification → opus 4.8 model + scaled eff
     const job = await makeAutoJob();
     const model = await resolveModel(job);
 
-    expect(model).toBe('claude-opus-4-8[1m]');
+    expect(model).toBe('claude-sonnet-5-5');
     const row = queries.getJobById(job.id)!;
-    expect(row.model).toBe('claude-opus-4-8[1m]');
+    expect(row.model).toBe('claude-sonnet-5-5');
     expect(row.effort).toBe('medium');
   });
 
-  it('complex tasks route to opus 4.8 with effort pinned to xhigh', async () => {
+  it('complex tasks route to current Claude with effort pinned to xhigh', async () => {
     const queries = await import('../server/db/queries.js');
     const { resolveModel } = await import('../server/orchestrator/ModelClassifier.js');
     mockClassifier('complex');
@@ -337,7 +337,7 @@ describe('resolveModel complexity classification → opus 4.8 model + scaled eff
     const job = await makeAutoJob();
     const model = await resolveModel(job);
 
-    expect(model).toBe('claude-opus-4-8[1m]');
+    expect(model).toBe('claude-opus-5-5');
     const row = queries.getJobById(job.id)!;
     expect(row.effort).toBe('xhigh');
   });
@@ -363,22 +363,22 @@ describe('resolveModel complexity classification → opus 4.8 model + scaled eff
     const job = await makeAutoJob();
     const model = await resolveModel(job);
 
-    expect(model).toBe('claude-sonnet-4-6[1m]');
+    expect(model).toBe('claude-sonnet-5-5');
     expect(queries.getJobById(job.id)!.effort).toBeNull();
   });
 
-  it('opus 4.8 rate limit at classify time falls through to opus 4.7 while keeping the effort pin', async () => {
+  it('current Claude rate limit at classify time falls through to Sonnet 5.5 while keeping the effort pin', async () => {
     const queries = await import('../server/db/queries.js');
     const { resolveModel, markModelRateLimited } = await import('../server/orchestrator/ModelClassifier.js');
     mockClassifier('complex');
-    markModelRateLimited('claude-opus-4-8[1m]', 60_000);
+    markModelRateLimited('claude-opus-5-5', 60_000);
 
     const job = await makeAutoJob();
     const model = await resolveModel(job);
 
-    expect(model).toBe('claude-opus-4-7[1m]');
+    expect(model).toBe('claude-sonnet-5-5');
     const row = queries.getJobById(job.id)!;
-    expect(row.model).toBe('claude-opus-4-7[1m]');
+    expect(row.model).toBe('claude-sonnet-5-5');
     expect(row.effort).toBe('xhigh');
   });
 });

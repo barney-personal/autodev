@@ -8,11 +8,12 @@
     "dev": "concurrently \"npm run server:dev\" \"npm run client:dev\"",
     "server:dev": "NODE_OPTIONS='--experimental-sqlite' tsx watch --env-file=.env --ignore './data/**' src/server/index.ts",
     "client:dev": "vite",
-    "build": "tsc -p tsconfig.server.json && vite build",
-    "server:start": "node --import ./dist/server/instrument.js dist/server/index.js",
+    "build": "tsc -p tsconfig.server.json && vite build && node scripts/build-assets.mjs",
+    "server:start": "node --env-file-if-exists=.env --import ./dist/server/instrument.js dist/server/index.js",
     "test": "NODE_ENV=test vitest run",
     "test:watch": "NODE_ENV=test vitest",
-    "test:coverage": "NODE_ENV=test vitest run --coverage"
+    "test:coverage": "NODE_ENV=test vitest run --coverage",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
@@ -55,5 +56,8 @@
     "typescript": "^5.9.3",
     "vite": "^5.4.21",
     "vitest": "^4.1.4"
+  },
+  "engines": {
+    "node": ">=22.13.0"
   }
 }

@@ -14,31 +14,13 @@ describe('CircuitBreaker', () => {
   });
 
   it('opens when all known models are rate-limited', () => {
-    breaker.recordModelLimited('claude-opus-4-8');
-    breaker.recordModelLimited('claude-opus-4-8[1m]');
-    breaker.recordModelLimited('claude-opus-4-7');
-    breaker.recordModelLimited('claude-opus-4-7[1m]');
-    breaker.recordModelLimited('claude-opus-4-6');
-    breaker.recordModelLimited('claude-opus-4-6[1m]');
-    breaker.recordModelLimited('claude-sonnet-4-6');
-    breaker.recordModelLimited('claude-sonnet-4-6[1m]');
-    breaker.recordModelLimited('claude-haiku-4-5-20251001');
-    breaker.recordModelLimited('codex');
+    for (const model of KNOWN_MODELS) breaker.recordModelLimited(model);
     expect(breaker.isOpen()).toBe(true);
     expect(breaker.reason()).toContain('all models rate-limited');
   });
 
   it('closes when a model becomes available', () => {
-    breaker.recordModelLimited('claude-opus-4-8');
-    breaker.recordModelLimited('claude-opus-4-8[1m]');
-    breaker.recordModelLimited('claude-opus-4-7');
-    breaker.recordModelLimited('claude-opus-4-7[1m]');
-    breaker.recordModelLimited('claude-opus-4-6');
-    breaker.recordModelLimited('claude-opus-4-6[1m]');
-    breaker.recordModelLimited('claude-sonnet-4-6');
-    breaker.recordModelLimited('claude-sonnet-4-6[1m]');
-    breaker.recordModelLimited('claude-haiku-4-5-20251001');
-    breaker.recordModelLimited('codex');
+    for (const model of KNOWN_MODELS) breaker.recordModelLimited(model);
     expect(breaker.isOpen()).toBe(true);
 
     breaker.recordModelAvailable('claude-sonnet-4-6');

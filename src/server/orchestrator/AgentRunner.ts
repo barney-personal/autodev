@@ -1,3 +1,4 @@
+import { isModelAccessError, markModelUnavailable, hasAgentWorkStarted } from './ModelAvailability.js';
 import { spawn, execFile, execFileSync, execSync, type ChildProcess } from 'child_process';
 import { promisify } from 'util';
 import { randomUUID } from 'crypto';
@@ -48,7 +49,8 @@ import { buildEyePrompt, isEyeJob, computeAdaptiveEyeInterval } from './EyeConfi
 import { getJobIfStatus, markJobRunning } from './JobLifecycle.js';
 import { buildNiceSpawn, isNiceAvailable } from './ProcessPriority.js';
 import { registerCompletionHandler } from './JobCompletionNotifier.js';
-import { getCircuitBreaker } from './ModelClassifier.js';
+import { getCircuitBreaker, getAvailableModel } from './ModelClassifier.js';
+import { estimateCostUsd } from './CostEstimator.js';
 import { classifyJobFailure } from './FailureClassifier.js';
 import * as jobWatcher from './JobWatcherManager.js';
 import { handleStreamEvent, storeOutput } from './AgentStreamProcessor.js';
@@ -114,7 +116,7 @@ export function runAgent(options: RunOptions): void {
     : [];
   const model: string | null = job.model ?? null;
   const useCodex = isCodexModel(model);
-  const codexReasoningEffort = getCodexReasoningEffort(model, job.workflow_phase);
+  const codexReasoningEffort = getCodexReasoningEffort(model, job.workflow_phase, job.effort);
   const codexServiceTier = getCodexServiceTier(model, job.workflow_phase);
   const claudeEffort = getClaudeEffort(model, job.workflow_phase, job.effort);
   if (useCodex) ensureCodexTrusted(workDir);
@@ -132,12 +134,14 @@ export function runAgent(options: RunOptions): void {
         : ['exec']),
       '--json',
       '--dangerously-bypass-approvals-and-sandbox',
-      '-C', workDir,
+      // resume inherits cwd from spawn; its subcommand does not accept -C.
+      ...(!options.resumeSessionId ? ['-C', workDir] : []),
       '--skip-git-repo-check',
       '-c', `mcp_servers.orchestrator.url="${mcpUrl}"`,
       ...(codexSubModel ? ['-m', codexSubModel] : []),
       ...(codexReasoningEffort ? ['-c', `model_reasoning_effort="${codexReasoningEffort}"`] : []),
       ...(codexServiceTier ? ['-c', `service_tier="${codexServiceTier}"`] : []),
+      '-', // explicit stdin prompt also works with exec resume
       // Prompt is delivered via file-backed stdin (see below), not as a
       // positional arg, to avoid E2BIG / spawn failure when workflow
       // prompts grow large with inlined plan/contract/worklog context.
@@ -279,12 +283,12 @@ export function runAgent(options: RunOptions): void {
     queries.updateAgent(agentId, { base_sha: sha });
   } catch { /* not a git repo or git not available */ }
 
-  queries.updateAgent(agentId, { pid: child.pid ?? null, status: 'running' });
+  queries.updateAgent(agentId, { pid: child.pid ?? null, status: 'running', execution_mode: 'headless' });
   markJobRunning(job.id);
   const agentWithJob = queries.getAgentWithJob(agentId);
   if (agentWithJob) socket.emitAgentUpdate(agentWithJob);
 
-  // Live watcher: spawn an Opus 4.7 supervisor that narrates progress and intervenes if stuck.
+  // Live watcher: spawn the configured supervisor that narrates progress and intervenes if stuck.
   try { jobWatcher.onAgentStarted(agentId); } catch (err) { agentLogger(agentId).warn({ err }, 'watcher onAgentStarted failed'); }
 
   // Start tailing the log file; pass the child so we know when it exits
@@ -699,6 +703,7 @@ function handleAgentExit(agentId: string, job: Job, exitCode: number | null): vo
   }
 
   // Try to determine success/failure from the last result event in the log
+  let workStarted = false;
   let statusFromLog: 'done' | 'failed' | null = null;
   let logErrorMsg: string | null = null;
   let costUsd: number | null = null;
@@ -707,6 +712,7 @@ function handleAgentExit(agentId: string, job: Job, exitCode: number | null): vo
   try {
     const content = fs.readFileSync(getLogPath(agentId), 'utf8');
     const lines = content.split('\n').filter(Boolean);
+    workStarted = lines.some(line => { try { return hasAgentWorkStarted(JSON.parse(line)); } catch { return false; } });
     for (let i = lines.length - 1; i >= 0; i--) {
       try {
         const ev = JSON.parse(lines[i]);
@@ -752,11 +758,31 @@ function handleAgentExit(agentId: string, job: Job, exitCode: number | null): vo
     status,
     exit_code: exitCode ?? -1,
     error_message: stderrMsg,
-    cost_usd: costUsd,
+    cost_usd: costUsd ?? (isCodexModel(job.model) && current ? estimateCostUsd(job.model, current.estimated_input_tokens ?? 0, current.estimated_output_tokens ?? 0) : null),
     duration_ms: durationMs,
     num_turns: numTurns,
     finished_at: Date.now(),
   });
+
+  // Account access can lag the provider/CLI catalog. A rejected startup has
+  // performed no work, so persist that evidence and requeue once per candidate.
+  if (status === 'failed' && !workStarted && job.model && !current?.estimated_input_tokens && isModelAccessError(stderrMsg)) {
+    markModelUnavailable(job.model, stderrMsg!);
+    const fallback = getAvailableModel(job.model);
+    if (fallback && fallback !== job.model && getJobIfStatus(job.id, ['running', 'assigned'])) {
+      queries.releaseLocksForAgent(agentId);
+      getFileLockRegistry().releaseAll(agentId);
+      queries.updateJobModel(job.id, fallback);
+      queries.updateJobStatus(job.id, 'queued');
+      const updated = queries.getJobById(job.id);
+      const failedAgent = queries.getAgentWithJob(agentId);
+      if (failedAgent) socket.emitAgentUpdate(failedAgent);
+      if (updated) socket.emitJobUpdate(updated);
+      try { jobWatcher.onAgentFinished(agentId, 'failed'); } catch (err) { agentLogger(agentId).debug({ err }, 'watcher onAgentFinished failed'); }
+      agentLogger(agentId).warn({ rejectedModel: job.model, fallback }, 'Model unavailable for account; requeued on fallback');
+      return;
+    }
+  }
 
   // Auto-resume: if the agent marked itself done but sub-jobs it spawned are
   // still running, it finished prematurely — re-spawn with --resume.

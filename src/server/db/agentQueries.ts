@@ -20,6 +20,7 @@ function buildAgentSelect(alias: string, includeDiff: boolean): string {
     ${qualified('job_id')},
     ${qualified('status')},
     ${qualified('pid')},
+    ${qualified('execution_mode')},
     ${qualified('session_id')},
     ${qualified('parent_agent_id')},
     ${qualified('exit_code')},
@@ -79,9 +80,9 @@ export function listAgents(status?: string): Agent[] {
   return rows.map((r: unknown) => cast<Agent>(r));
 }
 
-const AGENT_UPDATE_ALLOWED_FIELDS = new Set(['status', 'pid', 'session_id', 'exit_code', 'error_message', 'status_message', 'output_read', 'base_sha', 'diff', 'cost_usd', 'duration_ms', 'num_turns', 'estimated_input_tokens', 'estimated_output_tokens', 'finished_at', 'pending_wait_ids']);
+const AGENT_UPDATE_ALLOWED_FIELDS = new Set(['execution_mode', 'status', 'pid', 'session_id', 'exit_code', 'error_message', 'status_message', 'output_read', 'base_sha', 'diff', 'cost_usd', 'duration_ms', 'num_turns', 'estimated_input_tokens', 'estimated_output_tokens', 'finished_at', 'pending_wait_ids']);
 
-export function updateAgent(id: string, fields: Partial<Pick<Agent, 'status' | 'pid' | 'session_id' | 'exit_code' | 'error_message' | 'status_message' | 'output_read' | 'base_sha' | 'diff' | 'cost_usd' | 'duration_ms' | 'num_turns' | 'estimated_input_tokens' | 'estimated_output_tokens' | 'finished_at' | 'pending_wait_ids'>>): void {
+export function updateAgent(id: string, fields: Partial<Pick<Agent, 'execution_mode' | 'status' | 'pid' | 'session_id' | 'exit_code' | 'error_message' | 'status_message' | 'output_read' | 'base_sha' | 'diff' | 'cost_usd' | 'duration_ms' | 'num_turns' | 'estimated_input_tokens' | 'estimated_output_tokens' | 'finished_at' | 'pending_wait_ids'>>): void {
   const db = getDb();
   const sets: string[] = ['updated_at = ?'];
   const values: unknown[] = [Date.now()];
@@ -106,6 +107,27 @@ export function accumulateAgentTokens(agentId: string, inputTokens: number, outp
       updated_at = ?
     WHERE id = ?
   `).run(inputTokens, outputTokens, Date.now(), agentId);
+}
+
+/** Add only new usage from a Claude message, across content blocks and replays. */
+export function accumulateAgentMessageTokens(agentId: string, messageId: string, input: number, output: number): void {
+  const db = getDb();
+  const prior = db.prepare('SELECT input_tokens, output_tokens FROM agent_message_usage WHERE agent_id = ? AND message_id = ?')
+    .get(agentId, messageId) as { input_tokens: number; output_tokens: number } | undefined;
+  const nextInput = Math.max(input, prior?.input_tokens ?? 0);
+  const nextOutput = Math.max(output, prior?.output_tokens ?? 0);
+  db.exec('SAVEPOINT message_usage');
+  try {
+    db.prepare(`INSERT INTO agent_message_usage (agent_id, message_id, input_tokens, output_tokens) VALUES (?, ?, ?, ?)
+      ON CONFLICT(agent_id, message_id) DO UPDATE SET input_tokens = excluded.input_tokens, output_tokens = excluded.output_tokens`)
+      .run(agentId, messageId, nextInput, nextOutput);
+    accumulateAgentTokens(agentId, nextInput - (prior?.input_tokens ?? 0), nextOutput - (prior?.output_tokens ?? 0));
+    db.exec('RELEASE message_usage');
+  } catch (err) {
+    db.exec('ROLLBACK TO message_usage');
+    db.exec('RELEASE message_usage');
+    throw err;
+  }
 }
 
 export function listBatchAgents(status?: string): Agent[] {

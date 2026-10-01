@@ -43,6 +43,16 @@ CREATE TABLE IF NOT EXISTS agents (
   finished_at     INTEGER
 );
 
+-- Claude emits several content blocks with cumulative usage for one message.
+-- Persist high-water marks so replay/restart cannot bill each block again.
+CREATE TABLE IF NOT EXISTS agent_message_usage (
+  agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  message_id TEXT NOT NULL,
+  input_tokens INTEGER NOT NULL,
+  output_tokens INTEGER NOT NULL,
+  PRIMARY KEY (agent_id, message_id)
+);
+
 CREATE TABLE IF NOT EXISTS agent_output (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   agent_id    TEXT NOT NULL REFERENCES agents(id),

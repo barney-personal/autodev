@@ -11,7 +11,7 @@ import { startInteractiveAgent, checkPtyResources } from './PtyManager.js';
 import { resolveModel } from './ModelClassifier.js';
 import { getCircuitBreaker } from './ModelClassifier.js';
 import type { Job } from '../../shared/types.js';
-import { isCodexModel, isAutoExitJob } from '../../shared/types.js';
+import { isAutoExitJob } from '../../shared/types.js';
 
 const log = queueLogger();
 
@@ -143,20 +143,19 @@ async function tick(): Promise<void> {
       break;
     }
 
-    // Gate dispatch on host PTY capacity before claiming the next job.
-    // Without this, exhausted hosts let the queue mark a job 'assigned',
-    // insert an agent row, then immediately fail both — and WorkflowManager
-    // re-spawns a fresh phase job within ~60s, producing a thousands-per-day
-    // event loop in Sentry. Leaving the job 'queued' lets the next tick
-    // re-evaluate once capacity returns.
-    const ptyCheck = checkPtyResources();
-    if (!ptyCheck.ok) {
-      log.info({ reason: ptyCheck.reason }, 'pausing dispatch — pty capacity');
-      break;
-    }
-
     const job = queries.getNextQueuedJob();
     if (!job || _classifying.has(job.id)) break;
+
+    // Only interactive jobs need a PTY. Cool them briefly when exhausted so
+    // unattended work behind them can still use available process capacity.
+    if (job.is_interactive) {
+      const ptyCheck = checkPtyResources();
+      if (!ptyCheck.ok) {
+        log.info({ jobId: job.id, reason: ptyCheck.reason }, 'deferring interactive job — pty capacity');
+        queries.updateJobScheduledAt(job.id, Date.now() + PROVIDER_PAUSE_RETRY_MS);
+        continue;
+      }
+    }
 
     // Double-dispatch guard: verify the job is still queued before claiming it.
     // A rapid succession of ticks could both see the same job as "queued" before
@@ -224,17 +223,16 @@ async function tick(): Promise<void> {
         log.warn({ err, agentId }, 'git checkpoint failed');
       }
 
-      // Codex batch agents still use runAgent (stream-json path); all others use tmux.
-      // Debate-stage jobs use --print inside tmux (piped through tee to .ndjson for UI display)
-      // and exit naturally — no finish_job needed.
-      const useCodexBatch = isCodexModel(dispatchJob.model ?? null) && !dispatchJob.is_interactive;
+      // Unattended work uses durable file-backed headless processes for both
+      // providers. Reserve PTYs/tmux for explicitly interactive sessions.
+      const useHeadless = !dispatchJob.is_interactive;
       const isDebateStage = isAutoExitJob(dispatchJob);
       const autoFinish = !dispatchJob.is_interactive && !isDebateStage;
       const resumeSessionId = queries.getNote(`job-resume:${job.id}`)?.value ?? undefined;
       _totalDispatched++;
       _lastDispatchAt = Date.now();
-      log.info({ jobId: job.id, agentId, model, interactive: !!readyJob.is_interactive, worktree: !!readyJob.use_worktree, codexBatch: useCodexBatch }, 'dispatching job');
-      if (useCodexBatch) {
+      log.info({ jobId: job.id, agentId, model, interactive: !!readyJob.is_interactive, worktree: !!readyJob.use_worktree, headless: useHeadless }, 'dispatching job');
+      if (useHeadless) {
         runAgent({ agentId, job: dispatchJob, resumeSessionId });
       } else {
         startInteractiveAgent({ agentId, job: dispatchJob, autoFinish, ...(resumeSessionId ? { resumeSessionId } : {}) });

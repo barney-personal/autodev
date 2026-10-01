@@ -272,7 +272,16 @@ describe('AgentStreamProcessor', () => {
       } as any;
       extractAndAccumulateTokens('a2', event, JSON.stringify(event));
 
-      expect(queries.accumulateAgentTokens).toHaveBeenCalledWith('a2', 230, 80);
+      expect(queries.accumulateAgentTokens).toHaveBeenCalledWith('a2', 200, 80);
+    });
+
+    it('reads nested Claude usage without counting the terminal result again', async () => {
+      const queries = await import('../server/db/queries.js');
+      const { extractAndAccumulateTokens } = await import('../server/orchestrator/AgentStreamProcessor.js');
+      const event = { type: 'assistant', message: { usage: { input_tokens: 100, cache_read_input_tokens: 200, output_tokens: 50 } } } as any;
+      extractAndAccumulateTokens('nested', event, JSON.stringify(event));
+      extractAndAccumulateTokens('nested', { type: 'result', usage: { input_tokens: 300, output_tokens: 50 } } as any, '{}');
+      expect(queries.accumulateAgentTokens).toHaveBeenCalledExactlyOnceWith('nested', 300, 50);
     });
 
     it('does not call accumulateAgentTokens when there are no tokens', async () => {
@@ -284,6 +293,19 @@ describe('AgentStreamProcessor', () => {
 
       expect(queries.accumulateAgentTokens).not.toHaveBeenCalled();
     });
+  });
+
+  it('reconciles final Claude output and reasoning tokens after partial stream usage', async () => {
+    const queries = await import('../server/db/queries.js');
+    const { isDbInitialized } = await import('../server/db/database.js');
+    const { handleStreamEvent } = await import('../server/orchestrator/AgentStreamProcessor.js');
+    vi.mocked(isDbInitialized).mockReturnValue(true);
+    const result = { type: 'result', total_cost_usd: 0.25, usage: { input_tokens: 18, cache_creation_input_tokens: 25706, cache_read_input_tokens: 283131, output_tokens: 2447 } };
+    handleStreamEvent('final-usage', result, JSON.stringify(result), 1);
+    handleStreamEvent('final-usage', result, JSON.stringify(result), 2);
+    expect(queries.updateAgent).toHaveBeenCalledWith('final-usage', { estimated_input_tokens: 308855, estimated_output_tokens: 2447 });
+    expect(queries.updateAgent).toHaveBeenCalledWith('final-usage', { cost_usd: 0.25 });
+    expect(queries.accumulateAgentTokens).not.toHaveBeenCalled();
   });
 
   describe('handleStreamEvent raw-line fallback (via startTailing onLine)', () => {

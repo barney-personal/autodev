@@ -254,6 +254,17 @@ describe('AgentRunner: Codex prompt file delivery', () => {
     expect(stdinWrites).toHaveLength(0);
   });
 
+  it('resumes Codex with stdin and pinned effort without the unsupported cwd flag', async () => {
+    const { runAgent } = await import('../server/orchestrator/AgentRunner.js');
+    const queries = await import('../server/db/queries.js');
+    const job = await insertTestJob({ id: 'resume-job', model: 'codex-gpt-6-astra', effort: 'max', status: 'assigned' });
+    const agent = queries.insertAgent({ id: 'resume-agent', job_id: job.id, status: 'running' });
+    runAgent({ agentId: agent.id, job, resumeSessionId: 'session-123' });
+    expect(spawnCalls[0].args).toEqual(expect.arrayContaining(['exec', 'resume', 'session-123', 'model_reasoning_effort="max"']));
+    expect(spawnCalls[0].args).not.toContain('-C');
+    expect(spawnCalls[0].args.at(-1)).toBe('-');
+  });
+
   it('Claude jobs still deliver prompt via piped stdin', async () => {
     const { runAgent, getPromptPath } = await import('../server/orchestrator/AgentRunner.js');
 

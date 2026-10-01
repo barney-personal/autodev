@@ -224,6 +224,7 @@ export async function insertTestJob(overrides: Partial<{
   work_dir: string | null;
   model: string | null;
   effort: string | null;
+  is_interactive: number;
   max_turns: number;
   stop_mode: string;
   stop_value: number | null;
@@ -243,6 +244,7 @@ export async function insertTestJob(overrides: Partial<{
     work_dir: overrides.work_dir ?? null,
     model: overrides.model ?? null,
     effort: overrides.effort ?? null,
+    is_interactive: overrides.is_interactive ?? 0,
     max_turns: overrides.max_turns,
     stop_mode: overrides.stop_mode as any,
     stop_value: overrides.stop_value,

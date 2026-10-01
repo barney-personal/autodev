@@ -8,24 +8,27 @@ export interface ModelOption {
   label: string;
 }
 
-// Opus 4.8 is the default ("frontier") Claude model for agent work. It
-// replaced a brief Fable 5 stint (reverted June 2026 — Fable 5 is blocked in
-// the UK). Opus 4.7 stays as the rate-limit fallback tier below it.
+// Retain legacy IDs for pinned jobs and rate-limit fallbacks.
 export const DEFAULT_CLAUDE_OPUS_48_MODEL = 'claude-opus-4-8';
 export const DEFAULT_CLAUDE_OPUS_48_MODEL_1M = 'claude-opus-4-8[1m]';
 export const DEFAULT_CLAUDE_OPUS_MODEL = 'claude-opus-4-7';
 export const DEFAULT_CLAUDE_OPUS_MODEL_1M = 'claude-opus-4-7[1m]';
 export const DEFAULT_CLAUDE_SONNET_MODEL = 'claude-sonnet-4-6';
 export const DEFAULT_CLAUDE_SONNET_MODEL_1M = 'claude-sonnet-4-6[1m]';
-export const DEFAULT_CODEX_MODEL = 'codex-gpt-5.5';
-// Opus 4.8 is the default Claude model for agent work; Codex GPT-5.5 stays as
-// the reviewer so plans/changes are checked by a different provider.
-export const DEFAULT_WORKFLOW_IMPLEMENTER_MODEL = DEFAULT_CLAUDE_OPUS_48_MODEL_1M;
-export const DEFAULT_WORKFLOW_REVIEWER_MODEL = DEFAULT_CODEX_MODEL;
-export const DEFAULT_DEBATE_CLAUDE_MODEL = DEFAULT_CLAUDE_OPUS_48_MODEL_1M;
+// Verified against the provider catalogs on 2026-10-01. Keep explicit IDs:
+// provider aliases and the CLI's configured default can change independently.
+export const DEFAULT_CLAUDE_MODEL = 'claude-opus-5-5';
+export const BALANCED_CLAUDE_MODEL = 'claude-sonnet-5-5';
+export const DEFAULT_CODEX_MODEL = 'codex-gpt-6.1-sol';
+export const FRONTIER_CODEX_MODEL = 'codex-gpt-6-astra';
+export const EFFICIENT_CODEX_MODEL = 'codex-gpt-6-luna';
+// Use independent providers for implementation and review.
+export const DEFAULT_WORKFLOW_IMPLEMENTER_MODEL = DEFAULT_CLAUDE_MODEL;
+export const DEFAULT_WORKFLOW_REVIEWER_MODEL = FRONTIER_CODEX_MODEL;
+export const DEFAULT_DEBATE_CLAUDE_MODEL = DEFAULT_CLAUDE_MODEL;
 export const DEFAULT_DEBATE_CODEX_MODEL = DEFAULT_CODEX_MODEL;
-export const DEFAULT_VERIFY_MODEL = DEFAULT_CLAUDE_OPUS_48_MODEL;
-export const DEFAULT_EYE_MODEL = DEFAULT_CLAUDE_OPUS_48_MODEL;
+export const DEFAULT_VERIFY_MODEL = DEFAULT_CLAUDE_MODEL;
+export const DEFAULT_EYE_MODEL = DEFAULT_CLAUDE_MODEL;
 export const DEFAULT_CLAUDE_EFFORT = 'xhigh';
 
 /** Phases with dedicated effort/thinking-budget defaults. */
@@ -47,7 +50,7 @@ const PHASE_EFFORT_DEFAULTS: Record<EffortPhase, string> = {
 };
 
 /**
- * Frontier-model (Opus 4.8) phase defaults. Same shape as
+ * Frontier-model phase defaults. Same shape as
  * `PHASE_EFFORT_DEFAULTS`, but implement runs at `high` instead of `medium`:
  * on the frontier tier effort matters more than on prior Opus tiers, and
  * higher effort up front tends to reduce turn count (and therefore total
@@ -83,7 +86,7 @@ const _warnedUnknownServiceTier = new Set<string>();
  * create_job schema derives its enum from it so the tool layer can never
  * accept a value the spawn-time allowlist would then drop.
  */
-export const KNOWN_EFFORT_LEVEL_VALUES = ['minimal', 'low', 'medium', 'high', 'xhigh'] as const;
+export const KNOWN_EFFORT_LEVEL_VALUES = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 const KNOWN_EFFORT_LEVELS = new Set<string>(KNOWN_EFFORT_LEVEL_VALUES);
 
 /** Track unknown env-var values we've already warned about (warn-once). */
@@ -154,7 +157,7 @@ export function _resetEffortWarningsForTest(): void {
  * runs without an effort flag — including jobs with a classifier-pinned
  * effort.
  */
-const FRONTIER_EFFORT_MODELS = new Set([DEFAULT_CLAUDE_OPUS_48_MODEL, DEFAULT_CLAUDE_OPUS_48_MODEL_1M]);
+const FRONTIER_EFFORT_MODELS = new Set([DEFAULT_CLAUDE_MODEL, DEFAULT_CLAUDE_OPUS_48_MODEL, DEFAULT_CLAUDE_OPUS_48_MODEL_1M]);
 const OPUS_EFFORT_MODELS = new Set([DEFAULT_CLAUDE_OPUS_MODEL, DEFAULT_CLAUDE_OPUS_MODEL_1M]);
 
 /**
@@ -173,14 +176,19 @@ export function getClaudeEffort(
 ): string | null {
   if (model == null) return null;
   const isFrontier = FRONTIER_EFFORT_MODELS.has(model);
-  if (!isFrontier && !OPUS_EFFORT_MODELS.has(model)) return null;
-  if (jobEffort != null && KNOWN_EFFORT_LEVELS.has(jobEffort)) return jobEffort;
-  return resolveEffort(phase, isFrontier ? FRONTIER_PHASE_EFFORT_DEFAULTS : PHASE_EFFORT_DEFAULTS);
+  if (!isFrontier && !OPUS_EFFORT_MODELS.has(model) && model !== BALANCED_CLAUDE_MODEL) return null;
+  const effort = jobEffort != null && KNOWN_EFFORT_LEVELS.has(jobEffort) ? jobEffort : resolveEffort(phase, isFrontier ? FRONTIER_PHASE_EFFORT_DEFAULTS : PHASE_EFFORT_DEFAULTS);
+  if (model === DEFAULT_CLAUDE_MODEL || model === BALANCED_CLAUDE_MODEL) return effort === 'minimal' ? 'low' : effort;
+  return effort === 'max' ? 'xhigh' : effort;
 }
 
-export function getCodexReasoningEffort(model: string | null, phase?: WorkflowPhase | null): string | null {
+export function getCodexReasoningEffort(model: string | null, phase?: WorkflowPhase | null, jobEffort?: string | null): string | null {
   if (model === 'codex' || (model != null && model.startsWith('codex-'))) {
-    return resolveEffort(phase);
+    const effort = jobEffort && KNOWN_EFFORT_LEVELS.has(jobEffort) ? jobEffort : resolveEffort(phase);
+    // Current Codex models start at low. Older models do not accept max.
+    if (effort === 'minimal') return 'low';
+    if (effort === 'max' && !/^codex-gpt-(6|5\.6)/.test(model ?? '')) return 'xhigh';
+    return effort;
   }
   return null;
 }
@@ -221,7 +229,9 @@ export function getCodexServiceTier(model: string | null, phase?: WorkflowPhase 
 
 /** Claude models available for job dispatch. */
 export const CLAUDE_MODEL_OPTIONS: ModelOption[] = [
-  { value: DEFAULT_CLAUDE_OPUS_48_MODEL_1M, label: 'claude-opus-4-8[1m] — most capable, 1M context (latest)' },
+  { value: DEFAULT_CLAUDE_MODEL, label: 'Claude Opus 5.5 — complex work, 1M context' },
+  { value: BALANCED_CLAUDE_MODEL, label: 'Claude Sonnet 5.5 — balanced, 1M context' },
+  { value: DEFAULT_CLAUDE_OPUS_48_MODEL_1M, label: 'claude-opus-4-8[1m] — 1M context (legacy)' },
   { value: DEFAULT_CLAUDE_OPUS_MODEL_1M, label: 'claude-opus-4-7[1m] — 1M context (previous)' },
   { value: 'claude-opus-4-6[1m]',        label: 'claude-opus-4-6[1m] — 1M context (older)' },
   { value: DEFAULT_CLAUDE_SONNET_MODEL_1M, label: 'claude-sonnet-4-6[1m] — balanced, 1M context' },
@@ -233,8 +243,11 @@ export const CLAUDE_MODEL_OPTIONS: ModelOption[] = [
  * Update this whenever OpenAI releases a new flagship codex model.
  */
 export const CODEX_MODEL_OPTIONS_FALLBACK: ModelOption[] = [
-  { value: 'codex',               label: 'codex — default (gpt-5.5)' },
-  { value: DEFAULT_CODEX_MODEL,   label: 'codex — gpt-5.5' },
-  { value: 'codex-gpt-5.4',       label: 'codex — gpt-5.4 (previous)' },
-  { value: 'codex-gpt-5.3-codex', label: 'codex — gpt-5.3-codex (older)' },
+  { value: 'codex', label: 'Codex — configured CLI default' },
+  { value: DEFAULT_CODEX_MODEL, label: 'GPT-6.1 Sol — balanced coding' },
+  { value: FRONTIER_CODEX_MODEL, label: 'GPT-6 Astra — demanding reasoning and review' },
+  { value: EFFICIENT_CODEX_MODEL, label: 'GPT-6 Luna — fast, focused tasks' },
+  { value: 'codex-gpt-5.5', label: 'GPT-5.5 — legacy' },
+  { value: 'codex-gpt-5.4', label: 'GPT-5.4 — legacy' },
+  { value: 'codex-gpt-5.3-codex', label: 'GPT-5.3 Codex — legacy' },
 ];

@@ -1,3 +1,4 @@
+import { authorized, sameOrigin } from '../lib/auth.js';
 import { Server as HttpServer } from 'http';
 import { Server as SocketIoServer } from 'socket.io';
 import type { ServerToClientEvents, ClientToServerEvents, AgentWithJob, Job, Question, FileLock, AgentOutput, QueueSnapshot, Debate, AgentWarning, Discussion, DiscussionMessage, Proposal, ProposalMessage, Workflow, Pr, PrReview, PrReviewMessage, JobWatcher, WatcherCommentary, WatcherAction, ResolverRun, ResolverAction } from '../../shared/types.js';
@@ -10,9 +11,23 @@ export function initSocketManager(httpServer: HttpServer): SocketIoServer<Client
     cors: { origin: '*' },
   });
 
+  io.use((socket, next) => {
+    if (!sameOrigin(socket.request.headers) || !authorized(socket.request.headers)) { next(new Error('Unauthorized')); return; }
+    socket.use((_packet, nextPacket) => {
+      if (!authorized(socket.request.headers)) { socket.disconnect(true); nextPacket(new Error('Unauthorized')); return; }
+      nextPacket();
+    });
+    next();
+  });
+
   io.on('connection', (socket) => {
     console.log(`[socket] client connected: ${socket.id}`);
+    const authCheck = setInterval(() => {
+      if (!authorized(socket.request.headers)) socket.disconnect(true);
+    }, 30_000);
+    authCheck.unref();
     socket.on('disconnect', () => {
+      clearInterval(authCheck);
       console.log(`[socket] client disconnected: ${socket.id}`);
     });
   });

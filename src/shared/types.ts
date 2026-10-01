@@ -206,6 +206,7 @@ export interface ResolverRun {
   error_message: string | null;
   started_at: number;
   finished_at: number | null;
+  resumed_at?: number | null; // persisted recovery circuit timestamp
 }
 
 export interface ResolverAction {
@@ -237,6 +238,7 @@ export interface Agent {
   job_id: string;
   status: AgentStatus;
   pid: number | null;
+  execution_mode?: 'headless' | null;
   session_id: string | null;
   parent_agent_id: string | null;
   exit_code: number | null;
@@ -410,6 +412,7 @@ export interface ClaudeStreamEvent {
   model?: string;        // present on system init events
   is_error?: boolean;    // present on result events
   result?: string;       // present on result events: the final output text or error message
+  usage?: { input_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number; output_tokens?: number };
   total_cost_usd?: number;  // present on result events
   duration_ms?: number;     // present on result events
   num_turns?: number;       // present on result events

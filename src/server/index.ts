@@ -33,6 +33,8 @@ const sockLog = socketLogger();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+const HOST = process.env.HOST ?? '127.0.0.1';
+const MCP_HOST = process.env.MCP_HOST ?? '127.0.0.1';
 const PORT = Number(process.env.PORT ?? 3456);
 const MCP_PORT = Number(process.env.MCP_PORT ?? 3947);
 const DB_PATH = process.env.DB_PATH ?? path.join(process.cwd(), 'data', 'orchestrator.db');
@@ -88,7 +90,7 @@ async function main() {
   Sentry.setupExpressErrorHandler(app);
 
   // Serve built client in production
-  const clientDist = path.join(__dirname, '../../dist/client');
+  const clientDist = path.join(__dirname, '../client');
   app.use(express.static(clientDist));
   app.get('*', (_req, res) => {
     res.sendFile(path.join(clientDist, 'index.html'));
@@ -148,7 +150,7 @@ async function main() {
 
   // 5. MCP server on separate port
   const mcpApp = createMcpApp();
-  const mcpServer = mcpApp.listen(MCP_PORT, () => {
+  const mcpServer = mcpApp.listen(MCP_PORT, MCP_HOST, () => {
     log.info({ mcpPort: MCP_PORT }, 'MCP server listening');
   });
   // Disable idle timeouts on the MCP server. Node.js defaults (keepAliveTimeout=5s,
@@ -185,7 +187,7 @@ async function main() {
   if (savedMax) setMaxConcurrent(Number(savedMax.value));
 
   // 7. Start main server
-  httpServer.listen(PORT, () => {
+  httpServer.listen(PORT, HOST, () => {
     log.info({ port: PORT }, 'Orchestrator listening');
   });
 
@@ -218,7 +220,8 @@ async function main() {
       if (runningAgents.length > 0) {
         log.info({ count: runningAgents.length }, 'Sending SIGTERM');
         for (const agent of runningAgents) {
-          if (agent.pid != null) {
+          // Detached headless agents survive a service restart and reconnect to MCP.
+          if (agent.pid != null && agent.execution_mode !== 'headless') {
             try { process.kill(agent.pid, 'SIGTERM'); } catch { /* already gone */ }
           }
         }
@@ -263,6 +266,10 @@ async function main() {
       log.error({ err }, 'Snapshot error');
     }
 
+    // Close upgraded WebSocket connections first: HTTP close waits for them,
+    // while closeAllConnections deliberately excludes upgraded sockets.
+    await new Promise<void>(resolve => io.close(() => resolve()));
+
     // Phase 5: Stop accepting new HTTP connections; wait for in-flight requests to drain
     // closeAllConnections() force-destroys keep-alive sockets so close() resolves
     // quickly instead of waiting for client timeouts, which was the cause of
@@ -276,9 +283,6 @@ async function main() {
     // Close the MCP server
     mcpServer.closeAllConnections?.();
     await new Promise<void>((resolve) => mcpServer.close(() => resolve()));
-
-    // Disconnect all Socket.io clients
-    io.close();
 
     // Close the database
     closeDb();

@@ -324,11 +324,7 @@ export function BatchTemplateManager({ onClose, onRun }: BatchTemplateManagerPro
                           value={runClaudeModel}
                           onChange={e => setRunClaudeModel(e.target.value)}
                         >
-                          <option value="claude-opus-4-8[1m]">claude-opus-4-8[1m] — default, most capable</option>
-                          <option value="claude-opus-4-7[1m]">claude-opus-4-7[1m]</option>
-                          <option value="claude-opus-4-6[1m]">claude-opus-4-6[1m]</option>
-                          <option value="claude-sonnet-4-6[1m]">claude-sonnet-4-6[1m]</option>
-                          <option value="claude-haiku-4-5-20251001">claude-haiku-4-5</option>
+                          {claudeModels.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
                         </select>
                       </div>
                       <div className="form-group">

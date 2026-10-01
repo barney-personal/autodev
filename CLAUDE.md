@@ -92,7 +92,7 @@ Then open http://localhost:3456.
 - Client: React 18 + Vite
 - Database: SQLite via `node:sqlite` experimental (auto-created at `data/orchestrator.db`)
 - Agents: spawned as `claude --print --output-format stream-json --verbose` subprocesses (or `codex exec --json` for Codex models)
-- Model defaults: `claude-opus-4-8[1m]` for implementer/debate/verify/eye work, `codex-gpt-5.5` as the workflow reviewer. (Reverted from a brief `claude-fable-5[1m]` stint in June 2026 — Fable 5 is blocked in the UK.) The auto-classifier scales both model and `--effort` with task complexity (simple → Haiku, medium → Opus 4.8 @ `medium`, complex → Opus 4.8 @ `xhigh`); the classifier-pinned effort is stored on `jobs.effort`.
+- Model defaults: `claude-opus-5-5` implements, `codex-gpt-6-astra` reviews workflows, and `codex-gpt-6.1-sol` is the balanced Codex default. Auto-classification uses Haiku for simple work, Sonnet 5.5 at medium effort for medium work, and Opus 5.5 at xhigh for complex work. See `docs/frontier-upgrade.md`.
 
 ## Key Subsystems
 
@@ -194,7 +194,7 @@ When a workflow transitions to `status='blocked'`, the dispatcher (`src/server/o
 
 **Threat model** — same shape as the Live Watcher. All free-text Resolver outputs run through `stripControlChars` + length caps before persistence; mutating tools never accept absolute paths or escape the worktree; the Resolver can never push, create PRs, or modify any workflow except the one it was dispatched for. Resolver-driven resume always goes through the existing `resumeWorkflow()` health checks.
 
-**Known gap — circuit breaker is in-memory.** `_recentResumes` in `ResumeOrchestrator.ts` is a module-level `Map`, so if the server restarts between a Resolver-driven resume and the subsequent re-block, the same-fingerprint check won't trip the breaker on that re-block. The lifetime attempt count (persisted on the workflow row) and the in-flight idempotency note still apply, so the worst case is one extra Resolver attempt — not an unbounded loop. Same shape as the Live Watcher's `_lastManualTickAt` caveat: if the orchestrator ever moves behind a network boundary or to a multi-process setup, persist this map.
+**Durable recovery circuit.** Resolver-driven resume timestamps are persisted in `resolver_runs.resumed_at`. Re-block checks query the database after restarts; operator reset clears the persisted window.
 
 **API**
 - `GET /api/resolver/runs` — global recent runs

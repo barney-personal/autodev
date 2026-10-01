@@ -242,9 +242,11 @@ export function TaskForm({ onSubmit, onClose, availableJobs = [] }: TaskFormProp
               <div className="completion-checks-list">
                 {[
                   { value: 'claude-haiku-4-5-20251001', label: 'Haiku' },
-                  { value: 'claude-sonnet-4-6[1m]', label: 'Sonnet' },
+                  { value: 'claude-sonnet-5-5', label: 'Sonnet 5.5' },
                   { value: 'claude-opus-4-7[1m]', label: 'Opus 4.7' },
-                  { value: 'claude-opus-4-8[1m]', label: 'Opus 4.8' },
+                  { value: 'claude-opus-5-5', label: 'Opus 5.5' },
+                  { value: 'codex-gpt-6.1-sol', label: 'GPT-6.1 Sol' },
+                  { value: 'codex-gpt-6-astra', label: 'GPT-6 Astra' },
                 ].map(m => (
                   <label key={m.value} className="form-checkbox-label">
                     <input
@@ -436,11 +438,7 @@ export function TaskForm({ onSubmit, onClose, availableJobs = [] }: TaskFormProp
                         <div className="form-group">
                           <label htmlFor="task-debate-claude">Claude Model</label>
                           <select id="task-debate-claude" value={state.debateClaudeModel} onChange={e => set({ debateClaudeModel: e.target.value })}>
-                            <option value="claude-opus-4-8[1m]">claude-opus-4-8[1m] — default, most capable</option>
-                            <option value="claude-opus-4-7[1m]">claude-opus-4-7[1m]</option>
-                            <option value="claude-opus-4-6[1m]">claude-opus-4-6[1m]</option>
-                            <option value="claude-sonnet-4-6[1m]">claude-sonnet-4-6[1m]</option>
-                            <option value="claude-haiku-4-5-20251001">claude-haiku-4-5</option>
+                            {claudeModels.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
                           </select>
                         </div>
                         <div className="form-group">
