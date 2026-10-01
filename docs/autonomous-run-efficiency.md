@@ -37,7 +37,7 @@ CLAUDE_FAST_MODE_IMPLEMENT=true
 CLAUDE_FAST_MODE_WORKFLOW_IDS=b72888f3-9b8b-4ded-8de2-496a76bf93d8
 ```
 
-The runner passes `fastMode` in the session's `--settings` JSON, alongside the existing file-lock hooks. The PTY launcher uses the same settings builder. Assessment, review, verification and unrelated workflows retain their existing settings. Only explicitly supported Opus model IDs can receive this override, so enabling Fast cannot switch a Sonnet/legacy model to Opus. `false` explicitly disables Fast in the selected implementation sessions; unset/empty mode preserves the CLI configuration. An omitted workflow list permits all implementation jobs; a present but empty list matches none. Settings apply to newly launched/resumed processes, without restarting productive agents.
+The runner passes `fastMode` in the session's `--settings` JSON, alongside the existing file-lock hooks. The PTY launcher uses the same settings builder. Assessment, review, verification and unrelated workflows retain their existing settings. Only explicitly supported Opus model IDs can receive `fastMode: true`, so enabling Fast cannot switch a Sonnet/legacy model to Opus. `false` explicitly disables Fast in all selected Claude implementation sessions, including Sonnet, legacy and CLI-default models; unset/empty mode preserves the CLI configuration. An omitted workflow list permits all implementation jobs; a present but empty list matches none. Settings apply to newly launched/resumed processes, without restarting productive agents.
 
 Requirements and provider behavior:
 

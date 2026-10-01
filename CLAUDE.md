@@ -297,7 +297,7 @@ data/
 | `EFFORT_DEFAULT` | `xhigh` | Effort budget for one-shot (non-workflow) jobs. Auto-classified jobs pin a complexity-scaled effort instead (simple → Haiku with no flag, medium → Opus 4.8 @ `medium`, complex → Opus 4.8 @ `xhigh`), which takes precedence over this default. |
 | `CODEX_SERVICE_TIER_REVIEW` | *(unset)* | Optional Codex `service_tier` override: `default`, `flex`, `priority`, `fast`, `ultrafast`, `auto`. Empty/unset inherits the CLI preference; model/account eligibility is enforced by Codex. |
 | `CODEX_SERVICE_TIER_ASSESS` / `_IMPLEMENT` / `_VERIFY` / `_DEFAULT` | *(unset)* | Codex `service_tier` overrides for the other phases. No default — the user's `~/.codex/config.toml` value is used. |
-| `CLAUDE_FAST_MODE_IMPLEMENT` | *(unset)* | Optional `true`/`false` session-only Fast override for supported Opus implementation jobs. Additional provider access and usage charges apply. Does not change model or effort. |
+| `CLAUDE_FAST_MODE_IMPLEMENT` | *(unset)* | Optional session-only Fast override for implementation jobs: `true` enables supported Opus models; `false` disables every Claude model. Additional provider access and usage charges apply. Does not change model or effort. |
 | `CLAUDE_FAST_MODE_WORKFLOW_IDS` | *(unset)* | Optional comma-separated workflow allowlist for the Fast override. Unset permits all implementation jobs; a present but empty list matches none. |
 | `RESOLVER_MODE` | `assisted` | Auto Resolver gate: `off` disables entirely; `diagnose` writes diagnoses but never resumes; `assisted` auto-resumes safe classes (transient_infra, config_drift) only; `auto` auto-resumes any class that clears its confidence threshold. |
 | `RESOLVER_MODEL` | `claude-opus-4-8` | Model used for Resolver sessions. |

@@ -343,7 +343,13 @@ describe('scoped Claude Fast implementation trial', () => {
 
   it('supports explicit false and rejects invalid values without enabling spend', () => {
     process.env.CLAUDE_FAST_MODE_IMPLEMENT = 'false';
-    expect(getClaudeFastMode('claude-opus-5-5', 'implement')).toBe(false);
+    process.env.CLAUDE_FAST_MODE_WORKFLOW_IDS = 'trial';
+    for (const model of ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-opus-4-7', 'claude-haiku-4-5-20251001', null]) {
+      expect(getClaudeFastMode(model, 'implement', 'trial')).toBe(false);
+      expect(getClaudeFastMode(model, 'implement', 'other')).toBeNull();
+    }
+    expect(getClaudeFastMode('codex-gpt-6-astra', 'implement', 'trial')).toBeNull();
+    delete process.env.CLAUDE_FAST_MODE_WORKFLOW_IDS;
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     _resetEffortWarningsForTest();
     process.env.CLAUDE_FAST_MODE_IMPLEMENT = 'true$(echo injected)';

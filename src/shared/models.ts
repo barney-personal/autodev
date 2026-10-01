@@ -242,8 +242,12 @@ export function getClaudeFastMode(
   if (workflowIds !== undefined && !workflowIds.split(',').some(id => id.trim() !== '' && id.trim() === workflowId)) {
     return null;
   }
+  if (model === 'codex' || model?.startsWith('codex-')) return null;
+  // Disabling is safe for every Claude model, including the CLI default, and
+  // must override a personal Fast preference even after a model fallback.
+  if (configured === 'false') return false;
   if (!model || !/^(claude-opus-(5-5|5|4-8))(\[1m\])?$/.test(model)) return null;
-  return configured === 'true';
+  return true;
 }
 
 /** Claude models available for job dispatch. */
