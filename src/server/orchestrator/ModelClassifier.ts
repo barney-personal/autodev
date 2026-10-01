@@ -6,7 +6,7 @@ import { isCodexModel } from '../../shared/types.js';
 import { DEFAULT_CLAUDE_MODEL, BALANCED_CLAUDE_MODEL, DEFAULT_CODEX_MODEL, FRONTIER_CODEX_MODEL, EFFICIENT_CODEX_MODEL } from '../../shared/models.js';
 import { hasCodexCredentials } from './ModelCatalog.js';
 import { CircuitBreaker } from './CircuitBreaker.js';
-import { classifyTask, conservativeClassification } from './TaskComplexity.js';
+import { classifyTask, conservativeClassification, getExecutionTier } from './TaskComplexity.js';
 
 // The model used to do the classification itself — always Haiku, cheap and fast
 const CLASSIFIER_MODEL = 'claude-haiku-4-5-20251001';
@@ -295,11 +295,7 @@ export async function resolveModel(job: Job): Promise<string | null> {
     const classification = autoRetry || job.workflow_phase || job.review_parent_job_id
       ? conservativeClassification('retry or judgment phase')
       : await classifyTask(JSON.stringify({ title: job.title, description: job.description, context: job.context }));
-    const eligible = classification.confidence === 'high' && classification.risk === 'low'
-      && classification.kind !== 'judgment' && !classification.fallbackReason;
-    const complexity = eligible
-      ? classification.complexity === 'simple' && classification.kind !== 'mechanical' ? 'medium' : classification.complexity
-      : 'complex';
+    const complexity = getExecutionTier(classification);
     const preferred = COMPLEXITY_TO_MODEL[complexity];
     // Escalate unavailable small models; never choose an even weaker fallback.
     const model = [preferred, DEFAULT_CLAUDE_MODEL, FRONTIER_CODEX_MODEL].find(candidate => getAvailableModel(candidate) === candidate);

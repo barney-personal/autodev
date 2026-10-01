@@ -24,13 +24,18 @@ export interface TaskClassification extends z.infer<typeof verdictSchema> {
   fallbackReason: string | null;
 }
 
+export function getExecutionTier(classification: TaskClassification): 'simple' | 'medium' | 'complex' {
+  if (classification.fallbackReason || classification.confidence !== 'high' || classification.risk !== 'low' || classification.kind === 'judgment') return 'complex';
+  return classification.complexity === 'simple' && classification.kind !== 'mechanical' ? 'medium' : classification.complexity;
+}
+
 // These deterministic checks run on the COMPLETE input before any truncation or
 // model call. A small edit can still have a large blast radius.
 export function protectedTaskReason(text: string): string | null {
   if (!text.trim()) return 'missing task context';
   if (text.length > MAX_INPUT_CHARS) return 'context exceeds fast-routing budget';
-  if (/\b(auth(?:entication|orization)?|security|permission|credential|secret|token|payment|billing|encryption|cryptograph\w*|migration|schema|concurren\w*|race condition|deadlock|deploy\w*|production|incident|rollback|data loss)\b/i.test(text)) return 'sensitive behavior or infrastructure';
-  if (/(?:package(?:-lock)?\.json|\.github[\/\\]|\bDockerfile\b|\b(?:requirements|CMakeLists)\.txt\b|\b(?:pnpm-lock|config)\.ya?ml\b|\b(?:Cargo|Gemfile)\.lock\b)/im.test(text)) return 'critical configuration or dependencies';
+  if (/\b(auth(?:entication|orization)?|oauth\w*|password|passwd|login|session|csrf|xss|sanitiz\w*|api.?key|security|permission|credential|secret|token|payment|billing|encryption|cryptograph\w*|migration|schema|concurren\w*|race condition|deadlock|deploy\w*|production|incident|rollback|data loss)\b/i.test(text)) return 'sensitive behavior or infrastructure';
+  if (/(?:package(?:-lock)?\.json|\.github[\/\\]|\.env\b|\b(?:Dockerfile|Makefile)\b|\btsconfig(?:\.[\w-]+)?\.json\b|\b(?:requirements|CMakeLists)\.txt\b|\b(?:pnpm-lock|config)\.ya?ml\b|\b(?:Cargo|Gemfile)\.lock\b)/im.test(text)) return 'critical configuration or dependencies';
   if (/\b(architect\w*|redesign|root cause|review|verify|verification|audit|investigat\w*|unknown|ambiguous|regression|correctness|fix feedback)\b/i.test(text)) return 'judgment, diagnosis or verification';
   return null;
 }
@@ -83,6 +88,7 @@ export async function classifyTask(text: string): Promise<TaskClassification> {
   const timer = setTimeout(() => controller.abort(), CLASSIFICATION_TIMEOUT_MS);
   let inputTokens: number | null = null;
   let outputTokens: number | null = null;
+  let receivedBody = false;
   try {
     const google = status.provider === 'google';
     const response = await fetch(google
@@ -104,6 +110,7 @@ export async function classifyTask(text: string): Promise<TaskClassification> {
     // Never include a raw provider body: it may echo credentials or task text.
     if (!response.ok) throw new Error(`decision provider HTTP ${response.status}`);
     const data = await response.json() as any;
+    receivedBody = true;
     const raw = google
       ? (data.candidates?.[0]?.content?.parts ?? []).filter((p: any) => !p.thought && typeof p.text === 'string').map((p: any) => p.text).join('')
       : (data.content ?? []).filter((p: any) => (!p.type || p.type === 'text') && typeof p.text === 'string').map((p: any) => p.text).join('');
@@ -118,7 +125,9 @@ export async function classifyTask(text: string): Promise<TaskClassification> {
     return { ...verdict, decisionModel: status.model, durationMs: Date.now() - started, inputTokens, outputTokens,
       costEstimateUsd: !google && inputTokens != null && outputTokens != null ? estimateCostUsd(status.model, inputTokens, outputTokens) : null, fallbackReason: null };
   } catch (err) {
-    cooldowns.set(status.model, Date.now() + 60_000);
+    // A bad classification affects this task only. Transport, HTTP and timeout
+    // failures cool the provider so other tasks don't pile onto an outage.
+    if (!receivedBody || controller.signal.aborted) cooldowns.set(status.model, Date.now() + 60_000);
     const reason = controller.signal.aborted ? 'classification timeout' : err instanceof Error && /^decision provider HTTP \d+$/.test(err.message) ? err.message : 'invalid classification or provider failure';
     return { ...conservativeClassification(reason), decisionModel: status.model, durationMs: Date.now() - started, inputTokens, outputTokens,
       costEstimateUsd: status.provider === 'anthropic' && inputTokens != null && outputTokens != null ? estimateCostUsd(status.model, inputTokens, outputTokens) : null };

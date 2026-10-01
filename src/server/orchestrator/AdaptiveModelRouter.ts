@@ -3,7 +3,7 @@ import * as queries from '../db/queries.js';
 import { insertRouteDecision } from '../db/routeDecisionQueries.js';
 import { extractCurrentMilestone } from './RoutingBrainPrompt.js';
 import { getAvailableModel } from './ModelClassifier.js';
-import { classifyTask, conservativeClassification, COMPLEXITY_PROMPT_VERSION, getFastDecisionStatus, type TaskClassification } from './TaskComplexity.js';
+import { classifyTask, conservativeClassification, COMPLEXITY_PROMPT_VERSION, getExecutionTier, getFastDecisionStatus, type TaskClassification } from './TaskComplexity.js';
 import { BALANCED_CLAUDE_MODEL, DEFAULT_CODEX_MODEL, EFFICIENT_CODEX_MODEL } from '../../shared/models.js';
 import { isCodexModel, type Workflow, type RouteDecision } from '../../shared/types.js';
 import { RecoveryKeys } from './WorkflowRecovery.js';
@@ -27,12 +27,13 @@ export function adaptiveRoutingApplies(workflowId: string): boolean {
 
 /** Classifier output is advisory; policy and model availability decide execution. */
 export function selectAdaptiveModel(classification: TaskClassification, baseline: string): string {
-  if (classification.fallbackReason || classification.confidence !== 'high' || classification.risk !== 'low' || classification.kind === 'judgment' || classification.complexity === 'complex') return baseline;
+  const tier = getExecutionTier(classification);
+  if (tier === 'complex') return baseline;
   const codex = isCodexModel(baseline);
   if (!codex && !baseline.startsWith('claude-')) return baseline;
   const balanced = codex ? DEFAULT_CODEX_MODEL : BALANCED_CLAUDE_MODEL;
   const efficient = codex ? EFFICIENT_CODEX_MODEL : 'claude-haiku-4-5-20251001';
-  const candidate = classification.complexity === 'simple' && classification.kind === 'mechanical' ? efficient : balanced;
+  const candidate = tier === 'simple' ? efficient : balanced;
   // Do not take a rate-limit fallback to an even weaker model. Escalate instead.
   if (getAvailableModel(candidate) === candidate) return candidate;
   if (candidate === efficient && getAvailableModel(balanced) === balanced) return balanced;

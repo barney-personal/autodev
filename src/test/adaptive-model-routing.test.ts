@@ -22,7 +22,7 @@ beforeEach(async () => {
   vi.stubEnv('ANTHROPIC_API_KEY', 'test-key');
   vi.stubEnv('ADAPTIVE_DECISION_MODEL', 'claude-haiku-4-5-20251001');
   vi.stubEnv('ADAPTIVE_ROUTING_MODE', 'live');
-  delete process.env.ADAPTIVE_ROUTING_WORKFLOW_IDS;
+  vi.stubEnv('ADAPTIVE_ROUTING_WORKFLOW_IDS', undefined);
   fetchMock = vi.fn().mockResolvedValue(response());
   vi.stubGlobal('fetch', fetchMock);
 });
@@ -39,6 +39,8 @@ describe('bounded classification', () => {
     'Delete old data in production', 'Adjust one permission', 'Fix a concurrency race',
     'Update package.json', 'Change .github/workflows/ci.yml', 'Review a one-line change',
     'Investigate an unknown failure', 'Verify the final feature', 'Tune encryption',
+    'Small OAuth change', 'Fix login text', 'Change a session cookie', 'Update password validation',
+    'Sanitize a name', 'Patch XSS handling', 'Edit .env.example', 'Change tsconfig.server.json',
   ])('protects sensitive small work without a provider call: %s', async text => {
     expect(protectedTaskReason(text)).not.toBeNull();
     expect((await classifyTask(text)).complexity).toBe('complex');
@@ -64,7 +66,14 @@ describe('bounded classification', () => {
     fetchMock.mockResolvedValue(response(verdict));
     expect((await classifyTask('Correct a typo in README.md')).fallbackReason).toBeTruthy();
     await classifyTask('Correct a second typo in README.md');
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects truncated output without cooling down a healthy provider', async () => {
+    fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({ content: [{ text: JSON.stringify(simple) }], stop_reason: 'max_tokens' }) });
+    expect((await classifyTask('Correct a typo')).fallbackReason).toBeTruthy();
+    expect((await classifyTask('Correct another typo')).complexity).toBe('simple');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('accepts an exact JSON code fence but rejects prose around it', async () => {

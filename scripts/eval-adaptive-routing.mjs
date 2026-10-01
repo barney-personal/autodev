@@ -1,6 +1,6 @@
 // Run after npm run build. Uses synthetic tasks only, never dispatches agents.
 // Example: node --env-file=.env scripts/eval-adaptive-routing.mjs
-import { classifyTask } from '../dist/server/orchestrator/TaskComplexity.js';
+import { classifyTask, getExecutionTier } from '../dist/server/orchestrator/TaskComplexity.js';
 
 const cases = [
   { task: 'In README.md change the single misspelling recieve to receive. No other edits.', expected: 'simple' },
@@ -15,8 +15,7 @@ const cases = [
 const results = [];
 for (const item of cases) {
   const result = await classifyTask(item.task);
-  const tier = result.fallbackReason || result.risk !== 'low' || result.confidence !== 'high' || result.kind === 'judgment'
-    ? 'complex' : result.complexity === 'simple' && result.kind !== 'mechanical' ? 'medium' : result.complexity;
+  const tier = getExecutionTier(result);
   const row = { ...item, tier, ...result };
   results.push(row);
   console.log(JSON.stringify(row));

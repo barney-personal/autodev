@@ -222,6 +222,7 @@ describe('adaptive routing dispatch and final independent review', () => {
     await setupTestDb();
     await resetManagerState();
     vi.stubEnv('ADAPTIVE_ROUTING_MODE', 'live');
+    vi.stubEnv('RESOLVER_MODE', 'off');
     vi.stubEnv('ANTHROPIC_API_KEY', 'test-key');
     vi.stubEnv('ADAPTIVE_DECISION_MODEL', 'claude-haiku-4-5-20251001');
     const { _resetClassificationForTest } = await import('../server/orchestrator/TaskComplexity.js');
@@ -302,5 +303,22 @@ describe('adaptive routing dispatch and final independent review', () => {
     onJobCompleted({ ...review, status: 'done' });
     expect(q.getWorkflowById(workflow.id)).toMatchObject({ status: 'blocked', blocked_reason: expect.stringContaining('budget exhausted') });
     expect(q.getJobsForWorkflow(workflow.id).filter(j => j.workflow_phase === 'implement')).toHaveLength(1);
+  });
+
+  it('allows the final correction when review lands exactly on the cycle budget', async () => {
+    const workflow = await createReviewReadyWorkflow('off');
+    const q = await import('../server/db/queries.js');
+    q.updateWorkflow(workflow.id, { max_cycles: 3 });
+    const { spawnImplementWithRouting, onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    await spawnImplementWithRouting(q.getWorkflowById(workflow.id)!, 2);
+    const job = q.getJobsForWorkflow(workflow.id).find(j => j.workflow_phase === 'implement')!;
+    q.upsertNote(`workflow/${workflow.id}/plan`, '- [x] M1\n- [x] M2\n- [x] M3', null);
+    onJobCompleted({ ...job, status: 'done' });
+    const review = q.getJobsForWorkflow(workflow.id).find(j => j.workflow_phase === 'review')!;
+    q.upsertNote(`workflow/${workflow.id}/plan`, '- [x] M1\n- [x] M2\n- [ ] **Fix incorrect M3**', null);
+    onJobCompleted({ ...review, status: 'done' });
+    await flushRouting();
+    expect(q.getWorkflowById(workflow.id)?.status).toBe('running');
+    expect(q.getJobsForWorkflow(workflow.id).find(j => j.workflow_phase === 'implement' && j.workflow_cycle === 3)?.model).toBe(workflow.implementer_model);
   });
 });
