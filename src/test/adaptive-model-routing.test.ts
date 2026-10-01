@@ -172,6 +172,34 @@ describe('tier selection and escalation', () => {
     expect(JSON.stringify(getAdaptiveRoutingStatus())).not.toContain('test-key');
   });
 
+  it.each([
+    { total: 5, done: 3, threshold: 0.8, protected: true },
+    { total: 5, done: 2, threshold: 0.8, protected: false },
+    { total: 5, done: 3, threshold: 1, protected: false },
+    { total: 5, done: 4, threshold: 1, protected: true },
+    { total: 3, done: 1, threshold: 0.6, protected: true },
+  ])('protects the actual completion threshold: $done/$total at $threshold', async ({ total, done, threshold, protected: protect }) => {
+    const workflow = await insertTestWorkflow({ implementer_model: DEFAULT_CLAUDE_MODEL, task: 'Polish text', milestones_total: total, milestones_done: done });
+    queries.updateWorkflow(workflow.id, { completion_threshold: threshold });
+    queries.upsertNote(`workflow/${workflow.id}/plan`, '- [ ] Correct a typo', null);
+    const result = await decideAdaptiveRoute(queries.getWorkflowById(workflow.id)!, 1);
+    expect(result.implementerModel).toBe(protect ? DEFAULT_CLAUDE_MODEL : 'claude-haiku-4-5-20251001');
+    expect(fetchMock).toHaveBeenCalledTimes(protect ? 0 : 1);
+  });
+
+  it.each([
+    { initialEffort: null, retryEffort: 'medium', expected: 'xhigh' },
+    { initialEffort: 'medium', retryEffort: 'medium', expected: 'medium' },
+    { initialEffort: null, retryEffort: 'high', expected: 'high' },
+  ])('escalates inherited effort but preserves explicit choices: $initialEffort/$retryEffort', async ({ initialEffort, retryEffort, expected }) => {
+    fetchMock.mockResolvedValue(response({ ...simple, complexity: 'medium', kind: 'implementation' }));
+    const original = queries.insertJob({ id: randomUUID(), title: 'Add a pure formatter', description: 'Format two names separated by one space', context: null, priority: 0, effort: initialEffort });
+    expect(await resolveModel(original)).toBe(BALANCED_CLAUDE_MODEL);
+    const retry = queries.insertJob({ id: randomUUID(), title: original.title, description: original.description, context: null, priority: 0, original_job_id: original.id, retry_count: 1, model: BALANCED_CLAUDE_MODEL, effort: retryEffort });
+    expect(await resolveModel(retry)).toBe(DEFAULT_CLAUDE_MODEL);
+    expect(queries.getJobById(retry.id)?.effort).toBe(expected);
+  });
+
   it('routes unpinned jobs, preserves explicit choices, and escalates only auto-selected retries', async () => {
     const makeJob = (extra = {}) => queries.insertJob({ id: randomUUID(), title: 'Correct typo', description: 'Change recieve to receive in README.md', context: null, priority: 0, ...extra });
     const job = makeJob();

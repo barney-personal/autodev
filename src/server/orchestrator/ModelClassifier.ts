@@ -287,8 +287,9 @@ export async function resolveModel(job: Job): Promise<string | null> {
   const autoOrigin = job.original_job_id ?? job.id;
   const provenance = process.env.ADAPTIVE_ROUTING_MODE === 'live' && job.retry_count > 0
     ? queries.getNote(`adaptive-job/${autoOrigin}`) : null;
-  let autoSelectedModel: string | undefined;
-  try { autoSelectedModel = provenance ? JSON.parse(provenance.value).selectedModel : undefined; } catch { /* corrupt provenance is not authority to override */ }
+  let priorSelection: { selectedModel?: string; selectedEffort?: string | null; effortWasExplicit?: boolean } | null = null;
+  try { priorSelection = provenance ? JSON.parse(provenance.value) : null; } catch { /* corrupt provenance is not authority to override */ }
+  const autoSelectedModel = priorSelection?.selectedModel;
   const autoRetry = process.env.ADAPTIVE_ROUTING_MODE === 'live' && job.retry_count > 0
     && autoSelectedModel !== undefined && autoSelectedModel === job.model;
   if (process.env.ADAPTIVE_ROUTING_MODE === 'live' && (job.model === null || autoRetry)) {
@@ -300,8 +301,16 @@ export async function resolveModel(job: Job): Promise<string | null> {
     // Escalate unavailable small models; never choose an even weaker fallback.
     const model = [preferred, DEFAULT_CLAUDE_MODEL, FRONTIER_CODEX_MODEL].find(candidate => getAvailableModel(candidate) === candidate);
     if (!model) return null;
-    queries.updateJobModel(job.id, model, job.effort ?? COMPLEXITY_TO_EFFORT[model === preferred ? complexity : 'complex']);
-    queries.upsertNote(`adaptive-job/${job.id}`, JSON.stringify({ ...classification, selectedModel: model }), null);
+    // RetryManager clones effort as well as model. Replace an inherited auto
+    // setting when escalating, but retain an explicit or subsequently edited
+    // setting. Older provenance without the flag is treated conservatively.
+    const inheritedAutoEffort = autoRetry && priorSelection?.effortWasExplicit === false
+      && priorSelection.selectedEffort === job.effort;
+    const explicitEffort = inheritedAutoEffort ? null : job.effort;
+    const effort = explicitEffort ?? COMPLEXITY_TO_EFFORT[model === preferred ? complexity : 'complex'];
+    queries.updateJobModel(job.id, model, effort);
+    queries.upsertNote(`adaptive-job/${job.id}`, JSON.stringify({ ...classification, selectedModel: model,
+      selectedEffort: effort, effortWasExplicit: explicitEffort !== null }), null);
     socket.emitJobUpdate(queries.getJobById(job.id)!);
     return model;
   }
