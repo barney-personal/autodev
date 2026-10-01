@@ -15,6 +15,7 @@ import { getWorkflowSnapshotStats } from '../db/workflowQueries.js';
 import { getLastDoneJobUpdatedAt, getQueueSnapshotStats } from '../db/jobQueries.js';
 import { getRouteDecisionSnapshotStats } from '../db/routeDecisionQueries.js';
 import { getRoutingBrainMode } from '../orchestrator/RoutingBrain.js';
+import { getAdaptiveRoutingStatus } from '../orchestrator/AdaptiveModelRouter.js';
 
 const router = Router();
 
@@ -62,6 +63,7 @@ router.get('/snapshot', (_req, res) => {
     },
     routing_brain: {
       mode: getRoutingBrainMode(),
+      adaptive: getAdaptiveRoutingStatus(),
       total_decisions_30d: routeStats.total_decisions,
       by_mode_30d: routeStats.by_mode,
     },

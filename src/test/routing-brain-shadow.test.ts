@@ -215,3 +215,110 @@ describe('routing brain implement-spawn integration: off and shadow modes', () =
     expect(implementJob?.model).toBe('claude-opus-4-7[1m]');
   });
 });
+
+describe('adaptive routing dispatch and final independent review', () => {
+  beforeEach(async () => {
+    routingState.mode = 'off';
+    await setupTestDb();
+    await resetManagerState();
+    vi.stubEnv('ADAPTIVE_ROUTING_MODE', 'live');
+    vi.stubEnv('RESOLVER_MODE', 'off');
+    vi.stubEnv('ANTHROPIC_API_KEY', 'test-key');
+    vi.stubEnv('ADAPTIVE_DECISION_MODEL', 'claude-haiku-4-5-20251001');
+    const { _resetClassificationForTest } = await import('../server/orchestrator/TaskComplexity.js');
+    _resetClassificationForTest();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({
+      content: [{ type: 'text', text: JSON.stringify({ complexity: 'simple', kind: 'mechanical', confidence: 'high', risk: 'low', rationale: 'Specified text correction.' }) }], stop_reason: 'end_turn',
+    }) }));
+  });
+  afterEach(async () => {
+    vi.unstubAllGlobals(); vi.unstubAllEnvs();
+    await cleanupTestDb();
+  });
+
+  it.each(['live', 'shadow'] as const)('dispatches the correct model in %s mode', async mode => {
+    vi.stubEnv('ADAPTIVE_ROUTING_MODE', mode);
+    const workflow = await createReviewReadyWorkflow('off');
+    const { spawnImplementWithRouting } = await import('../server/orchestrator/WorkflowManager.js');
+    const q = await import('../server/db/queries.js');
+    await spawnImplementWithRouting(workflow, 2);
+    const job = q.getJobsForWorkflow(workflow.id).find(j => j.workflow_phase === 'implement');
+    expect(job?.model).toBe(mode === 'live' ? 'claude-haiku-4-5-20251001' : workflow.implementer_model);
+    expect(q.getRouteDecisionsForWorkflow(workflow.id)[0].decision.skipReview).toBe(false);
+  });
+
+  it('requires final review even if routing is switched off after implementation starts', async () => {
+    const workflow = await createReviewReadyWorkflow('off');
+    const { spawnImplementWithRouting, onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    const q = await import('../server/db/queries.js');
+    await spawnImplementWithRouting(workflow, 2);
+    const job = q.getJobsForWorkflow(workflow.id).find(j => j.workflow_phase === 'implement')!;
+    q.upsertNote(`workflow/${workflow.id}/plan`, '- [x] M1\n- [x] M2\n- [x] M3', null);
+    vi.stubEnv('ADAPTIVE_ROUTING_MODE', 'off');
+    onJobCompleted({ ...job, status: 'done' });
+    expect(q.getWorkflowById(workflow.id)?.status).toBe('running');
+    const review = q.getJobsForWorkflow(workflow.id).find(j => j.workflow_phase === 'review');
+    expect(review).toMatchObject({ workflow_cycle: 3, model: workflow.reviewer_model });
+  });
+
+  it('does not spawn an agent if the workflow is cancelled during classification', async () => {
+    const workflow = await createReviewReadyWorkflow('off');
+    const q = await import('../server/db/queries.js');
+    const fetchImpl = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (...args) => {
+      q.updateWorkflow(workflow.id, { status: 'cancelled' });
+      return fetchImpl(...args);
+    });
+    const { spawnImplementWithRouting } = await import('../server/orchestrator/WorkflowManager.js');
+    await spawnImplementWithRouting(workflow, 2);
+    expect(q.getJobsForWorkflow(workflow.id)).toHaveLength(0);
+  });
+
+  it('runs configured verification only after the final review', async () => {
+    const workflow = await createReviewReadyWorkflow('off');
+    const q = await import('../server/db/queries.js');
+    q.updateWorkflow(workflow.id, { start_command: 'npm test' });
+    const { spawnImplementWithRouting, onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    await spawnImplementWithRouting(q.getWorkflowById(workflow.id)!, 2);
+    const job = q.getJobsForWorkflow(workflow.id).find(j => j.workflow_phase === 'implement')!;
+    q.upsertNote(`workflow/${workflow.id}/plan`, '- [x] M1\n- [x] M2\n- [x] M3', null);
+    onJobCompleted({ ...job, status: 'done' });
+    expect(q.getJobsForWorkflow(workflow.id).some(j => j.workflow_phase === 'verify')).toBe(false);
+    const review = q.getJobsForWorkflow(workflow.id).find(j => j.workflow_phase === 'review')!;
+    onJobCompleted({ ...review, status: 'done' });
+    expect(q.getJobsForWorkflow(workflow.id).some(j => j.workflow_phase === 'verify')).toBe(true);
+  });
+
+  it('blocks final review corrections when implementation budget is exhausted', async () => {
+    const workflow = await createReviewReadyWorkflow('off');
+    const q = await import('../server/db/queries.js');
+    q.updateWorkflow(workflow.id, { max_cycles: 2 });
+    const { spawnImplementWithRouting, onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    await spawnImplementWithRouting(q.getWorkflowById(workflow.id)!, 2);
+    const job = q.getJobsForWorkflow(workflow.id).find(j => j.workflow_phase === 'implement')!;
+    q.upsertNote(`workflow/${workflow.id}/plan`, '- [x] M1\n- [x] M2\n- [x] M3', null);
+    onJobCompleted({ ...job, status: 'done' });
+    const review = q.getJobsForWorkflow(workflow.id).find(j => j.workflow_phase === 'review')!;
+    q.upsertNote(`workflow/${workflow.id}/plan`, '- [x] M1\n- [x] M2\n- [ ] **Fix incorrect M3**', null);
+    onJobCompleted({ ...review, status: 'done' });
+    expect(q.getWorkflowById(workflow.id)).toMatchObject({ status: 'blocked', blocked_reason: expect.stringContaining('budget exhausted') });
+    expect(q.getJobsForWorkflow(workflow.id).filter(j => j.workflow_phase === 'implement')).toHaveLength(1);
+  });
+
+  it('allows the final correction when review lands exactly on the cycle budget', async () => {
+    const workflow = await createReviewReadyWorkflow('off');
+    const q = await import('../server/db/queries.js');
+    q.updateWorkflow(workflow.id, { max_cycles: 3 });
+    const { spawnImplementWithRouting, onJobCompleted } = await import('../server/orchestrator/WorkflowManager.js');
+    await spawnImplementWithRouting(q.getWorkflowById(workflow.id)!, 2);
+    const job = q.getJobsForWorkflow(workflow.id).find(j => j.workflow_phase === 'implement')!;
+    q.upsertNote(`workflow/${workflow.id}/plan`, '- [x] M1\n- [x] M2\n- [x] M3', null);
+    onJobCompleted({ ...job, status: 'done' });
+    const review = q.getJobsForWorkflow(workflow.id).find(j => j.workflow_phase === 'review')!;
+    q.upsertNote(`workflow/${workflow.id}/plan`, '- [x] M1\n- [x] M2\n- [ ] **Fix incorrect M3**', null);
+    onJobCompleted({ ...review, status: 'done' });
+    await flushRouting();
+    expect(q.getWorkflowById(workflow.id)?.status).toBe('running');
+    expect(q.getJobsForWorkflow(workflow.id).find(j => j.workflow_phase === 'implement' && j.workflow_cycle === 3)?.model).toBe(workflow.implementer_model);
+  });
+});

@@ -11,8 +11,11 @@ import {
   getRoutingBrainStats,
 } from '../orchestrator/RoutingBrainStats.js';
 import { ROUTING_BRAIN_DECISION_MODEL_IDS } from '../orchestrator/RoutingBrain.js';
+import { getAdaptiveRoutingStatus } from '../orchestrator/AdaptiveModelRouter.js';
 
 const router = Router();
+
+router.get('/adaptive', (_req, res) => res.json(getAdaptiveRoutingStatus()));
 
 const MODE_VALUES = ['off', 'shadow', 'live'] as const;
 type Mode = typeof MODE_VALUES[number];
