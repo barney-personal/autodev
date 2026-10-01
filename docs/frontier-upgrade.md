@@ -16,7 +16,7 @@ Upgrade the existing local autonomous development service in place. Keep its dur
 | Managed/cloud agents | Current managed runtimes are viable for a future remote worker pool. This release retains local repository access and the existing MCP/state contracts; migrating state, secrets, execution and worktrees to a new service would not itself improve this deployment's reliability. |
 | Tool calling, browser/computer use, parallelism | Existing coding harnesses provide tool execution and optional configured capabilities. Preserve the project's job graph, review boundaries and concurrency limits. Do not enable extra tools or nested parallel work globally without task-level need. |
 | Production access | Add an HttpOnly browser session and protect Socket.io with the same credentials as the API. Bind HTTP/MCP to loopback by default. Keep bearer tokens working for CLI clients. |
-| Deployment | Build the SQL schema and revision metadata into the artifact. Correct static-client serving. Add CI for type checking, tests and production builds. Start only prebuilt releases, preserving the current environment/database. |
+| Deployment | Build the SQL schema and revision metadata into the artifact. Correct static-client serving. Extend the existing CI for both TypeScript projects, tests and self-contained production builds. Start only prebuilt releases, preserving the current environment/database. |
 
 ## Implementation checklist
 
@@ -27,11 +27,11 @@ Upgrade the existing local autonomous development service in place. Keep its dur
 - [x] Browser sign-in and authenticated socket access.
 - [x] Self-contained production build and CI.
 - [x] Full regression suite and live provider/harness verification.
-- [ ] Deploy tested revision, verify live service, and record rollout evidence.
+- [x] Prepare release checks and rollback backup procedure. Deployment status is recorded in the [release PR](https://github.com/barney-personal/autodev/pull/45).
 
 ## Validation and rollout
 
-Use the existing production credentials without copying or printing them. Existing jobs and workflows retain their pinned models. Use a disposable repository for coding/MCP smoke tests. Before the live restart, verify the queue is idle, back up the SQLite database, preserve the previous build, and check that the primary checkout has no conflicting tracked edits. Fast-forward the release, restart `com.barney.autodev`, verify the revision at `/api/health`, check authentication and assets, and test task completion. Roll back the build/revision if startup or smoke checks fail; the schema addition is nullable and backwards compatible.
+Use the existing production credentials without copying or printing them. Existing jobs and workflows retain their pinned models. Use a disposable repository for coding/MCP smoke tests. Before the live restart, verify the queue is idle, back up the SQLite database, preserve the previous build, and check that the primary checkout has no conflicting tracked edits. Fast-forward the release, restart `com.barney.autodev`, verify the revision at `/api/health`, check authentication and assets, and test task completion. Roll back the build/revision if startup or smoke checks fail; the new execution-mode/resume columns and usage ledger are additive and backwards compatible.
 
 ### Acceptance results
 
@@ -39,6 +39,7 @@ Use the existing production credentials without copying or printing them. Existi
 - Real Opus 5.5 and GPT-6 Astra coding tasks fixed an isolated repository, passed its tests, wrote an MCP note and called `finish_job`.
 - This installed CLI advertises GPT-6.1 Sol, but the current ChatGPT account rejects it. A live task automatically retried on GPT-6 Astra and passed. Advertised availability is therefore treated as a hint, not proof of access.
 - Browser sign-in, authenticated API/socket access, dynamic model picker, assets and health checks passed.
+- A running Opus 5.5 process survived a graceful server restart, reattached to its existing log/session, reconnected to MCP, and completed the coding task. Shutdown also closes upgraded WebSocket connections before draining HTTP.
 - Reproduce infrastructure checks with `node --env-file=.env scripts/check-live.mjs`. Run a paid, isolated coding acceptance test with `node --env-file=.env scripts/smoke-agent.mjs`; optionally set `SMOKE_MODEL` and `AUTODEV_URL`.
 - These are integration checks, not a comparative coding benchmark. Existing model pins and the three historically blocked production workflows are preserved.
 

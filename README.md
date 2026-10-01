@@ -12,7 +12,7 @@ Unattended jobs run headlessly with persistent logs and restart recovery. Defini
 
 Read the [upgrade plan and rollout evidence](docs/frontier-upgrade.md) for the capability assessment, validation and deployment decisions.
 
-Set `AUTH_TOKEN` in `.env` to protect the service. Open the dashboard and sign in with that token; it uses an HttpOnly session cookie. CLI clients can keep using `Authorization: Bearer <token>`. API and Socket.io both enforce authentication. `HOST` and `MCP_HOST` default to `127.0.0.1`; the MCP service must remain on a trusted local interface.
+Set `AUTH_TOKEN` in `.env` to protect the service. Open the dashboard and sign in with that token; it uses an HttpOnly session cookie. CLI clients can keep using `Authorization: Bearer <token>`. The management API and Socket.io both enforce authentication; health checks remain public. `HOST` and `MCP_HOST` default to `127.0.0.1`; the MCP service must remain on a trusted local interface.
 
 For a production release, run `npm ci`, `npm run typecheck`, `npm test`, and `npm run build` before `npm run server:start`. The build includes the database schema, client assets and revision metadata, exposed at `/api/health`. `scripts/start-prod.sh` starts a prebuilt release and loads `.env` without executing it as shell code.
 
